@@ -74,7 +74,7 @@ async def list_denial_cases(
         return {"success": True, "data": cases_with_claims}
     except Exception as e:
         logger.error(f"Error listing denial cases: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/cases/{denial_id}")
@@ -140,7 +140,7 @@ async def get_denial_case(
         raise
     except Exception as e:
         logger.error(f"Error getting denial case: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/cases/{denial_id}/generate-appeal")
@@ -165,4 +165,4 @@ async def generate_appeal_letter(
         return {"success": True, "data": result}
     except Exception as e:
         logger.error(f"Error generating appeal: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")

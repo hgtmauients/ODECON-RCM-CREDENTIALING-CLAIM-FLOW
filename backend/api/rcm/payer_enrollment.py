@@ -97,7 +97,7 @@ async def list_payer_credentialing_cases(
         return {"success": True, "data": cases_with_payer_names, "total": len(cases)}
     except Exception as e:
         logger.error(f"Error listing payer credentialing cases: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/cases/{case_id}")
@@ -219,7 +219,7 @@ async def auto_create_payer_cases(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error auto-creating payer cases: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.put("/cases/{case_id}/checklist")
@@ -256,7 +256,7 @@ async def update_case_checklist(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error updating checklist: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/era-enrollment")
@@ -295,7 +295,7 @@ async def list_era_enrollments(
         }
     except Exception as e:
         logger.error(f"Error listing ERA enrollments: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/era-enrollment")
@@ -325,7 +325,7 @@ async def create_era_enrollment(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error creating ERA enrollment: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/documents/upload")
@@ -364,7 +364,7 @@ async def upload_provider_document(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error uploading document: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/documents")
@@ -411,4 +411,4 @@ async def list_provider_documents(
         }
     except Exception as e:
         logger.error(f"Error listing documents: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")

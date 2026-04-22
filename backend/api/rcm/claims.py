@@ -35,27 +35,37 @@ async def list_claims(
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """List claims with filters - scoped to tenant"""
+    """List claims with filters - scoped to tenant. Returns full filtered total."""
     try:
-        query = select(Claim).where(Claim.tenant_id == current_user.tenant_id)
-
+        # Build the filter clause once and reuse it for both data and count.
+        filters = [Claim.tenant_id == current_user.tenant_id]
         if state:
-            query = query.where(Claim.state == state)
+            filters.append(Claim.state == state)
         if queue:
-            query = query.where(Claim.current_queue == queue)
+            filters.append(Claim.current_queue == queue)
         if payer_id:
-            query = query.where(Claim.payer_id == payer_id)
+            filters.append(Claim.payer_id == payer_id)
         if provider_id:
-            query = query.where(Claim.provider_id == provider_id)
+            filters.append(Claim.provider_id == provider_id)
         if date_from:
-            query = query.where(Claim.service_date_from >= date_from)
+            filters.append(Claim.service_date_from >= date_from)
         if date_to:
-            query = query.where(Claim.service_date_from <= date_to)
+            filters.append(Claim.service_date_from <= date_to)
 
-        query = query.order_by(desc(Claim.created_date)).limit(limit).offset(offset)
+        data_query = (
+            select(Claim)
+            .where(and_(*filters))
+            .order_by(desc(Claim.created_date))
+            .limit(limit)
+            .offset(offset)
+        )
+        count_query = select(func.count(Claim.id)).where(and_(*filters))
 
-        result = await db.execute(query)
-        claims = result.scalars().all()
+        data_result = await db.execute(data_query)
+        claims = data_result.scalars().all()
+
+        count_result = await db.execute(count_query)
+        total = count_result.scalar() or 0
 
         return {
             "success": True,
@@ -72,11 +82,13 @@ async def list_claims(
                 "created_date": c.created_date.isoformat() if c.created_date else None,
                 "submitted_date": c.submitted_date.isoformat() if c.submitted_date else None,
             } for c in claims],
-            "total": len(claims),
+            "total": total,
+            "limit": limit,
+            "offset": offset,
         }
     except Exception as e:
-        logger.error(f"Error listing claims: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Error listing claims")
+        raise HTTPException(status_code=500, detail="Failed to list claims")
 
 
 @router.get("/{claim_id}")
@@ -206,7 +218,7 @@ async def create_claim(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error creating claim: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/{claim_id}/validate")
@@ -238,7 +250,7 @@ async def validate_claim(
         raise
     except Exception as e:
         logger.error(f"Error validating claim {claim_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/batch/submit")
@@ -342,7 +354,7 @@ async def submit_claim_batch(
         raise
     except Exception as e:
         logger.error(f"Error submitting batch: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/{claim_id}/events")
@@ -414,7 +426,7 @@ async def list_queues(
         return {"success": True, "data": queue_data}
     except Exception as e:
         logger.error(f"Error listing queues: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/import/csv")

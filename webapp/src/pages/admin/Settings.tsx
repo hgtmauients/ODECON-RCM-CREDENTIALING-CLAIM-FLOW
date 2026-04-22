@@ -134,8 +134,14 @@ export default function Settings() {
     setTestingCaqh(false);
   };
 
-  const { data: healthData } = useQuery('health', () =>
-    fetch('/health').then(r => r.json()).catch(() => null),
+  // Use the apiService base URL (handles both local dev proxy and prod api.noodledoc.com).
+  // Going via fetch('/health') would hit the static origin (e.g. Vercel) in production.
+  const { data: healthData } = useQuery(
+    'health',
+    () => {
+      const base = (import.meta.env?.VITE_API_BASE_URL || '/api').replace(/\/api\/?$/, '');
+      return fetch(`${base}/health`).then(r => r.json()).catch(() => null);
+    },
     { refetchInterval: 30000 }
   );
 

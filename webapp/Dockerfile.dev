@@ -1,0 +1,14 @@
+# Dev-only image. Used by docker-compose.yml for hot-reload development.
+# Production deployments use the multi-stage Dockerfile in this same directory.
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm install --no-audit --no-fund
+
+COPY . .
+
+EXPOSE 3000
+
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

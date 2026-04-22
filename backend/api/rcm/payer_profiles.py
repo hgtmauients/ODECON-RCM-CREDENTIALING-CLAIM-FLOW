@@ -121,7 +121,7 @@ async def list_payers(
         }
     except Exception as e:
         logger.error(f"Error listing payers: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/{payer_id}")
@@ -267,7 +267,7 @@ async def get_payer(
         raise
     except Exception as e:
         logger.error(f"Error getting payer {payer_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("")
@@ -315,7 +315,7 @@ async def create_payer(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error creating payer: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.put("/{payer_id}")
@@ -373,7 +373,7 @@ async def update_payer(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error updating payer {payer_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/{payer_id}/publish")
@@ -424,7 +424,7 @@ async def publish_payer(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error publishing payer {payer_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/{payer_id}")
@@ -461,7 +461,7 @@ async def delete_payer(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error deleting payer {payer_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==================== PAYER RULES ====================
@@ -504,7 +504,7 @@ async def get_payer_rules(
         }
     except Exception as e:
         logger.error(f"Error getting rules for payer {payer_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/{payer_id}/rules")
@@ -540,7 +540,7 @@ async def create_payer_rule(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error creating rule for payer {payer_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.put("/rules/{rule_id}")
@@ -583,7 +583,7 @@ async def update_payer_rule(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error updating rule {rule_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/rules/{rule_id}")
@@ -622,7 +622,7 @@ async def delete_payer_rule(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error deleting rule {rule_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==================== TRADING PARTNER CONNECTIONS ====================
@@ -662,7 +662,7 @@ async def get_payer_connections(
         }
     except Exception as e:
         logger.error(f"Error getting connections for payer {payer_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/{payer_id}/connections")
@@ -708,7 +708,7 @@ async def create_payer_connection(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error creating connection for payer {payer_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==================== FEE SCHEDULES ====================
@@ -851,7 +851,7 @@ async def upload_fee_schedule(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error uploading fee schedule for payer {payer_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==================== VERSION HISTORY ====================
@@ -891,7 +891,7 @@ async def get_payer_versions(
         }
     except Exception as e:
         logger.error(f"Error getting versions for payer {payer_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/{payer_id}/test-connection")
@@ -948,5 +948,5 @@ async def test_payer_connection(
         raise
     except Exception as e:
         logger.error(f"Error testing connection for payer {payer_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 

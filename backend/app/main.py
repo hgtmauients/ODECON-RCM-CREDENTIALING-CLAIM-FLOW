@@ -30,12 +30,23 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    is_production = os.getenv("ENV", "development") == "production"
+
+    # In production: disable interactive API docs and the OpenAPI schema endpoint
+    # to avoid leaking the API surface to anonymous callers.
+    docs_kwargs = {} if not is_production else {
+        "docs_url": None,
+        "redoc_url": None,
+        "openapi_url": None,
+    }
+
     app = FastAPI(
         title="ClaimFlow",
         description="Multi-tenant Revenue Cycle Management SaaS",
         version="0.1.0",
         redirect_slashes=False,
         lifespan=lifespan,
+        **docs_kwargs,
     )
 
     # --- CORS ---
@@ -53,9 +64,11 @@ def create_app() -> FastAPI:
     app.add_middleware(RateLimitMiddleware, requests_per_window=200, window_seconds=60)
 
     # --- Global exception handler ---
+    # Logs the full exception server-side; returns a generic message to clients
+    # (no str(exc) or stack trace in the response body — avoids info disclosure).
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
-        logger.exception("Unhandled exception")
+        logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal server error"},
@@ -91,6 +104,9 @@ def create_app() -> FastAPI:
     app.include_router(credentialing_router, prefix="/api")
 
     # --- Health check ---
+    # Returns 200 when DB is reachable, 503 when degraded so load balancers
+    # and orchestrators (k8s, Docker, uptime monitors) can route around the
+    # instance. Body always includes the same JSON shape for human inspection.
     @app.get("/health")
     async def health():
         from core.database import engine
@@ -100,8 +116,13 @@ def create_app() -> FastAPI:
             db_ok = True
         except Exception:
             db_ok = False
-        status_val = "ok" if db_ok else "degraded"
-        return {"status": status_val, "service": "ClaimFlow", "database": db_ok}
+
+        body = {
+            "status": "ok" if db_ok else "degraded",
+            "service": "ClaimFlow",
+            "database": db_ok,
+        }
+        return JSONResponse(status_code=200 if db_ok else 503, content=body)
 
     return app
 

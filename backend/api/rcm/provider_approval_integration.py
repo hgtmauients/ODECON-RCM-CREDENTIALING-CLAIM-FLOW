@@ -57,7 +57,7 @@ async def trigger_payer_case_creation(
         raise
     except Exception as e:
         logger.error(f"Error triggering payer case creation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/provider/{provider_id}/eligible-payers")
@@ -72,4 +72,4 @@ async def get_eligible_payers_for_provider(
         return {"success": True, "data": result}
     except Exception as e:
         logger.error(f"Error getting eligible payers: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")

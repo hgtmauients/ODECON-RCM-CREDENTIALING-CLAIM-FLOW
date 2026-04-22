@@ -1,11 +1,9 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: claimflow
-      POSTGRES_PASSWORD: claimflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-claimflow}
       POSTGRES_DB: claimflow
     ports:
       - "5432:5432"
@@ -23,13 +21,19 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    # Local development env file. Copy .env.example → .env and edit.
+    # Never commit .env. The defaults below are *only* used when .env is missing.
+    env_file:
+      - path: ./backend/.env
+        required: false
     environment:
-      DATABASE_URL: postgresql+asyncpg://claimflow:claimflow@postgres:5432/claimflow
-      JWT_SECRET: dev-secret-for-local-only-min32ch
-      ENV: development
-      CORS_ORIGINS: http://localhost:3000
-      EDI_STORAGE_PATH: /data/edi
-      API_CERT_KEY: lva_5524199d0762b8ab768f0b954fade68946d14a486540e046788925ec0d64f9d7
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://claimflow:${POSTGRES_PASSWORD:-claimflow}@postgres:5432/claimflow}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-for-local-only-min32characters-long}
+      ENV: ${ENV:-development}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      EDI_STORAGE_PATH: ${EDI_STORAGE_PATH:-/data/edi}
+      # API_CERT_KEY intentionally omitted; set in backend/.env if you want
+      # to test the API-Cert integration locally.
     volumes:
       - ./backend:/app
       - edi_data:/data/edi
@@ -41,7 +45,7 @@ services:
   frontend:
     build:
       context: ./webapp
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     ports:
       - "3000:3000"
     environment:

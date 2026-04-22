@@ -21,6 +21,23 @@ from services.credentialing_service import credentialing_service
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/credentialing", tags=["Credentialing"])
 
+
+def _spawn_background(coro, name: str) -> None:
+    """
+    asyncio.create_task with error visibility.
+    A bare create_task can swallow exceptions; this wrapper logs them.
+    """
+    task = asyncio.create_task(coro, name=name)
+
+    def _on_done(t: asyncio.Task) -> None:
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.exception("Background task %s failed", name, exc_info=exc)
+
+    task.add_done_callback(_on_done)
+
 WEBHOOK_REPLAY_WINDOW = 300  # 5 minutes
 _seen_nonces: dict = {}
 
@@ -94,7 +111,7 @@ async def handle_provider_signup(
         db.add(credentialing)
         await db.commit()
 
-        asyncio.create_task(run_credentialing_checks(provider_id, signup_data, tenant_id))
+        _spawn_background(run_credentialing_checks(provider_id, signup_data, tenant_id), "credentialing-checks")
 
         return {
             "success": True,
@@ -103,7 +120,7 @@ async def handle_provider_signup(
         }
     except Exception as e:
         logger.error(f"Error handling provider signup: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/{provider_id}")
@@ -149,7 +166,7 @@ async def get_credentialing_status(
         raise
     except Exception as e:
         logger.error(f"Error getting credentialing status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("")
@@ -182,7 +199,7 @@ async def list_credentialing_queue(
         }
     except Exception as e:
         logger.error(f"Error listing credentialing queue: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/manual")
@@ -224,7 +241,7 @@ async def create_provider_manual(
     await db.commit()
 
     if body.run_checks:
-        asyncio.create_task(run_credentialing_checks(provider_id, credentialing.signup_data, current_user.tenant_id))
+        _spawn_background(run_credentialing_checks(provider_id, credentialing.signup_data, current_user.tenant_id), "credentialing-checks")
 
     return {
         "success": True,
@@ -322,7 +339,7 @@ async def rerun_credentialing_checks(
     credentialing.credentialing_status = "pending"
     await db.commit()
 
-    asyncio.create_task(run_credentialing_checks(provider_id, credentialing.signup_data or {}, current_user.tenant_id))
+    _spawn_background(run_credentialing_checks(provider_id, credentialing.signup_data or {}, current_user.tenant_id), "credentialing-checks")
     return {"success": True, "message": "Verification checks re-initiated"}
 
 
@@ -377,7 +394,7 @@ async def approve_provider(
     except Exception as e:
         logger.error(f"Error approving provider: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/{provider_id}/reject")
@@ -413,7 +430,7 @@ async def reject_provider(
     except Exception as e:
         logger.error(f"Error rejecting provider: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 async def run_credentialing_checks(provider_id: str, signup_data: Dict[str, Any], tenant_id: str):
@@ -564,5 +581,27 @@ async def run_credentialing_checks(provider_id: str, signup_data: Dict[str, Any]
 
             logger.info(f"Credentialing completed for {provider_id}: {status} (score: {score})")
         except Exception as e:
-            logger.error(f"Error running credentialing checks: {e}")
-            await db.rollback()
+            # On any failure mid-flight, do NOT leave the provider stuck in
+            # in_progress forever. Roll back the transaction, then in a fresh
+            # session set the status to requires_review so an operator can
+            # see the error and act on it.
+            logger.exception(f"Error running credentialing checks for {provider_id}: {e}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            try:
+                async with async_session_factory() as recovery_db:
+                    recovery_result = await recovery_db.execute(
+                        select(ProviderCredentialing).where(and_(
+                            ProviderCredentialing.provider_id == provider_id,
+                            ProviderCredentialing.tenant_id == tenant_id,
+                        ))
+                    )
+                    rec = recovery_result.scalar_one_or_none()
+                    if rec and rec.credentialing_status in ("pending", "in_progress"):
+                        rec.credentialing_status = "requires_review"
+                        rec.admin_notes = (rec.admin_notes or "") + f"\n[auto] verification job failed: {e}"
+                        await recovery_db.commit()
+            except Exception as recovery_err:
+                logger.error(f"Failed to set recovery status for {provider_id}: {recovery_err}")
