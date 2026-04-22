@@ -1,0 +1,159 @@
+"""
+ClaimFlow - Dashboard summary endpoint.
+
+Powers the Home page KPI cards + work queues. One round-trip returns
+everything the dashboard needs so the FE doesn\'t have to fan out 8 separate
+requests on first paint.
+
+All counts / amounts are tenant-scoped from the JWT principal.
+"""
+
+import logging
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, List
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import and_, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from api.auth import get_current_user, Principal
+from core.database import get_db
+from models.claims import Claim
+from models.credentialing import ProviderCredentialing
+from models.denials import DenialCase
+from models.payer_credentialing import PayerCredentialingCase
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
+
+
+@router.get("/summary")
+async def dashboard_summary(
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Return KPI counts + work queues + AR aging for the current tenant."""
+    tenant_filter = current_user.tenant_id
+    today = date.today()
+    thirty_days_out = today + timedelta(days=30)
+
+    # ---- claim counts by state (single GROUP BY query) ----
+    claim_state_rows = await db.execute(
+        select(Claim.state, func.count(Claim.id))
+        .where(Claim.tenant_id == tenant_filter)
+        .group_by(Claim.state)
+    )
+    claims_by_state: Dict[str, int] = {state: int(n) for state, n in claim_state_rows.all()}
+    total_claims = sum(claims_by_state.values())
+
+    # ---- AR (outstanding balance) — sum charges of submitted/accepted, minus paid ----
+    ar_buckets: List[Dict[str, Any]] = []
+    bucket_defs = [
+        ("0-30", today - timedelta(days=30), today),
+        ("31-60", today - timedelta(days=60), today - timedelta(days=31)),
+        ("61-90", today - timedelta(days=90), today - timedelta(days=61)),
+        ("90+", date(2000, 1, 1), today - timedelta(days=91)),
+    ]
+    for label, start_d, end_d in bucket_defs:
+        row = await db.execute(
+            select(
+                func.coalesce(func.sum(Claim.total_charges - func.coalesce(Claim.total_paid, 0)), 0),
+                func.count(Claim.id),
+            ).where(and_(
+                Claim.tenant_id == tenant_filter,
+                Claim.state.in_(["submitted", "accepted", "partially_paid", "appealed"]),
+                Claim.submitted_date.isnot(None),
+                func.date(Claim.submitted_date) >= start_d,
+                func.date(Claim.submitted_date) <= end_d,
+            ))
+        )
+        amount, count = row.one()
+        ar_buckets.append({"bucket": label, "amount": float(amount or 0), "count": int(count)})
+
+    ar_total = sum(b["amount"] for b in ar_buckets)
+
+    # ---- denial counts (open vs total this month) ----
+    month_start = date(today.year, today.month, 1)
+    open_denials_row = await db.execute(
+        select(func.count(DenialCase.id)).where(and_(
+            DenialCase.tenant_id == tenant_filter,
+            DenialCase.status.in_(["new", "in_progress", "appealed"]),
+        ))
+    )
+    open_denials = int(open_denials_row.scalar() or 0)
+
+    denials_this_month_row = await db.execute(
+        select(func.count(DenialCase.id)).where(and_(
+            DenialCase.tenant_id == tenant_filter,
+            func.date(DenialCase.created_at) >= month_start,
+        ))
+    )
+    denials_this_month = int(denials_this_month_row.scalar() or 0)
+
+    # ---- credentialing queue counts ----
+    cred_status_rows = await db.execute(
+        select(ProviderCredentialing.credentialing_status, func.count(ProviderCredentialing.id))
+        .where(ProviderCredentialing.tenant_id == tenant_filter)
+        .group_by(ProviderCredentialing.credentialing_status)
+    )
+    credentialing_by_status: Dict[str, int] = {s: int(n) for s, n in cred_status_rows.all()}
+
+    # ---- payer enrollment expiring within 30 days ----
+    expiring_enrollments_row = await db.execute(
+        select(func.count(PayerCredentialingCase.id)).where(and_(
+            PayerCredentialingCase.tenant_id == tenant_filter,
+            PayerCredentialingCase.expiration_date.isnot(None),
+            PayerCredentialingCase.expiration_date <= thirty_days_out,
+        ))
+    )
+    expiring_enrollments = int(expiring_enrollments_row.scalar() or 0)
+
+    # ---- work queues: top buckets the operator should look at right now ----
+    work_queues = [
+        {
+            "key": "draft_claims",
+            "label": "Draft claims",
+            "count": claims_by_state.get("draft", 0),
+            "link": "/claims?state=draft",
+        },
+        {
+            "key": "ready_to_submit",
+            "label": "Ready to submit",
+            "count": claims_by_state.get("ready_to_submit", 0),
+            "link": "/claims?state=ready_to_submit",
+        },
+        {
+            "key": "open_denials",
+            "label": "Open denials",
+            "count": open_denials,
+            "link": "/denials",
+        },
+        {
+            "key": "credentialing_review",
+            "label": "Credentialing — needs review",
+            "count": credentialing_by_status.get("requires_review", 0),
+            "link": "/credentialing?status=requires_review",
+        },
+        {
+            "key": "expiring_enrollments",
+            "label": "Enrollments expiring ≤30d",
+            "count": expiring_enrollments,
+            "link": "/payer-enrollment",
+        },
+    ]
+
+    return {
+        "success": True,
+        "data": {
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "claims": {"by_state": claims_by_state, "total": total_claims},
+            "ar": {"buckets": ar_buckets, "total": ar_total},
+            "denials": {
+                "open": open_denials,
+                "this_month": denials_this_month,
+            },
+            "credentialing": {"by_status": credentialing_by_status},
+            "enrollment": {"expiring_30d": expiring_enrollments},
+            "work_queues": work_queues,
+        },
+    }

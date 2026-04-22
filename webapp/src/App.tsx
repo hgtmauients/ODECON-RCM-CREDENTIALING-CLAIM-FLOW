@@ -7,6 +7,7 @@ import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
 import LoginPage from './pages/LoginPage';
 
+const Dashboard = lazy(() => import('./pages/Dashboard'));
 const ClaimsManagement = lazy(() => import('./pages/rcm/ClaimsManagement'));
 const ClaimCreate = lazy(() => import('./pages/rcm/ClaimCreate'));
 const ClaimDetail = lazy(() => import('./pages/rcm/ClaimDetail'));
@@ -21,6 +22,8 @@ const PayerProfiles = lazy(() => import('./pages/admin/PayerProfiles'));
 const PayerProfileEditor = lazy(() => import('./pages/admin/PayerProfileEditor'));
 const RuleBuilder = lazy(() => import('./pages/admin/RuleBuilder'));
 const Settings = lazy(() => import('./pages/admin/Settings'));
+const Users = lazy(() => import('./pages/admin/Users'));
+const AuditLog = lazy(() => import('./pages/admin/AuditLog'));
 const PatientManagement = lazy(() => import('./pages/rcm/PatientManagement'));
 
 const queryClient = new QueryClient({
@@ -58,7 +61,7 @@ export default function App() {
                   <Layout>
                     <Suspense fallback={<PageLoader />}>
                       <Routes>
-                        <Route path="/" element={<Navigate to="/claims" replace />} />
+                        <Route path="/" element={<Dashboard />} />
                         <Route path="/claims" element={<ClaimsManagement />} />
                         <Route path="/claims/new" element={<ClaimCreate />} />
                         <Route path="/claims/:claimId" element={<ClaimDetail />} />
@@ -75,6 +78,8 @@ export default function App() {
                         <Route path="/admin/payers/:payerId/rules" element={<RuleBuilder />} />
                         <Route path="/admin/payers/:payerId/rules/:ruleId" element={<RuleBuilder />} />
                         <Route path="/admin/settings" element={<Settings />} />
+                        <Route path="/admin/users" element={<Users />} />
+                        <Route path="/admin/audit-log" element={<AuditLog />} />
                       </Routes>
                     </Suspense>
                   </Layout>

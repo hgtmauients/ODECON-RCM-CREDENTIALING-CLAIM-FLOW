@@ -38,3 +38,6 @@ logs/
 # Temp files
 nginx-api-noodledoc.conf
 .git_commit_msg.tmp
+login*.json
+users_resp.json
+dash_resp.json

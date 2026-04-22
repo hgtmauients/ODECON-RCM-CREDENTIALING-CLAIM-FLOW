@@ -88,9 +88,9 @@ def create_app() -> FastAPI:
     # --- Request ID + Rate limiting ---
     # NB: Starlette runs middlewares in REVERSE add order, so RequestIDMiddleware
     # (added last) runs FIRST and can tag the request id on every downstream log line.
-    from core.rate_limit import RateLimitMiddleware
+    from core.rate_limit import RateLimitMiddleware, DEFAULT_REQUESTS, DEFAULT_WINDOW
     from core.request_id import RequestIDMiddleware
-    app.add_middleware(RateLimitMiddleware, requests_per_window=200, window_seconds=60)
+    app.add_middleware(RateLimitMiddleware, requests_per_window=DEFAULT_REQUESTS, window_seconds=DEFAULT_WINDOW)
     app.add_middleware(RequestIDMiddleware)
 
     # --- Global exception handler ---
@@ -119,6 +119,10 @@ def create_app() -> FastAPI:
         codes_router,
     )
     from api.credentialing import router as credentialing_router
+    from api.admin_users import router as admin_users_router
+    from api.admin_audit import router as admin_audit_router
+    from api.notifications import router as notifications_router
+    from api.dashboard import router as dashboard_router
 
     app.include_router(tenants_router, prefix="/api")
     app.include_router(dev_login_router, prefix="/api")
@@ -132,6 +136,10 @@ def create_app() -> FastAPI:
     app.include_router(caqh_router, prefix="/api")
     app.include_router(codes_router, prefix="/api")
     app.include_router(credentialing_router, prefix="/api")
+    app.include_router(admin_users_router, prefix="/api")
+    app.include_router(admin_audit_router, prefix="/api")
+    app.include_router(notifications_router, prefix="/api")
+    app.include_router(dashboard_router, prefix="/api")
 
     # --- Health check ---
     # Returns 200 when DB is reachable, 503 when degraded so load balancers

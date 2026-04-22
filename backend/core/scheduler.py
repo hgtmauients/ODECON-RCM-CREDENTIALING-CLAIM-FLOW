@@ -94,7 +94,12 @@ async def _run_835_poll():
 
 
 async def _run_expiration_check():
-    """Check for upcoming credential/license expirations per tenant."""
+    """Check for upcoming credential/license expirations per tenant.
+
+    For every tenant with expiring credentials, write an in-app notification
+    (deduplicated within a 24h window so we don\'t spam the same alert on
+    every nightly run) and best-effort email admins if SMTP is configured.
+    """
     async with _try_advisory_lock(_LOCK_ID_EXPIRATION) as acquired:
         if not acquired:
             logger.debug("Expiration check skipped on this worker (another worker holds the lock)")
@@ -102,7 +107,11 @@ async def _run_expiration_check():
         try:
             from core.database import async_session_factory
             from models.tenant import Tenant
+            from models.user import User
             from models.payer_credentialing import CredentialingRenewal
+            from services.notify import (
+                already_notified, create_notification, email_notification,
+            )
             from sqlalchemy import select, and_
             from datetime import date, timedelta
 
@@ -120,10 +129,60 @@ async def _run_expiration_check():
                         ))
                     )
                     expiring = result.scalars().all()
-                    if expiring:
-                        logger.warning(f"[tenant={tenant.slug}] {len(expiring)} credentials expiring within 30 days")
+                    if not expiring:
+                        continue
+
+                    logger.warning(
+                        "[tenant=%s] %d credentials expiring within 30 days",
+                        tenant.slug, len(expiring),
+                    )
+
+                    # Dedupe per (tenant, day) so we only notify once per day
+                    # even if the scheduler runs multiple times.
+                    dedupe_key = f"expirations:{date.today().isoformat()}"
+                    if await already_notified(db, str(tenant.id), "credential.expiring", dedupe_key):
+                        continue
+
+                    title = f"{len(expiring)} credential{'s' if len(expiring) != 1 else ''} expiring within 30 days"
+                    message = "Open the Credentialing queue or Payer Enrollment to review."
+
+                    await create_notification(
+                        db,
+                        tenant_id=tenant.id,
+                        type="credential.expiring",
+                        title=title,
+                        message=message,
+                        severity="warning",
+                        link_url="/credentialing",
+                        metadata={"count": len(expiring)},
+                        deduplicate_key=dedupe_key,
+                    )
+                    await db.commit()
+
+                    # Email tenant admins (best-effort).
+                    admin_rows = await db.execute(
+                        select(User.email).where(and_(
+                            User.tenant_id == tenant.id,
+                            User.is_active.is_(True),
+                            User.roles.any("admin"),
+                        ))
+                    )
+                    recipients = [row[0] for row in admin_rows.all() if row[0]]
+                    if recipients:
+                        await email_notification(
+                            db,
+                            tenant_id=str(tenant.id),
+                            subject=f"[NoodleDoc] {title}",
+                            body=(
+                                f"Tenant: {tenant.name}\n"
+                                f"{title}.\n\n"
+                                f"Sign in and open the Credentialing queue to review:\n"
+                                f"https://noodledoc.com/credentialing\n"
+                            ),
+                            recipients=recipients,
+                        )
         except Exception as e:
-            logger.error(f"Expiration check failed: {e}")
+            logger.exception("Expiration check failed: %s", e)
 
 
 def start_scheduler():

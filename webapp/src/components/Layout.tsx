@@ -1,8 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '@/auth/AuthProvider';
+import NotificationBell from '@/components/NotificationBell';
 
-const navItems = [
+interface NavItem {
+  path: string;
+  label: string;
+  /** When set, the link only renders if the user holds one of the listed roles. */
+  requiresAnyRole?: string[];
+}
+
+const navItems: NavItem[] = [
+  { path: '/', label: 'Home' },
   { path: '/claims', label: 'Claims' },
   { path: '/denials', label: 'Denials' },
   { path: '/admin/payers', label: 'Payers' },
@@ -10,7 +19,9 @@ const navItems = [
   { path: '/edi', label: 'EDI Files' },
   { path: '/credentialing', label: 'Credentialing' },
   { path: '/payer-enrollment', label: 'Enrollment' },
-  { path: '/admin/settings', label: 'Settings' },
+  { path: '/admin/users', label: 'Users', requiresAnyRole: ['admin', 'super_admin'] },
+  { path: '/admin/audit-log', label: 'Audit log', requiresAnyRole: ['admin', 'super_admin'] },
+  { path: '/admin/settings', label: 'Settings', requiresAnyRole: ['admin', 'super_admin'] },
 ];
 
 const MOBILE_BREAKPOINT = 768;
@@ -145,18 +156,28 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="sidebar-nav" aria-label="Primary">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.path}
-              to={item.path}
-              className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
-            >
-              {item.label}
-            </NavLink>
-          ))}
+          {navItems
+            .filter((item) => {
+              if (!item.requiresAnyRole || !item.requiresAnyRole.length) return true;
+              const myRoles = user?.roles || [];
+              return item.requiresAnyRole.some((r) => myRoles.includes(r));
+            })
+            .map((item) => (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                end={item.path === '/'}
+                className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
+              >
+                {item.label}
+              </NavLink>
+            ))}
         </nav>
 
         <div style={{ padding: 'var(--space-5)', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+          <div style={{ marginBottom: 'var(--space-3)' }}>
+            <NotificationBell />
+          </div>
           <div style={{ marginBottom: 'var(--space-3)' }}>
             <p style={{ fontSize: 12, color: 'var(--text-tertiary)', margin: 0 }}>Signed in as</p>
             <p style={{ fontSize: 13, color: '#e2e8f0', margin: '2px 0 0', fontWeight: 500 }} className="truncate">

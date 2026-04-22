@@ -3,7 +3,13 @@ import { apiService } from '@/services/api';
 
 interface AuthContextType {
   isAuthenticated: boolean;
-  user: { email: string; tenant_id: string; roles: string[] } | null;
+  user: {
+    email: string;
+    tenant_id: string;
+    roles: string[];
+    user_id?: string;
+    full_name?: string | null;
+  } | null;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
   setTenant: (tenantId: string) => void;

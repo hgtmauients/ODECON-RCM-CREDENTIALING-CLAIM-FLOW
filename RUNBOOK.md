@@ -309,14 +309,62 @@ tenant that wants to receive provider-signup webhooks MUST configure their
 own secret in the Settings page. This is intentional: a shared secret would
 let anyone holding it submit webhooks for any tenant.
 
-Webhook signature scheme: clients sign
+Signature scheme: clients sign
 `<tenant_id>.<unix_timestamp>.<sha256_hex(body)>` with HMAC-SHA256, send the
 hex digest in `X-Webhook-Signature`, and pass the timestamp in
 `X-Webhook-Timestamp`. Replay window is 5 minutes; signatures are tracked
 in Redis so a captured signature cannot be replayed.
 
+Reference signers — share these with integration partners:
+
+**Python**
+
+```python
+import hashlib, hmac, json, time, urllib.request
+
+def sign_and_send(tenant_id: str, secret: str, payload: dict, url: str):
+    body = json.dumps(payload).encode()
+    ts = str(int(time.time()))
+    msg = f"{tenant_id}.{ts}.{hashlib.sha256(body).hexdigest()}".encode()
+    sig = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Tenant-ID": tenant_id,
+            "X-Webhook-Timestamp": ts,
+            "X-Webhook-Signature": sig,
+        },
+    )
+    return urllib.request.urlopen(req).read()
+```
+
+**Node.js**
+
+```js
+const crypto = require("crypto");
+
+async function signAndSend(tenantId, secret, payload, url) {
+  const body = JSON.stringify(payload);
+  const ts = Math.floor(Date.now() / 1000).toString();
+  const bodyDigest = crypto.createHash("sha256").update(body).digest("hex");
+  const msg = `${tenantId}.${ts}.${bodyDigest}`;
+  const sig = crypto.createHmac("sha256", secret).update(msg).digest("hex");
+  return fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Tenant-ID": tenantId,
+      "X-Webhook-Timestamp": ts,
+      "X-Webhook-Signature": sig,
+    },
+    body,
+  });
+}
+```
+
 Rotation:
-1. Generate a fresh random string (32+ bytes recommended).
+1. Generate a fresh random string (32+ bytes recommended): `openssl rand -hex 32`.
 2. Save it via `Settings → Webhooks → Webhook Secret`.
 3. Coordinate with the integration partner — older signatures stop working
    immediately on save.

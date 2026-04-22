@@ -28,7 +28,11 @@ from starlette.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "200"))
+# Bumped 200 → 600 in B5 because the v11 rate-limit fix removed X-Tenant-ID
+# from the bucket key. Multiple tenants behind one office NAT now share a
+# single per-IP bucket, so the previous per-tenant 200/min ceiling needed
+# headroom. Override with RATE_LIMIT_REQUESTS in env.
+DEFAULT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "600"))
 DEFAULT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
 REDIS_URL = os.getenv("REDIS_URL", "")
 

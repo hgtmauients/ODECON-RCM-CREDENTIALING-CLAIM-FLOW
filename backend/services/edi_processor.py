@@ -22,6 +22,34 @@ logger = logging.getLogger(__name__)
 EDI_STORAGE_PATH = os.getenv("EDI_STORAGE_PATH", "/data/edi")
 
 
+# X12 277CA STC01 status code → claim state mapping.
+# References: WPC X12N TR3 277CA + 277 implementation guides.
+#
+# A1/A2/A3   — Accepted (received, accepted for processing, finalized accepted)
+# R0..R29    — Rejected (front-end / claim-level rejection variants)
+# F          — Forwarded (passed downstream — treat as accepted at the gateway)
+# WQ         — Pended in payer work queue (still in process, no terminal state)
+# P          — Pending (additional info needed — still in process)
+# E          — Response received but unable to process (treat as rejected)
+def _map_stc_to_state(stc_code: str) -> Optional[str]:
+    """Return a ClaimState string for the given STC01 code, or None for codes
+    that should leave the claim's current state unchanged."""
+    if not stc_code:
+        return None
+    code = stc_code.strip().upper()
+    if code in ("A1", "A2", "A3", "F"):
+        return ClaimState.ACCEPTED
+    if code.startswith("A"):
+        # Other A-prefixed codes (A4..A8) are also acceptance variants.
+        return ClaimState.ACCEPTED
+    if code in ("E",) or code.startswith("R"):
+        return ClaimState.REJECTED
+    if code in ("WQ", "P") or code.startswith("P"):
+        # Still being worked — keep state as-is.
+        return None
+    return None
+
+
 class EDIProcessor:
     """
     EDI transaction processing
@@ -444,10 +472,10 @@ class EDIProcessor:
                             )
                             claim = claim_result.scalar_one_or_none()
                             if claim:
-                                if status_updates and status_updates[-1]["code"].startswith("A"):
-                                    claim.state = ClaimState.ACCEPTED
-                                elif status_updates and status_updates[-1]["code"].startswith("R"):
-                                    claim.state = ClaimState.REJECTED
+                                if status_updates:
+                                    new_state = _map_stc_to_state(status_updates[-1]["code"])
+                                    if new_state is not None:
+                                        claim.state = new_state
                                 event = ClaimEvent(
                                     claim_id=claim.id,
                                     event_type="277ca_received",
@@ -794,10 +822,13 @@ class EDIProcessor:
 
         EDIFile.tenant_id is required (database column is NOT NULL); we still
         guard against an unexpected None to avoid a cross-tenant write.
+        Latest STC01 code on the segment stream determines the new state via
+        _map_stc_to_state — same coverage as parse_277.
         """
         content = await self._read_file_async(file_path)
 
         claims_updated = 0
+        last_stc_code: Optional[str] = None
         tenant_id = str(edi_file.tenant_id) if edi_file.tenant_id else None
         if not tenant_id:
             raise ValueError("EDIFile.tenant_id is required to parse 277CA")
@@ -805,6 +836,10 @@ class EDIProcessor:
         if content:
             for segment in content.split("~"):
                 segment = segment.strip()
+                if segment.startswith("STC"):
+                    parts = segment.split("*")
+                    if len(parts) >= 2:
+                        last_stc_code = parts[1].split(":")[0] if ":" in parts[1] else parts[1]
                 if segment.startswith("TRN"):
                     parts = segment.split("*")
                     if len(parts) >= 3:
@@ -817,13 +852,15 @@ class EDIProcessor:
                         )
                         claim = claim_result.scalar_one_or_none()
                         if claim:
-                            claim.state = ClaimState.ACCEPTED
+                            new_state = _map_stc_to_state(last_stc_code or "")
+                            if new_state is not None:
+                                claim.state = new_state
                             event = ClaimEvent(
                                 claim_id=claim.id,
                                 event_type="277ca_received",
                                 to_state=claim.state,
-                                data={"file_path": file_path},
-                                message="Claim acknowledgment/status processed",
+                                data={"file_path": file_path, "stc_code": last_stc_code},
+                                message=f"Claim acknowledgment processed (STC={last_stc_code})",
                                 edi_file_id=edi_file.id,
                             )
                             self.db.add(event)
