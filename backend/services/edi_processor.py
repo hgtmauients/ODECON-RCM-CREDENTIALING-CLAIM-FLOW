@@ -94,6 +94,20 @@ class EDIProcessor:
             if not claims:
                 raise ValueError("No claims found")
 
+            # Pre-fetch original-claim payer IDs for any replacement / void
+            # claims in the batch — _build_837_file is a sync method and
+            # cannot await.
+            original_ids = [c.original_claim_id for c in claims if c.original_claim_id and (c.claim_frequency_code or "1") in ("7", "8")]
+            original_payer_ids: Dict[int, str] = {}
+            if original_ids:
+                rows = await self.db.execute(
+                    select(Claim.id, Claim.payer_claim_id).where(and_(
+                        Claim.id.in_(original_ids),
+                        Claim.tenant_id == tenant_id,
+                    ))
+                )
+                original_payer_ids = {row[0]: row[1] for row in rows.all() if row[1]}
+
             # Load lines and diagnoses for each claim
             claim_data = []
             for claim in claims:
@@ -128,7 +142,10 @@ class EDIProcessor:
             tenant_result = await self.db.execute(select(Tenant).where(Tenant.id == effective_tenant_id))
             tenant_record = tenant_result.scalar_one_or_none()
 
-            edi_content = self._build_837_file(claim_data, payer, icn, tenant_record)
+            edi_content = self._build_837_file(
+                claim_data, payer, icn, tenant_record,
+                original_payer_ids=original_payer_ids,
+            )
 
             filename = f"claim_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{icn}.{file_type.lower()}"
             outbound_dir = Path(EDI_STORAGE_PATH) / effective_tenant_id / "outbound"
@@ -186,7 +203,15 @@ class EDIProcessor:
             logger.error(f"Error generating 837: {e}")
             raise
 
-    def _build_837_file(self, claim_data: List[Dict[str, Any]], payer: PayerProfile, icn: str, tenant=None) -> str:
+    def _build_837_file(
+        self,
+        claim_data: List[Dict[str, Any]],
+        payer: PayerProfile,
+        icn: str,
+        tenant=None,
+        *,
+        original_payer_ids: Optional[Dict[int, str]] = None,
+    ) -> str:
         """
         Build complete ANSI X12 837P file per 005010X222A1 implementation guide.
         Includes all required loops: 1000A/B, 2000A/B, 2010AA/AB/BA/BB, 2300, 2400.
@@ -312,6 +337,21 @@ class EDIProcessor:
                 f"CLM*{claim.claim_number}*{float(claim.total_charges or 0):.2f}***"
                 f"{place_of_service}:B:{claim.claim_frequency_code or '1'}***A*Y*Y~"
             )
+
+            # REF*F8 - Payer Claim Control Number (original) for replacement (7) or void (8) claims.
+            # X12N TR3 Section 2300/REF: required when CLM05-3 ∈ {7, 8} so the payer can
+            # link the new submission to the prior adjudication. The mapping
+            # original_claim_id -> payer_claim_id is pre-fetched in
+            # generate_837 because this builder is sync.
+            if (claim.claim_frequency_code or "1") in ("7", "8") and claim.original_claim_id:
+                orig_pcid = (original_payer_ids or {}).get(claim.original_claim_id)
+                if orig_pcid:
+                    tx_segments.append(f"REF*F8*{orig_pcid}~")
+                else:
+                    logger.warning(
+                        "Replacement/void claim %s has no original payer_claim_id; payer may reject as unmatched",
+                        claim.claim_number,
+                    )
 
             # DTP - Service dates
             svc_from = claim.service_date_from.strftime("%Y%m%d") if claim.service_date_from else datetime.now().strftime("%Y%m%d")

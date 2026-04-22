@@ -8,6 +8,7 @@ admin / super_admin via the role hierarchy). Mutations are audit-logged.
 
 import os
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, desc
 from typing import List, Optional, Dict, Any
@@ -225,6 +226,8 @@ async def get_claim_detail(
             "filing_deadline": claim.filing_deadline.isoformat() if claim.filing_deadline else None,
             "denial_reason": claim.denial_reason,
             "denial_category": claim.denial_category,
+            "claim_frequency_code": claim.claim_frequency_code,
+            "original_claim_id": claim.original_claim_id,
             "created_date": claim.created_date.isoformat() if claim.created_date else None,
             "submitted_date": claim.submitted_date.isoformat() if claim.submitted_date else None,
             "lines": [{
@@ -789,6 +792,216 @@ async def import_claims_csv(
         "success": True,
         "message": f"Imported {len(created_claims)} claims",
         "data": {"claims_created": len(created_claims), "errors": errors},
+    }
+
+
+# ─── FG9: Corrected / replacement claim flow ─────────────────────────────────
+#
+# X12 837 supports the correction lifecycle via CLM05-3 frequency code:
+#   "1" — original
+#   "7" — replacement of prior claim (corrected)
+#   "8" — void / cancel prior claim
+# The replacement / void claim must reference the original payer claim ID via
+# REF*F8. We model this by creating a NEW Claim row (with full line + dx copy)
+# in `draft` state, linked to the original via `original_claim_id`. Operators
+# edit the draft, validate it, and submit it through the normal pipeline.
+# The 837 builder reads `claim_frequency_code` and emits the F8 reference
+# automatically.
+
+class CorrectionRequest(BaseModel):
+    """Body for POST /rcm/claims/{id}/correct."""
+    model_config = ConfigDict(extra="ignore")
+    kind: str = Field("replacement", pattern="^(replacement|void)$")
+    reason: Optional[str] = Field(None, max_length=2000)
+
+
+@router.post("/{claim_id}/correct")
+async def correct_claim(
+    claim_id: int,
+    payload: CorrectionRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Spawn a corrected (replacement) or void claim from an existing one.
+
+    Hardening:
+      - billing role
+      - tenant-scoped lookup of the original
+      - original must be in a payer-finalized state (accepted / paid /
+        partially_paid / denied / appealed). Drafts cannot be "corrected".
+      - payer must support corrected claims (PayerProfile.supports_corrected_claims)
+      - REQUIRES original.payer_claim_id — the payer needs that ID to link
+        the F8 reference. Without it the payer would reject the submission.
+      - audit-logged with the linkage IDs
+    """
+    current_user.require_role("billing")
+
+    orig_result = await db.execute(
+        select(Claim).where(and_(
+            Claim.id == claim_id,
+            Claim.tenant_id == current_user.tenant_id,
+        ))
+    )
+    original = orig_result.scalar_one_or_none()
+    if not original:
+        raise HTTPException(status_code=404, detail="Claim not found")
+
+    finalized_states = {
+        "accepted", "paid", "partially_paid", "denied",
+        "appealed", "appeal_won", "appeal_lost",
+    }
+    if original.state not in finalized_states:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only payer-finalized claims can be corrected (state was '{original.state}')",
+        )
+    if not original.payer_claim_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Original claim has no payer_claim_id; payer cannot link the correction (REF*F8)",
+        )
+
+    # Verify the payer supports the correction lifecycle and resolve the
+    # frequency code. PayerProfile fields default to 7/8 but ops can override.
+    payer = None
+    if original.payer_id:
+        payer_row = await db.execute(
+            select(PayerProfile).where(and_(
+                PayerProfile.id == original.payer_id,
+                PayerProfile.tenant_id == current_user.tenant_id,
+            ))
+        )
+        payer = payer_row.scalar_one_or_none()
+        if payer and not payer.supports_corrected_claims:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Payer '{payer.name}' does not support corrected/replacement claims",
+            )
+
+    if payload.kind == "void":
+        frequency_code = (payer.void_claim_frequency_code if payer else None) or "8"
+        action_label = "claim_voided_replacement"
+    else:
+        frequency_code = (payer.corrected_claim_frequency_code if payer else None) or "7"
+        action_label = "claim_corrected"
+
+    # Mint a new claim_number (CLM-YYYYMMDD-XXXXXXXX) — same shape as create_claim.
+    import uuid
+    short_id = uuid.uuid4().hex[:8].upper()
+    new_claim_number = f"CLM-{datetime.now().strftime('%Y%m%d')}-{short_id}"
+
+    # Copy the original\'s essential fields. We deliberately DO NOT copy the
+    # payer_claim_id, submitted_date, paid amounts, denial info, etc. — those
+    # belong to the original adjudication and do not carry forward.
+    new_claim = Claim(
+        tenant_id=current_user.tenant_id,
+        claim_number=new_claim_number,
+        original_claim_id=original.id,
+        claim_frequency_code=frequency_code,
+        patient_id=original.patient_id,
+        provider_id=original.provider_id,
+        payer_id=original.payer_id,
+        facility_id=original.facility_id,
+        state="draft",
+        service_date_from=original.service_date_from,
+        service_date_to=original.service_date_to,
+        total_charges=original.total_charges,
+        claim_type=original.claim_type,
+        billing_provider_npi=original.billing_provider_npi,
+        rendering_provider_npi=original.rendering_provider_npi,
+        prior_auth_number=original.prior_auth_number,
+        requires_prior_auth=original.requires_prior_auth,
+        auth_obtained=original.auth_obtained,
+        filing_deadline=original.filing_deadline,
+        submission_method=original.submission_method,
+        clearinghouse_id=original.clearinghouse_id,
+        notes=(payload.reason or "")[:2000],
+        created_by=current_user.email,
+    )
+    db.add(new_claim)
+    await db.flush()
+
+    # Copy line items
+    lines_q = await db.execute(
+        select(ClaimLine).where(ClaimLine.claim_id == original.id).order_by(ClaimLine.line_number)
+    )
+    for orig_line in lines_q.scalars().all():
+        db.add(ClaimLine(
+            claim_id=new_claim.id,
+            line_number=orig_line.line_number,
+            cpt_code=orig_line.cpt_code,
+            cpt_description=orig_line.cpt_description,
+            modifiers=orig_line.modifiers,
+            diagnosis_pointers=orig_line.diagnosis_pointers,
+            service_date=orig_line.service_date,
+            units=orig_line.units,
+            place_of_service=orig_line.place_of_service,
+            charge_amount=orig_line.charge_amount,
+        ))
+
+    # Copy diagnoses
+    dx_q = await db.execute(
+        select(ClaimDiagnosis).where(ClaimDiagnosis.claim_id == original.id)
+        .order_by(ClaimDiagnosis.diagnosis_pointer)
+    )
+    for orig_dx in dx_q.scalars().all():
+        db.add(ClaimDiagnosis(
+            claim_id=new_claim.id,
+            diagnosis_pointer=orig_dx.diagnosis_pointer,
+            icd10_code=orig_dx.icd10_code,
+            icd10_description=orig_dx.icd10_description,
+            is_primary=orig_dx.is_primary,
+        ))
+
+    # Drop a breadcrumb on both claims so the timeline is searchable.
+    db.add(ClaimEvent(
+        claim_id=new_claim.id,
+        event_type="correction_drafted",
+        from_state=None,
+        to_state="draft",
+        message=f"Drafted as {payload.kind} of claim {original.claim_number} (frequency={frequency_code})",
+        data={
+            "kind": payload.kind,
+            "original_claim_id": original.id,
+            "original_claim_number": original.claim_number,
+            "original_payer_claim_id": original.payer_claim_id,
+        },
+    ))
+    db.add(ClaimEvent(
+        claim_id=original.id,
+        event_type="correction_initiated",
+        from_state=original.state,
+        to_state=original.state,
+        message=f"Correction drafted as claim {new_claim_number} ({payload.kind})",
+        data={"new_claim_id": new_claim.id, "kind": payload.kind},
+    ))
+
+    await log_audit_event(
+        db, current_user, action=action_label, resource_type="claim",
+        resource_id=str(new_claim.id), request=request,
+        metadata={
+            "original_claim_id": original.id,
+            "original_claim_number": original.claim_number,
+            "kind": payload.kind,
+            "frequency_code": frequency_code,
+            "payer_id": original.payer_id,
+        },
+    )
+
+    await db.commit()
+    await db.refresh(new_claim)
+
+    return {
+        "success": True,
+        "data": {
+            "id": new_claim.id,
+            "claim_number": new_claim.claim_number,
+            "original_claim_id": original.id,
+            "original_claim_number": original.claim_number,
+            "claim_frequency_code": frequency_code,
+            "kind": payload.kind,
+        },
     }
 
 
