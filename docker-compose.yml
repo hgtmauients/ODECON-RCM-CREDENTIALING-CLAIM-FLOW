@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: claimflow
+      POSTGRES_PASSWORD: claimflow
+      POSTGRES_DB: claimflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claimflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://claimflow:claimflow@postgres:5432/claimflow
+      JWT_SECRET: dev-secret-for-local-only-min32ch
+      ENV: development
+      CORS_ORIGINS: http://localhost:3000
+      EDI_STORAGE_PATH: /data/edi
+      API_CERT_KEY: lva_5524199d0762b8ab768f0b954fade68946d14a486540e046788925ec0d64f9d7
+    volumes:
+      - ./backend:/app
+      - edi_data:/data/edi
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: ./webapp
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_BASE_URL: /api
+      VITE_API_PROXY_TARGET: http://backend:8000
+    volumes:
+      - ./webapp/src:/app/src
+      - ./webapp/vite.config.ts:/app/vite.config.ts
+    depends_on:
+      - backend
+    command: npm run dev -- --host 0.0.0.0
+
+volumes:
+  pgdata:
+  edi_data:

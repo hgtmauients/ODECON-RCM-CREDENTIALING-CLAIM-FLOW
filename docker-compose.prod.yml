@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: noodledoc
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-noodledoc_prod_changeme}
+      POSTGRES_DB: noodledoc
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U noodledoc"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8001:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://noodledoc:${POSTGRES_PASSWORD:-noodledoc_prod_changeme}@postgres:5432/noodledoc
+    volumes:
+      - edi_data:/data/edi
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  edi_data:

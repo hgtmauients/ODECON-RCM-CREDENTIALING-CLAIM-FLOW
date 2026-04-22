@@ -1,0 +1,425 @@
+"""
+Clearinghouse Transport Layer
+Handles SFTP/API file transmission to/from clearinghouses
+Sends 837P files, downloads 277/835 files
+"""
+
+import logging
+import asyncio
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+import paramiko
+import httpx
+from pathlib import Path
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from models.rcm import TradingPartnerConnection, PayerProfile
+from models.claims import EDIFile
+from services.encryption import decrypt_credential
+
+logger = logging.getLogger(__name__)
+
+
+class SFTPTransport:
+    """
+    SFTP file transport for EDI files
+    Handles connection, upload, download with error handling
+    """
+    
+    async def upload_file(
+        self,
+        local_file_path: str,
+        remote_file_path: str,
+        connection: TradingPartnerConnection
+    ) -> Dict[str, Any]:
+        """
+        Upload file to clearinghouse SFTP
+        
+        Args:
+            local_file_path: Path to local 837P file
+            remote_file_path: Where to put it on SFTP server
+            connection: TradingPartnerConnection with SFTP details
+        
+        Returns:
+            Success/failure with details
+        """
+        try:
+            # Decrypt SFTP password
+            password = None
+            if connection.sftp_password_encrypted:
+                password = await decrypt_credential(connection.sftp_password_encrypted)
+            
+            # Create SSH client
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            # Connect
+            logger.info(f"Connecting to SFTP: {connection.sftp_host}:{connection.sftp_port}")
+            
+            connect_kwargs = {
+                "hostname": connection.sftp_host,
+                "port": connection.sftp_port or 22,
+                "username": connection.sftp_username
+            }
+            
+            if password:
+                connect_kwargs["password"] = password
+            elif connection.sftp_private_key_encrypted:
+                # Use SSH key authentication
+                private_key = await decrypt_credential(connection.sftp_private_key_encrypted)
+                from io import StringIO
+                key = paramiko.RSAKey.from_private_key(StringIO(private_key))
+                connect_kwargs["pkey"] = key
+            
+            ssh.connect(**connect_kwargs, timeout=30)
+            
+            # Open SFTP session
+            sftp = ssh.open_sftp()
+            
+            # Upload file
+            remote_full_path = f"{connection.sftp_outbound_path}/{remote_file_path}".replace("//", "/")
+            
+            logger.info(f"Uploading {local_file_path} to {remote_full_path}")
+            sftp.put(local_file_path, remote_full_path)
+            
+            # Verify upload
+            file_stat = sftp.stat(remote_full_path)
+            
+            sftp.close()
+            ssh.close()
+            
+            logger.info(f"File uploaded successfully: {remote_file_path} ({file_stat.st_size} bytes)")
+            
+            return {
+                "success": True,
+                "remote_path": remote_full_path,
+                "file_size": file_stat.st_size,
+                "uploaded_at": datetime.utcnow().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"SFTP upload failed: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def download_files(
+        self,
+        connection: TradingPartnerConnection,
+        file_pattern: str = "*.835"
+    ) -> List[Dict[str, Any]]:
+        """
+        Download files from clearinghouse SFTP
+        Used for polling 277/835 files
+        
+        Args:
+            connection: TradingPartnerConnection with SFTP details
+            file_pattern: Pattern to match (e.g., "*.835", "*.277")
+        
+        Returns:
+            List of downloaded files with metadata
+        """
+        try:
+            # Decrypt password
+            password = None
+            if connection.sftp_password_encrypted:
+                password = await decrypt_credential(connection.sftp_password_encrypted)
+            
+            # Connect
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            connect_kwargs = {
+                "hostname": connection.sftp_host,
+                "port": connection.sftp_port or 22,
+                "username": connection.sftp_username
+            }
+            
+            if password:
+                connect_kwargs["password"] = password
+            
+            ssh.connect(**connect_kwargs, timeout=30)
+            sftp = ssh.open_sftp()
+            
+            # List files in inbound directory
+            inbound_path = connection.sftp_inbound_path or "/inbound"
+            
+            logger.info(f"Polling SFTP directory: {inbound_path} for pattern {file_pattern}")
+            
+            files = sftp.listdir(inbound_path)
+            
+            downloaded_files = []
+            
+            for filename in files:
+                if file_pattern.replace("*", "") in filename:
+                    # Download file
+                    remote_path = f"{inbound_path}/{filename}"
+                    local_path = f"/tmp/edi_downloads/{filename}"
+                    
+                    # Create local directory if doesn't exist
+                    Path("/tmp/edi_downloads").mkdir(parents=True, exist_ok=True)
+                    
+                    logger.info(f"Downloading {filename}...")
+                    sftp.get(remote_path, local_path)
+                    
+                    downloaded_files.append({
+                        "filename": filename,
+                        "local_path": local_path,
+                        "remote_path": remote_path,
+                        "downloaded_at": datetime.utcnow().isoformat()
+                    })
+            
+            sftp.close()
+            ssh.close()
+            
+            logger.info(f"Downloaded {len(downloaded_files)} files from SFTP")
+            
+            return downloaded_files
+            
+        except Exception as e:
+            logger.error(f"SFTP download failed: {e}")
+            return []
+    
+    async def test_connection(self, connection: TradingPartnerConnection) -> Dict[str, Any]:
+        """
+        Test SFTP connection
+        Used by connection test button in payer editor
+        """
+        try:
+            password = None
+            if connection.sftp_password_encrypted:
+                password = await decrypt_credential(connection.sftp_password_encrypted)
+            
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            ssh.connect(
+                hostname=connection.sftp_host,
+                port=connection.sftp_port or 22,
+                username=connection.sftp_username,
+                password=password,
+                timeout=10
+            )
+            
+            sftp = ssh.open_sftp()
+            
+            # Try to list directory
+            inbound_path = connection.sftp_inbound_path or "/"
+            files = sftp.listdir(inbound_path)
+            
+            sftp.close()
+            ssh.close()
+            
+            return {
+                "success": True,
+                "message": f"Connected successfully. Found {len(files)} files in {inbound_path}",
+                "file_count": len(files)
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Connection failed: {str(e)}",
+                "error": str(e)
+            }
+
+
+class APITransport:
+    """
+    API-based transport for clearinghouses with REST APIs
+    """
+    
+    async def submit_837_via_api(
+        self,
+        edi_content: str,
+        connection: TradingPartnerConnection
+    ) -> Dict[str, Any]:
+        """
+        Submit 837 via clearinghouse API
+        """
+        try:
+            # Decrypt API credentials
+            api_key = await decrypt_credential(connection.api_key_encrypted) if connection.api_key_encrypted else None
+            api_secret = await decrypt_credential(connection.api_secret_encrypted) if connection.api_secret_encrypted else None
+            
+            # Build request
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                
+                # Authentication
+                headers = {}
+                if connection.api_auth_method == "bearer" and api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                elif connection.api_auth_method == "basic" and api_key and api_secret:
+                    import base64
+                    credentials = base64.b64encode(f"{api_key}:{api_secret}".encode()).decode()
+                    headers["Authorization"] = f"Basic {credentials}"
+                
+                headers["Content-Type"] = "application/x12"
+                
+                # Submit
+                response = await client.post(
+                    f"{connection.api_endpoint}/submit",
+                    content=edi_content,
+                    headers=headers
+                )
+                
+                if response.status_code == 200 or response.status_code == 201:
+                    data = response.json()
+                    return {
+                        "success": True,
+                        "submission_id": data.get("submission_id"),
+                        "tracking_number": data.get("tracking_number"),
+                        "message": "Claim submitted successfully via API"
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"API returned {response.status_code}: {response.text}"
+                    }
+                    
+        except Exception as e:
+            logger.error(f"API submission failed: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def test_connection(self, connection: TradingPartnerConnection) -> Dict[str, Any]:
+        """
+        Test API connection
+        """
+        try:
+            api_key = await decrypt_credential(connection.api_key_encrypted) if connection.api_key_encrypted else None
+            
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                headers = {}
+                if connection.api_auth_method == "bearer" and api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                
+                # Ping endpoint
+                response = await client.get(
+                    f"{connection.api_endpoint}/ping",
+                    headers=headers
+                )
+                
+                if response.status_code == 200:
+                    return {
+                        "success": True,
+                        "message": "API connection successful."
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": f"API returned {response.status_code}"
+                    }
+                    
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Connection failed: {str(e)}"
+            }
+
+
+class ClearinghouseService:
+    """
+    High-level service for clearinghouse operations
+    Abstracts SFTP/API details
+    """
+    
+    def __init__(self, db: AsyncSession):
+        self.db = db
+        self.sftp = SFTPTransport()
+        self.api = APITransport()
+    
+    async def submit_837_file(
+        self,
+        local_file_path: str,
+        payer_id: int
+    ) -> Dict[str, Any]:
+        """
+        Submit 837 file using configured method for payer
+        """
+        try:
+            # Get payer
+            payer_result = await self.db.execute(
+                select(PayerProfile).where(PayerProfile.id == payer_id)
+            )
+            payer = payer_result.scalar_one_or_none()
+            
+            if not payer:
+                return {"success": False, "error": "Payer not found"}
+            
+            # Get connection
+            conn_result = await self.db.execute(
+                select(TradingPartnerConnection).where(
+                    TradingPartnerConnection.payer_id == payer_id
+                ).limit(1)
+            )
+            connection = conn_result.scalar_one_or_none()
+            
+            if not connection:
+                return {"success": False, "error": "No connection configured for payer"}
+            
+            # Route based on connection type
+            if connection.connection_type == "sftp":
+                filename = Path(local_file_path).name
+                result = await self.sftp.upload_file(
+                    local_file_path=local_file_path,
+                    remote_file_path=filename,
+                    connection=connection
+                )
+                return result
+                
+            elif connection.connection_type == "api":
+                # Read file content
+                with open(local_file_path, 'r') as f:
+                    edi_content = f.read()
+                
+                result = await self.api.submit_837_via_api(
+                    edi_content=edi_content,
+                    connection=connection
+                )
+                return result
+                
+            else:
+                return {
+                    "success": False,
+                    "error": f"Connection type '{connection.connection_type}' not yet supported. Use SFTP or API."
+                }
+                
+        except Exception as e:
+            logger.error(f"Error submitting 837: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def poll_for_835_files(self, payer_id: int) -> List[str]:
+        """
+        Poll clearinghouse for new 835 remittance files
+        Run this as a scheduled job (every hour)
+        """
+        try:
+            # Get connection
+            conn_result = await self.db.execute(
+                select(TradingPartnerConnection).where(
+                    TradingPartnerConnection.payer_id == payer_id
+                ).limit(1)
+            )
+            connection = conn_result.scalar_one_or_none()
+            
+            if not connection:
+                logger.warning(f"No connection for payer {payer_id}")
+                return []
+            
+            if connection.connection_type == "sftp":
+                files = await self.sftp.download_files(connection, file_pattern="*.835")
+                return [f["local_path"] for f in files]
+            else:
+                logger.warning(f"835 polling not supported for connection type: {connection.connection_type}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error polling for 835 files: {e}")
+            return []
+
