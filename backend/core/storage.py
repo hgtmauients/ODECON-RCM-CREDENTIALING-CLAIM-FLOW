@@ -11,7 +11,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "local")  # "local" or "s3"
-LOCAL_STORAGE_PATH = os.getenv("EDI_STORAGE_PATH", "/data/claimflow/edi")
+LOCAL_STORAGE_PATH = os.getenv("EDI_STORAGE_PATH", "/data/edi")
 S3_BUCKET = os.getenv("S3_BUCKET", "")
 S3_REGION = os.getenv("S3_REGION", "us-east-1")
 

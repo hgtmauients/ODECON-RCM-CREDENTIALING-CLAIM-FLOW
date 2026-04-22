@@ -51,12 +51,15 @@ def _initialize() -> None:
         _keys[CURRENT_VERSION] = _decode_key(primary, "CLAIMFLOW_ENCRYPTION_KEY")
         _active_version = CURRENT_VERSION
     else:
-        if os.getenv("ENV", "development") != "development":
+        env = os.getenv("ENV", "development")
+        # Allow ephemeral key in development OR test (CI), but require explicit
+        # config in staging/production.
+        if env not in ("development", "test"):
             raise RuntimeError(
                 "CLAIMFLOW_ENCRYPTION_KEY is required in non-development environments. "
                 "Generate one with: openssl rand -base64 32"
             )
-        logger.warning("CLAIMFLOW_ENCRYPTION_KEY not set - using ephemeral key (dev only)")
+        logger.warning("CLAIMFLOW_ENCRYPTION_KEY not set - using ephemeral key (env=%s)", env)
         _keys[CURRENT_VERSION] = AESGCM.generate_key(bit_length=256)
         _active_version = CURRENT_VERSION
 

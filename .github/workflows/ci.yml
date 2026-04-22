@@ -64,6 +64,11 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://claimflow:claimflow@localhost:5432/claimflow_test
           JWT_SECRET: ci-test-secret-must-be-at-least-32-characters-long
+          # Stable AES-256 key (32 bytes base64) for CI test runs only.
+          # Tests that touch encrypt_credential / decrypt_credential need this
+          # since the encryption module fails fast when ENV != "development"
+          # and CLAIMFLOW_ENCRYPTION_KEY is unset.
+          CLAIMFLOW_ENCRYPTION_KEY: aWRlbnRpY2FsLWtleS1mb3ItY2ktcnVucy1vbmx5LTEyMzQ=
           ENV: test
         run: pytest --cov=. --cov-report=xml -v
 

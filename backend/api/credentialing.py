@@ -12,6 +12,8 @@ from datetime import datetime
 import logging
 import asyncio
 
+from pydantic import ValidationError
+
 from core.database import get_db
 from api.auth import get_current_user, Principal
 from api.schemas import ProviderCreate, ProviderUpdate, ApproveRequest, RejectRequest, ProviderSignupWebhook
@@ -75,7 +77,6 @@ async def _verify_webhook_signature(payload: bytes, signature: str, secret: str,
 
 @router.post("/webhook/provider-signup")
 async def handle_provider_signup(
-    signup_data: Dict[str, Any],
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
@@ -93,14 +94,30 @@ async def handle_provider_signup(
     if not await _verify_webhook_signature(body, signature, webhook_secret, timestamp):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
+    # Parse + validate the body via Pydantic AFTER the signature check, so
+    # we never let unauthenticated callers waste cycles on validation.
+    import json as _json
     try:
-        provider_id = f"PROV_{signup_data.get('npi', 'unknown')}_{int(datetime.utcnow().timestamp())}"
+        raw = _json.loads(body or b"{}")
+    except _json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Webhook body is not valid JSON")
+
+    try:
+        signup = ProviderSignupWebhook(**raw)
+    except ValidationError as ve:
+        # Surface readable field errors so integrators can fix payloads
+        raise HTTPException(status_code=422, detail=ve.errors())
+
+    signup_data = signup.model_dump()
+
+    try:
+        provider_id = f"PROV_{signup.npi}_{int(datetime.utcnow().timestamp())}"
 
         credentialing = ProviderCredentialing(
             tenant_id=tenant_id,
             provider_id=provider_id,
             signup_data=signup_data,
-            license_url=signup_data.get("license_url"),
+            license_url=signup.license_url,
             credentialing_status="pending",
         )
         db.add(credentialing)
@@ -113,8 +130,8 @@ async def handle_provider_signup(
             "provider_id": provider_id,
             "status": "credentialing_initiated",
         }
-    except Exception as e:
-        logger.error(f"Error handling provider signup: {e}")
+    except Exception:
+        logger.exception("Error handling provider signup")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -167,33 +184,67 @@ async def get_credentialing_status(
 @router.get("")
 async def list_credentialing_queue(
     status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """List credentialing queue - scoped to tenant"""
+    """List credentialing queue - scoped to tenant. Paginated."""
     try:
-        query = select(ProviderCredentialing).where(
-            ProviderCredentialing.tenant_id == current_user.tenant_id
-        )
-        if status:
-            query = query.where(ProviderCredentialing.credentialing_status == status)
+        # Cap limit to avoid abuse / oversized responses
+        limit = max(1, min(limit, 500))
+        offset = max(0, offset)
 
-        result = await db.execute(query.order_by(ProviderCredentialing.created_at.desc()))
+        from sqlalchemy import func as sa_func
+        filters = [ProviderCredentialing.tenant_id == current_user.tenant_id]
+        if status:
+            filters.append(ProviderCredentialing.credentialing_status == status)
+
+        data_query = (
+            select(ProviderCredentialing)
+            .where(and_(*filters))
+            .order_by(ProviderCredentialing.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        count_query = select(sa_func.count(ProviderCredentialing.id)).where(and_(*filters))
+
+        result = await db.execute(data_query)
         credentialing_records = result.scalars().all()
+
+        total_result = await db.execute(count_query)
+        total = total_result.scalar() or 0
+
+        # Trim signup_data to only what the list view needs to avoid leaking
+        # full PII payloads in list responses (provider detail endpoint still
+        # returns the full record).
+        def _summary(signup_data):
+            if not signup_data:
+                return {}
+            return {
+                "first_name": signup_data.get("first_name", ""),
+                "last_name": signup_data.get("last_name", ""),
+                "npi": signup_data.get("npi", ""),
+                "state_code": signup_data.get("state_code", ""),
+                "specialty": signup_data.get("specialty", ""),
+            }
 
         return {
             "success": True,
             "data": [{
                 "provider_id": cr.provider_id,
-                "signup_data": cr.signup_data,
+                "signup_data": _summary(cr.signup_data),
                 "credentialing_status": cr.credentialing_status,
                 "overall_score": cr.overall_score,
                 "signup_date": cr.signup_date.isoformat() if cr.signup_date else None,
                 "completed_at": cr.completed_at.isoformat() if cr.completed_at else None,
             } for cr in credentialing_records],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
         }
-    except Exception as e:
-        logger.error(f"Error listing credentialing queue: {e}")
+    except Exception:
+        logger.exception("Error listing credentialing queue")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

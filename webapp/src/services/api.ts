@@ -43,6 +43,22 @@ async function handleResponse<T>(response: Response): Promise<T> {
     const error: any = new Error(errorBody.detail || `HTTP ${response.status}`);
     error.status = response.status;
     error.body = errorBody;
+
+    // 401 on any authenticated request means the token is invalid/expired.
+    // Clear local session and bounce to /login so the user can re-authenticate.
+    // The login endpoint itself will surface 401 directly (its onError handles it).
+    if (response.status === 401 && typeof window !== 'undefined') {
+      const path = window.location.pathname;
+      const isLoginPage = path === '/login' || path.endsWith('/login');
+      const isLoginCall = response.url.endsWith('/auth/login');
+      if (!isLoginPage && !isLoginCall) {
+        localStorage.removeItem('claimflow_token');
+        localStorage.removeItem('claimflow_user');
+        // Use replace so the broken page is not in history
+        window.location.replace('/login');
+      }
+    }
+
     throw error;
   }
   if (response.status === 204) return undefined as unknown as T;

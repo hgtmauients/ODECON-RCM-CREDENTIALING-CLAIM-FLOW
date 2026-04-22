@@ -134,14 +134,19 @@ export default function Settings() {
     setTestingCaqh(false);
   };
 
-  // Use the apiService base URL (handles both local dev proxy and prod api.noodledoc.com).
-  // Going via fetch('/health') would hit the static origin (e.g. Vercel) in production.
+  // Build the health URL from VITE_API_BASE_URL.
+  // - Production (set to https://api.noodledoc.com/api) → strip /api → https://api.noodledoc.com/health
+  // - Local dev (default /api proxied by Vite) → strip /api → '' → use /health (Vite proxy)
+  const healthUrl = (() => {
+    const raw = (import.meta.env?.VITE_API_BASE_URL as string | undefined) || '/api';
+    const stripped = raw.replace(/\/api\/?$/, '');
+    // If stripping leaves an empty string, prefix with / so we hit the same origin
+    return stripped ? `${stripped}/health` : '/health';
+  })();
+
   const { data: healthData } = useQuery(
     'health',
-    () => {
-      const base = (import.meta.env?.VITE_API_BASE_URL || '/api').replace(/\/api\/?$/, '');
-      return fetch(`${base}/health`).then(r => r.json()).catch(() => null);
-    },
+    () => fetch(healthUrl).then(r => r.json()).catch(() => null),
     { refetchInterval: 30000 }
   );
 

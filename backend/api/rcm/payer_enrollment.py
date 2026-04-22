@@ -33,28 +33,38 @@ async def list_payer_credentialing_cases(
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """List payer credentialing cases - scoped to tenant"""
+    """List payer credentialing cases - scoped to tenant. Returns full filtered total."""
     try:
-        query = select(PayerCredentialingCase).where(
-            PayerCredentialingCase.tenant_id == current_user.tenant_id
-        )
+        from sqlalchemy import func as sa_func
 
+        filters = [PayerCredentialingCase.tenant_id == current_user.tenant_id]
         if provider_id:
-            query = query.where(PayerCredentialingCase.provider_id == provider_id)
+            filters.append(PayerCredentialingCase.provider_id == provider_id)
         if payer_id:
-            query = query.where(PayerCredentialingCase.payer_id == payer_id)
+            filters.append(PayerCredentialingCase.payer_id == payer_id)
         if status:
-            query = query.where(PayerCredentialingCase.status == status)
+            filters.append(PayerCredentialingCase.status == status)
         if expiring_soon:
             ninety_days_out = date.today() + timedelta(days=90)
-            query = query.where(and_(
+            filters.extend([
                 PayerCredentialingCase.expiration_date.isnot(None),
                 PayerCredentialingCase.expiration_date <= ninety_days_out,
-            ))
+            ])
 
-        query = query.order_by(desc(PayerCredentialingCase.created_at)).limit(limit).offset(offset)
-        result = await db.execute(query)
+        data_query = (
+            select(PayerCredentialingCase)
+            .where(and_(*filters))
+            .order_by(desc(PayerCredentialingCase.created_at))
+            .limit(limit)
+            .offset(offset)
+        )
+        count_query = select(sa_func.count(PayerCredentialingCase.id)).where(and_(*filters))
+
+        result = await db.execute(data_query)
         cases = result.scalars().all()
+
+        total_result = await db.execute(count_query)
+        total = total_result.scalar() or 0
 
         cases_with_payer_names = []
         for case in cases:
@@ -94,9 +104,15 @@ async def list_payer_credentialing_cases(
                 "created_at": case.created_at.isoformat() if case.created_at else None,
             })
 
-        return {"success": True, "data": cases_with_payer_names, "total": len(cases)}
-    except Exception as e:
-        logger.error(f"Error listing payer credentialing cases: {e}")
+        return {
+            "success": True,
+            "data": cases_with_payer_names,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    except Exception:
+        logger.exception("Error listing payer credentialing cases")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

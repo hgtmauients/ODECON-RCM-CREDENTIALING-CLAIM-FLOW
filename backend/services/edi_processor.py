@@ -19,7 +19,7 @@ from models.denials import DenialCase
 
 logger = logging.getLogger(__name__)
 
-EDI_STORAGE_PATH = os.getenv("EDI_STORAGE_PATH", "/data/claimflow/edi")
+EDI_STORAGE_PATH = os.getenv("EDI_STORAGE_PATH", "/data/edi")
 
 
 class EDIProcessor:
@@ -380,10 +380,7 @@ class EDIProcessor:
         try:
             logger.info(f"Parsing 277 file: {file_path}")
 
-            content = ""
-            if os.path.exists(file_path):
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
+            content = await self._read_file_async(file_path)
 
             edi_file = EDIFile(
                 tenant_id=tenant_id,
