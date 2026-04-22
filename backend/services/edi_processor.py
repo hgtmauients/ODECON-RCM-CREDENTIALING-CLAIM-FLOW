@@ -5,6 +5,7 @@ Handles ANSI X12 formatting according to payer specifications
 """
 
 import os
+import asyncio
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -460,18 +461,139 @@ class EDIProcessor:
 
     # ==================== INBOUND: 835 REMITTANCE PARSING ====================
 
+    @staticmethod
+    def _parse_835_content(content: str) -> Dict[str, Any]:
+        """
+        Pure parser for 835 EDI content. Returns dict with payments + denials lists.
+        Both lists carry the flat shape DenialManager / AutoPostingEngine expect.
+        """
+        payments: list = []
+        denials: list = []
+        total_paid = 0.0
+
+        if not content:
+            return {"payments": payments, "denials": denials, "total_paid": total_paid}
+
+        def _flush(claim_record):
+            if not claim_record:
+                return
+            cas_list = claim_record.get("carc_codes", [])
+            primary_cas = cas_list[0] if cas_list else None
+            flat = {
+                "claim_number": claim_record["claim_number"],
+                "status_code": claim_record["status_code"],
+                "paid_amount": claim_record["paid_amount"],
+                "carc_codes": cas_list,
+                "carc": f"{primary_cas['group']}-{primary_cas['code']}" if primary_cas else None,
+                "rarc": claim_record.get("rarc"),
+                "denied_amount": sum(c.get("amount", 0) for c in cas_list),
+                "denial_description": claim_record.get("denial_description", ""),
+                "line_number": claim_record.get("line_number"),
+            }
+            if claim_record["paid_amount"] > 0 and not cas_list:
+                payments.append(flat)
+            elif cas_list:
+                denials.append(flat)
+            else:
+                payments.append(flat)
+
+        current_claim = None
+        for segment in content.split("~"):
+            segment = segment.strip()
+            if segment.startswith("CLP"):
+                _flush(current_claim)
+                parts = segment.split("*")
+                paid_amount = float(parts[4]) if len(parts) > 4 else 0.0
+                current_claim = {
+                    "claim_number": parts[1] if len(parts) > 1 else None,
+                    "status_code": parts[2] if len(parts) > 2 else "",
+                    "paid_amount": paid_amount,
+                    "carc_codes": [],
+                    "rarc": None,
+                    "denial_description": "",
+                }
+                total_paid += paid_amount
+            elif segment.startswith("CAS") and current_claim is not None:
+                parts = segment.split("*")
+                group_code = parts[1] if len(parts) > 1 else ""
+                # CAS supports up to 6 adjustment triplets per segment
+                for offset in (2, 5, 8, 11, 14, 17):
+                    if len(parts) > offset + 1:
+                        reason_code = parts[offset] or ""
+                        amount_str = parts[offset + 1] or "0"
+                        if reason_code:
+                            try:
+                                amount = float(amount_str)
+                            except ValueError:
+                                amount = 0.0
+                            current_claim["carc_codes"].append({
+                                "group": group_code,
+                                "code": reason_code,
+                                "amount": amount,
+                            })
+            elif segment.startswith("LQ") and current_claim is not None:
+                parts = segment.split("*")
+                if len(parts) > 2 and parts[1] == "HE":
+                    current_claim["rarc"] = parts[2]
+            elif segment.startswith("MOA") and current_claim is not None:
+                parts = segment.split("*")
+                descs = [p for p in parts[3:] if p and len(p) <= 5]
+                if descs:
+                    current_claim["denial_description"] = " ".join(descs)
+
+        _flush(current_claim)
+        return {"payments": payments, "denials": denials, "total_paid": total_paid}
+
+    @staticmethod
+    async def _read_file_async(file_path: str) -> str:
+        """Read a file off the event loop to avoid blocking async handlers."""
+        if not os.path.exists(file_path):
+            return ""
+
+        def _read() -> str:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return f.read()
+
+        return await asyncio.to_thread(_read)
+
     async def parse_835(self, file_path: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Parse 835 Electronic Remittance Advice.
         Extracts payment/denial data per claim for downstream posting.
+
+        Idempotency: computes SHA-256 of file content. If a (tenant_id, hash) row
+        already exists in edi_files, returns is_duplicate=True without re-processing.
         """
         try:
+            import hashlib
+
             logger.info(f"Parsing 835 file: {file_path}")
 
-            content = ""
-            if os.path.exists(file_path):
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
+            content = await self._read_file_async(file_path)
+            file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest() if content else ""
+
+            # Idempotency check
+            if file_hash and tenant_id:
+                existing = await self.db.execute(
+                    select(EDIFile).where(and_(
+                        EDIFile.tenant_id == tenant_id,
+                        EDIFile.file_hash == file_hash,
+                        EDIFile.file_type == "835",
+                        EDIFile.status == "processed",
+                    ))
+                )
+                dup = existing.scalar_one_or_none()
+                if dup:
+                    logger.info(f"835 file {file_path} already processed (id={dup.id}), skipping")
+                    return {
+                        "success": True,
+                        "is_duplicate": True,
+                        "edi_file_id": dup.id,
+                        "claims_posted": 0,
+                        "total_paid": 0.0,
+                        "payments": [],
+                        "denials": [],
+                    }
 
             edi_file = EDIFile(
                 tenant_id=tenant_id,
@@ -480,102 +602,16 @@ class EDIProcessor:
                 filename=os.path.basename(file_path),
                 file_path=file_path,
                 file_size=len(content.encode("utf-8")) if content else 0,
+                file_hash=file_hash or None,
                 status="processing",
             )
             self.db.add(edi_file)
             await self.db.flush()
 
-            payments = []
-            denials = []
-            total_paid = 0.0
-
-            def _flush(claim_record):
-                """Convert internal claim record to payment or denial output shape."""
-                if not claim_record:
-                    return
-                # Build the flat shape DenialManager expects, plus keep carc_codes list
-                # for backward compatibility.
-                cas_list = claim_record.get("carc_codes", [])
-                primary_cas = cas_list[0] if cas_list else None
-                flat_record = {
-                    "claim_number": claim_record["claim_number"],
-                    "status_code": claim_record["status_code"],
-                    "paid_amount": claim_record["paid_amount"],
-                    "carc_codes": cas_list,
-                    "carc": f"{primary_cas['group']}-{primary_cas['code']}" if primary_cas else None,
-                    "rarc": claim_record.get("rarc"),
-                    "denied_amount": sum(c.get("amount", 0) for c in cas_list),
-                    "denial_description": claim_record.get("denial_description", ""),
-                    "line_number": claim_record.get("line_number"),
-                }
-                if claim_record["paid_amount"] > 0 and not cas_list:
-                    payments.append(flat_record)
-                elif cas_list:
-                    denials.append(flat_record)
-                else:
-                    # Zero-pay with no adjustments — still record as a payment for visibility
-                    payments.append(flat_record)
-
-            if content:
-                current_claim = None
-
-                for segment in content.split("~"):
-                    segment = segment.strip()
-
-                    # CLP segment: claim-level payment info
-                    if segment.startswith("CLP"):
-                        _flush(current_claim)
-
-                        parts = segment.split("*")
-                        current_claim_number = parts[1] if len(parts) > 1 else None
-                        claim_status = parts[2] if len(parts) > 2 else ""
-                        paid_amount = float(parts[4]) if len(parts) > 4 else 0.0
-
-                        current_claim = {
-                            "claim_number": current_claim_number,
-                            "status_code": claim_status,
-                            "paid_amount": paid_amount,
-                            "carc_codes": [],
-                            "rarc": None,
-                            "denial_description": "",
-                        }
-                        total_paid += paid_amount
-
-                    # CAS segment: adjustment/denial codes (group, reason, amount triplets)
-                    elif segment.startswith("CAS") and current_claim is not None:
-                        parts = segment.split("*")
-                        group_code = parts[1] if len(parts) > 1 else ""
-                        # CAS can carry up to 6 adjustment triplets in one segment.
-                        # parts[2] = reason, parts[3] = amount; then [5,6], [8,9], etc.
-                        for offset in (2, 5, 8, 11, 14, 17):
-                            if len(parts) > offset + 1:
-                                reason_code = parts[offset] or ""
-                                amount_str = parts[offset + 1] or "0"
-                                if reason_code:
-                                    try:
-                                        amount = float(amount_str)
-                                    except ValueError:
-                                        amount = 0.0
-                                    current_claim["carc_codes"].append({
-                                        "group": group_code,
-                                        "code": reason_code,
-                                        "amount": amount,
-                                    })
-
-                    # LQ segment carries Remark Codes (RARCs) when LQ01='HE'
-                    elif segment.startswith("LQ") and current_claim is not None:
-                        parts = segment.split("*")
-                        if len(parts) > 2 and parts[1] == "HE":
-                            current_claim["rarc"] = parts[2]
-
-                    # MOA segment: outpatient adjudication info, sometimes carries denial reason text
-                    elif segment.startswith("MOA") and current_claim is not None:
-                        parts = segment.split("*")
-                        descs = [p for p in parts[3:] if p and len(p) <= 5]
-                        if descs:
-                            current_claim["denial_description"] = " ".join(descs)
-
-                _flush(current_claim)
+            parsed = self._parse_835_content(content)
+            payments = parsed["payments"]
+            denials = parsed["denials"]
+            total_paid = parsed["total_paid"]
 
             edi_file.status = "processed"
             edi_file.processed_at = datetime.utcnow()
@@ -705,47 +741,18 @@ class EDIProcessor:
 
     async def parse_835_with_record(self, file_path: str, edi_file) -> Dict[str, Any]:
         """Parse 835 using an existing EDIFile record (avoids duplicate creation)."""
-        content = ""
-        if os.path.exists(file_path):
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
+        import hashlib
 
-        payments = []
-        denials = []
-        total_paid = 0.0
-        tenant_id = str(edi_file.tenant_id) if edi_file.tenant_id else None
+        content = await self._read_file_async(file_path)
 
-        if content:
-            current_payment = None
-            for segment in content.split("~"):
-                segment = segment.strip()
-                if segment.startswith("CLP"):
-                    if current_payment:
-                        if current_payment.get("paid_amount", 0) > 0:
-                            payments.append(current_payment)
-                        elif current_payment.get("carc_codes"):
-                            denials.append(current_payment)
-                    parts = segment.split("*")
-                    paid_amount = float(parts[4]) if len(parts) > 4 else 0.0
-                    current_payment = {
-                        "claim_number": parts[1] if len(parts) > 1 else None,
-                        "status_code": parts[2] if len(parts) > 2 else "",
-                        "paid_amount": paid_amount,
-                        "carc_codes": [],
-                    }
-                    total_paid += paid_amount
-                if segment.startswith("CAS") and current_payment:
-                    parts = segment.split("*")
-                    current_payment["carc_codes"].append({
-                        "group": parts[1] if len(parts) > 1 else "",
-                        "code": parts[2] if len(parts) > 2 else "",
-                        "amount": float(parts[3]) if len(parts) > 3 else 0.0,
-                    })
-            if current_payment:
-                if current_payment.get("paid_amount", 0) > 0:
-                    payments.append(current_payment)
-                elif current_payment.get("carc_codes"):
-                    denials.append(current_payment)
+        # Backfill the file hash so later re-uploads via parse_835() still dedupe.
+        if content and not getattr(edi_file, "file_hash", None):
+            edi_file.file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+        parsed = self._parse_835_content(content)
+        payments = parsed["payments"]
+        denials = parsed["denials"]
+        total_paid = parsed["total_paid"]
 
         edi_file.status = "processed"
         edi_file.processed_at = datetime.utcnow()

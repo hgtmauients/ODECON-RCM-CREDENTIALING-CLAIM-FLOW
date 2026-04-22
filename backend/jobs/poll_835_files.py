@@ -80,16 +80,28 @@ async def _poll_835_for_tenant(db: AsyncSession, tenant):
                     try:
                         parse_result = await edi_processor.parse_835(file_path, tenant_id=str(tenant.id))
 
+                        # Idempotency: parse_835 returns is_duplicate=True if the file
+                        # has already been ingested for this tenant (sha256 dedup).
+                        if parse_result.get("is_duplicate"):
+                            logger.info(
+                                f"[tenant={tenant.slug}] Skipping duplicate 835 {file_path}"
+                            )
+                            continue
+
+                        tenant_id_str = str(tenant.id)
+
                         if parse_result.get("payments"):
                             await auto_poster.auto_post_835(
                                 edi_file_id=parse_result.get("edi_file_id"),
                                 payments_data=parse_result["payments"],
+                                tenant_id=tenant_id_str,
                             )
 
                         if parse_result.get("denials"):
                             await denial_manager.process_835_denials(
                                 edi_file_id=parse_result.get("edi_file_id"),
                                 denials_data=parse_result["denials"],
+                                tenant_id=tenant_id_str,
                             )
 
                         total_files_processed += 1

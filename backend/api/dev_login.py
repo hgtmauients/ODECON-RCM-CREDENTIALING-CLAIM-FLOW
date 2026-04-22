@@ -11,10 +11,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import jwt
 
+# Import the resolved JWT secret from auth so signing and validation always agree.
+from api.auth import JWT_SECRET, JWT_ALGORITHM
+
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-JWT_SECRET = os.getenv("JWT_SECRET", "")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 DEV_MODE = os.getenv("ENV", "development") == "development"
 
 DEV_USERS: Dict[str, Dict[str, Any]] = {

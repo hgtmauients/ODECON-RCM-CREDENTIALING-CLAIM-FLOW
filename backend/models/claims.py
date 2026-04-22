@@ -256,6 +256,9 @@ class EDIFile(Base):
     filename = Column(String(500), nullable=False)
     file_path = Column(String(1000), nullable=False)  # Secure storage path
     file_size = Column(Integer)
+    # SHA-256 of the file content. Used for idempotent ingest:
+    # if a (tenant_id, file_hash) row already exists we treat the upload as a duplicate.
+    file_hash = Column(String(64), index=True, nullable=True)
     
     # EDI control numbers
     interchange_control_number = Column(String(50), index=True)  # ISA13

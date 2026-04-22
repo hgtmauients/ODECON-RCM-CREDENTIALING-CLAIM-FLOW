@@ -29,16 +29,23 @@ JWT_ISSUER = os.getenv("JWT_ISSUER", "")
 JWT_JWKS_URL = os.getenv("JWT_JWKS_URL", "")
 
 _DEV_FALLBACK_SECRET = "claimflow-dev-secret-change-me-min32ch"
-JWT_SECRET = os.getenv("JWT_SECRET", "")
 
-if not JWT_SECRET:
+
+def get_jwt_secret() -> str:
+    """Resolve JWT signing secret. Fail-fast in production, dev fallback otherwise."""
+    secret = os.getenv("JWT_SECRET", "")
+    if secret:
+        return secret
     if ENV == "production":
         raise RuntimeError(
             "JWT_SECRET is required in production. "
             "Generate one with: openssl rand -base64 32"
         )
-    JWT_SECRET = _DEV_FALLBACK_SECRET
     logger.warning("JWT_SECRET not set; using dev fallback (DO NOT USE IN PRODUCTION)")
+    return _DEV_FALLBACK_SECRET
+
+
+JWT_SECRET = get_jwt_secret()
 
 if ENV == "production" and JWT_ALGORITHM == "HS256" and len(JWT_SECRET) < 32:
     raise RuntimeError("JWT_SECRET must be at least 32 characters in production")

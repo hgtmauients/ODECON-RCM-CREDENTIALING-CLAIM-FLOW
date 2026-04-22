@@ -2,10 +2,19 @@
 ClaimFlow - Background job scheduler.
 Uses APScheduler for periodic tasks (835 polling, renewal reminders, etc.).
 Starts with the FastAPI lifespan if CLAIMFLOW_SCHEDULER_ENABLED=true.
+
+Multi-worker safety: each scheduled job acquires a Postgres advisory lock
+before executing. If another worker holds the lock, the job no-ops on this
+worker. This makes it safe to run with N uvicorn workers without duplicate
+runs, without needing a separate scheduler container.
 """
 
 import os
 import logging
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
+from sqlalchemy import text as sa_text
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -14,67 +23,107 @@ logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 SCHEDULER_ENABLED = os.getenv("CLAIMFLOW_SCHEDULER_ENABLED", "false").lower() == "true"
 
+# Stable lock IDs (any 64-bit signed int). Different jobs use different IDs.
+_LOCK_ID_835_POLL = 0x1F00_835A_AAAA_0001
+_LOCK_ID_EXPIRATION = 0x1F00_835A_AAAA_0002
+
+
+@asynccontextmanager
+async def _try_advisory_lock(lock_id: int) -> AsyncIterator[bool]:
+    """
+    Acquire a Postgres session-scoped advisory lock. Yields True if acquired,
+    False if another connection holds it. Releases on exit.
+    """
+    from core.database import engine
+    conn = await engine.connect()
+    try:
+        result = await conn.execute(
+            sa_text("SELECT pg_try_advisory_lock(:lock_id)"),
+            {"lock_id": lock_id},
+        )
+        acquired = bool(result.scalar())
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                await conn.execute(
+                    sa_text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": lock_id},
+                )
+    finally:
+        await conn.close()
+
 
 def register_jobs():
     """Register all periodic jobs."""
 
-    # Poll for 835/277CA files every hour
     scheduler.add_job(
         _run_835_poll,
         CronTrigger(minute=0),  # Every hour at :00
         id="poll_835_files",
         name="Poll clearinghouse for 835/277CA",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
-    # Check credential/license expirations daily at 6am
     scheduler.add_job(
         _run_expiration_check,
         CronTrigger(hour=6, minute=0),
         id="check_expirations",
         name="Check credential expirations",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
     logger.info(f"Registered {len(scheduler.get_jobs())} scheduled jobs")
 
 
 async def _run_835_poll():
-    """Wrapper to call the 835 polling job."""
-    try:
-        from jobs.poll_835_files import poll_and_process_835_files
-        await poll_and_process_835_files()
-    except Exception as e:
-        logger.error(f"835 poll job failed: {e}")
+    """Wrapper to call the 835 polling job under an advisory lock."""
+    async with _try_advisory_lock(_LOCK_ID_835_POLL) as acquired:
+        if not acquired:
+            logger.debug("835 poll skipped on this worker (another worker holds the lock)")
+            return
+        try:
+            from jobs.poll_835_files import poll_and_process_835_files
+            await poll_and_process_835_files()
+        except Exception as e:
+            logger.error(f"835 poll job failed: {e}")
 
 
 async def _run_expiration_check():
     """Check for upcoming credential/license expirations per tenant."""
-    try:
-        from core.database import async_session_factory
-        from models.tenant import Tenant
-        from models.payer_credentialing import CredentialingRenewal
-        from sqlalchemy import select, and_
-        from datetime import date, timedelta
+    async with _try_advisory_lock(_LOCK_ID_EXPIRATION) as acquired:
+        if not acquired:
+            logger.debug("Expiration check skipped on this worker (another worker holds the lock)")
+            return
+        try:
+            from core.database import async_session_factory
+            from models.tenant import Tenant
+            from models.payer_credentialing import CredentialingRenewal
+            from sqlalchemy import select, and_
+            from datetime import date, timedelta
 
-        async with async_session_factory() as db:
-            tenants_result = await db.execute(select(Tenant).where(Tenant.is_active == True))
-            tenants = tenants_result.scalars().all()
+            async with async_session_factory() as db:
+                tenants_result = await db.execute(select(Tenant).where(Tenant.is_active == True))
+                tenants = tenants_result.scalars().all()
 
-            thirty_days = date.today() + timedelta(days=30)
-            for tenant in tenants:
-                result = await db.execute(
-                    select(CredentialingRenewal).where(and_(
-                        CredentialingRenewal.tenant_id == tenant.id,
-                        CredentialingRenewal.current_expiration_date <= thirty_days,
-                        CredentialingRenewal.renewal_completed == False,
-                    ))
-                )
-                expiring = result.scalars().all()
-                if expiring:
-                    logger.warning(f"[tenant={tenant.slug}] {len(expiring)} credentials expiring within 30 days")
-    except Exception as e:
-        logger.error(f"Expiration check failed: {e}")
+                thirty_days = date.today() + timedelta(days=30)
+                for tenant in tenants:
+                    result = await db.execute(
+                        select(CredentialingRenewal).where(and_(
+                            CredentialingRenewal.tenant_id == tenant.id,
+                            CredentialingRenewal.current_expiration_date <= thirty_days,
+                            CredentialingRenewal.renewal_completed == False,
+                        ))
+                    )
+                    expiring = result.scalars().all()
+                    if expiring:
+                        logger.warning(f"[tenant={tenant.slug}] {len(expiring)} credentials expiring within 30 days")
+        except Exception as e:
+            logger.error(f"Expiration check failed: {e}")
 
 
 def start_scheduler():
@@ -85,7 +134,7 @@ def start_scheduler():
 
     register_jobs()
     scheduler.start()
-    logger.info("Scheduler started")
+    logger.info("Scheduler started (advisory-locked for multi-worker safety)")
 
 
 def stop_scheduler():

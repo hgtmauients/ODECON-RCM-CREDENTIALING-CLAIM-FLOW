@@ -3,18 +3,43 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: noodledoc
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-noodledoc_prod_changeme}
+      # Required - do not provide a default. docker compose will fail loudly
+      # if POSTGRES_PASSWORD is not set in .env.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: noodledoc
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - pgbackups:/backups
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U noodledoc"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   backend:
     build:
@@ -25,15 +50,58 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://noodledoc:${POSTGRES_PASSWORD:-noodledoc_prod_changeme}@postgres:5432/noodledoc
+      DATABASE_URL: postgresql+asyncpg://noodledoc:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/noodledoc
+      REDIS_URL: redis://redis:6379/0
     volumes:
       - edi_data:/data/edi
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3); sys.exit(0 if r.status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # Daily pg_dump at 03:00 UTC. Keeps last 30 days. Backups land in the
+  # pgbackups volume, mounted from the postgres service as well so backups
+  # survive container removal.
+  backup:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - pgbackups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo 'Backup sidecar started';
+        while true; do
+          NOW=$$(date +%Y%m%d_%H%M%S);
+          OUT=/backups/noodledoc_$$NOW.sql.gz;
+          echo "Running pg_dump → $$OUT";
+          pg_dump -h postgres -U noodledoc -d noodledoc | gzip > "$$OUT" || echo 'pg_dump failed';
+          # prune backups older than 30 days
+          find /backups -name 'noodledoc_*.sql.gz' -mtime +30 -delete;
+          # sleep until next 03:00 UTC
+          sleep $$(( ( ( 27 - $$(date -u +%H) ) % 24 ) * 3600 + ( 60 - $$(date -u +%M) ) * 60 ));
+        done
     restart: unless-stopped
 
 volumes:
   pgdata:
   edi_data:
+  redisdata:
+  pgbackups:
