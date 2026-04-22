@@ -182,7 +182,7 @@ describe('CredentialingQueue', () => {
 
       await waitFor(() => {
         expect(apiService.get).toHaveBeenCalledWith(
-          '/credentialing/',
+          '/credentialing',
           expect.objectContaining({ status: 'requires_review' })
         );
       });
@@ -199,7 +199,7 @@ describe('CredentialingQueue', () => {
 
       await waitFor(() => {
         expect(apiService.get).toHaveBeenLastCalledWith(
-          '/credentialing/',
+          '/credentialing',
           expect.objectContaining({ status: undefined })
         );
       });

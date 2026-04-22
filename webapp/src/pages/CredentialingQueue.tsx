@@ -51,7 +51,7 @@ export default function CredentialingQueue() {
 
   const { data, isLoading, error, isFetching } = useQuery(
     ['credentialing', selectedStatus, offset],
-    () => apiService.get('/credentialing/', {
+    () => apiService.get('/credentialing', {
       status: selectedStatus || undefined,
       limit: PAGE_SIZE,
       offset,
