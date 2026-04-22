@@ -132,11 +132,15 @@ cd "C:\Users\natha\OneDrive - ohanadoc.com\Documents\Desktop\ODECON-RCM-CREDENTI
 # 1) Push code to Hetzner
 scp -r backend root@5.161.209.46:/opt/noodledoc/
 
-# 2) Strip CRLF on shell scripts (Windows-only step)
+# 2) Strip CRLF on shell scripts (Windows-only step). MUST cover every .sh
+#    that gets bind-mounted or COPY'd into a container — the backup-runner
+#    script learned this the hard way (B6 redeploy).
 ssh root@5.161.209.46 "
-  tr -d '\r' < /opt/noodledoc/backend/docker-entrypoint.sh > /tmp/de.sh && \
-  mv /tmp/de.sh /opt/noodledoc/backend/docker-entrypoint.sh && \
-  chmod +x /opt/noodledoc/backend/docker-entrypoint.sh
+  for f in docker-entrypoint.sh backup-runner.sh; do
+    tr -d '\r' < /opt/noodledoc/backend/\$f > /tmp/\$f && \
+    mv /tmp/\$f /opt/noodledoc/backend/\$f && \
+    chmod +x /opt/noodledoc/backend/\$f
+  done
 "
 
 # 3) Rebuild and restart
