@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '@/auth/AuthProvider';
 import NotificationBell from '@/components/NotificationBell';
+import GlobalSearch from '@/components/GlobalSearch';
 
 interface NavItem {
   path: string;
@@ -153,6 +154,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <p style={{ margin: 0, fontSize: 13, color: '#e2e8f0', fontWeight: 600, lineHeight: 1.4 }}>
             Provider Onboarding and<br />Revenue Cycle Management
           </p>
+        </div>
+
+        <div style={{ padding: '0 var(--space-5) var(--space-3)' }}>
+          <GlobalSearch />
         </div>
 
         <nav className="sidebar-nav" aria-label="Primary">

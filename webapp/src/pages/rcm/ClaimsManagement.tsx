@@ -141,6 +141,23 @@ export default function ClaimsManagement() {
     }
   );
 
+  const batchValidateMutation = useMutation(
+    (ids: number[]) => apiService.post('/rcm/claims/batch/validate', { claim_ids: ids }),
+    {
+      onSuccess: (response: any) => {
+        const r = response?.data || {};
+        if (r.failed === 0) {
+          toast.success(`All ${r.passed} claim(s) validated`);
+        } else {
+          toast.error(`Validated ${r.passed} / ${r.total}; ${r.failed} failed`);
+        }
+        setSelectedClaims([]);
+        queryClient.invalidateQueries(['claims']);
+      },
+      onError: () => { toast.error('Batch validation failed'); },
+    },
+  );
+
   const csvImportMutation = useMutation(
     (file: File) => {
       const fd = new FormData();
@@ -254,6 +271,18 @@ export default function ClaimsManagement() {
             <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
               {selectedClaims.length > 0 && (
                 <>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Validate ${selectedClaims.length} claim(s) against payer rules?`)) {
+                        batchValidateMutation.mutate(selectedClaims);
+                      }
+                    }}
+                    disabled={batchValidateMutation.isLoading}
+                    className="btn btn-ghost"
+                    title="Run validation rules across the selected claims"
+                  >
+                    {batchValidateMutation.isLoading ? 'Validating…' : `Validate ${selectedClaims.length}`}
+                  </button>
                   <button
                     onClick={handleSubmitBatch}
                     disabled={submitBatchMutation.isLoading}

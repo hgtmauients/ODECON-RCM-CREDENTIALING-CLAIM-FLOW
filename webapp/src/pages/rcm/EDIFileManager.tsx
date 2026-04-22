@@ -6,12 +6,14 @@
 
 import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from 'react-query';
+import { useNavigate } from 'react-router-dom';
 import { apiService } from '@/services/api';
 import { formatDate } from '@/utils/formatters';
 import toast from 'react-hot-toast';
 
 export default function EDIFileManager() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [fileType, setFileType] = useState<string>('835');
 
@@ -273,27 +275,37 @@ export default function EDIFileManager() {
                       {formatDate(file.created_at as string)}
                     </td>
                     <td style={{ padding: 'var(--space-3)', textAlign: 'right' }}>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          try {
-                            // Use the apiService helper so we get the correct base URL
-                            // and current auth/tenant headers (no localStorage scraping).
-                            const blob: Blob = await apiService.downloadBlob(`/rcm/edi/files/${file.id}/download`);
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = (file.filename as string) || 'edi_file';
-                            a.click();
-                            URL.revokeObjectURL(url);
-                          } catch {
-                            toast.error('Download failed');
-                          }
-                        }}
-                      >
-                        Download
-                      </button>
+                      <div style={{ display: 'inline-flex', gap: 8 }}>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/edi/${file.id}`);
+                          }}
+                          title="Inspect raw + parsed segments"
+                        >
+                          Debug
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            try {
+                              const blob: Blob = await apiService.downloadBlob(`/rcm/edi/files/${file.id}/download`);
+                              const url = URL.createObjectURL(blob);
+                              const a = document.createElement('a');
+                              a.href = url;
+                              a.download = (file.filename as string) || 'edi_file';
+                              a.click();
+                              URL.revokeObjectURL(url);
+                            } catch {
+                              toast.error('Download failed');
+                            }
+                          }}
+                        >
+                          Download
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

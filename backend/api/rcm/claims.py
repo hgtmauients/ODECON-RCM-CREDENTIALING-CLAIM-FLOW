@@ -379,6 +379,76 @@ async def update_draft_claim(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.post("/batch/validate")
+async def batch_validate_claims_alias(
+    body: Dict[str, Any],
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Validate every supplied claim against payer rules; per-claim outcome.
+
+    NB: declared BEFORE /{claim_id}/validate because FastAPI matches paths
+    in declaration order and a literal /batch would otherwise be parsed as
+    claim_id=int → 422.
+    """
+    current_user.require_role("billing")
+    claim_ids: List[int] = body.get("claim_ids", [])
+    if not claim_ids:
+        raise HTTPException(status_code=422, detail="claim_ids required")
+
+    rules_engine = RulesEngine(db)
+    results: List[Dict[str, Any]] = []
+    passed = 0
+    failed = 0
+
+    for cid in claim_ids:
+        try:
+            check = await db.execute(
+                select(Claim).where(and_(
+                    Claim.id == cid,
+                    Claim.tenant_id == current_user.tenant_id,
+                ))
+            )
+            claim = check.scalar_one_or_none()
+            if not claim:
+                results.append({"claim_id": cid, "ok": False, "error": "Claim not found"})
+                failed += 1
+                continue
+
+            r = await rules_engine.validate_claim(cid)
+            ok = bool(r.get("passed"))
+            if ok:
+                claim.state = "validated"
+                claim.validated_date = datetime.utcnow()
+                claim.current_queue = "ready_to_submit"
+                passed += 1
+            else:
+                failed += 1
+            results.append({
+                "claim_id": cid,
+                "ok": ok,
+                "rules_matched": r.get("rules_matched"),
+                "errors": r.get("errors", []),
+            })
+        except Exception as e:
+            await db.rollback()
+            results.append({"claim_id": cid, "ok": False, "error": str(e)})
+            failed += 1
+
+    await log_audit_event(
+        db, current_user, action="claims_batch_validated", resource_type="claim",
+        resource_id="batch", request=request,
+        metadata={"total": len(claim_ids), "passed": passed, "failed": failed},
+    )
+    await db.commit()
+
+    return {
+        "success": True,
+        "data": {"total": len(claim_ids), "passed": passed, "failed": failed, "results": results},
+    }
+
+
 @router.post("/{claim_id}/validate")
 async def validate_claim(
     claim_id: int,

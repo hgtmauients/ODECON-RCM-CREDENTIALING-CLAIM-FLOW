@@ -17,6 +17,7 @@ const DenialDetail = lazy(() => import('./pages/rcm/DenialDetail'));
 const PayerEnrollment = lazy(() => import('./pages/rcm/PayerEnrollment'));
 const PayerEnrollmentDetail = lazy(() => import('./pages/rcm/PayerEnrollmentDetail'));
 const EDIFileManager = lazy(() => import('./pages/rcm/EDIFileManager'));
+const EdiFileDebug = lazy(() => import('./pages/rcm/EdiFileDebug'));
 const CredentialingQueue = lazy(() => import('./pages/CredentialingQueue'));
 const PayerProfiles = lazy(() => import('./pages/admin/PayerProfiles'));
 const PayerProfileEditor = lazy(() => import('./pages/admin/PayerProfileEditor'));
@@ -72,6 +73,7 @@ export default function App() {
                         <Route path="/payer-enrollment" element={<PayerEnrollment />} />
                         <Route path="/payer-enrollment/:caseId" element={<PayerEnrollmentDetail />} />
                         <Route path="/edi" element={<EDIFileManager />} />
+                        <Route path="/edi/:fileId" element={<EdiFileDebug />} />
                         <Route path="/patients" element={<PatientManagement />} />
                         <Route path="/credentialing" element={<CredentialingQueue />} />
                         <Route path="/admin/payers" element={<PayerProfiles />} />

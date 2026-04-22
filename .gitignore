@@ -41,3 +41,8 @@ nginx-api-noodledoc.conf
 login*.json
 users_resp.json
 dash_resp.json
+dash.json
+claims.csv
+search.json
+empty.json
+batch_resp.json

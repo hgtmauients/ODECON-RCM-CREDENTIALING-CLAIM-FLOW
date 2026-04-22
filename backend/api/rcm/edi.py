@@ -9,7 +9,7 @@ Access control: list/get/download require billing; upload requires billing
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
-from typing import Optional
+from typing import Any, Dict, Optional
 from datetime import datetime
 import os
 import logging
@@ -216,6 +216,94 @@ async def get_edi_file(
             "error_message": edi_file.error_message,
             "validation_errors": edi_file.validation_errors,
             "created_at": edi_file.created_at.isoformat() if edi_file.created_at else None,
+        },
+    }
+
+
+@router.get("/files/{file_id}/parsed")
+async def get_edi_file_parsed(
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Return the raw EDI file plus a structured per-segment parse view.
+
+    Powers the EDI Debug Panel — operators use this to diagnose why a 277CA
+    didn\'t move a claim, what CARC codes a 835 carried, or whether the payer
+    sent a malformed segment.
+    """
+    current_user.require_role("billing")
+
+    result = await db.execute(
+        select(EDIFile).where(and_(EDIFile.id == file_id, EDIFile.tenant_id == current_user.tenant_id))
+    )
+    edi_file = result.scalar_one_or_none()
+    if not edi_file:
+        raise HTTPException(status_code=404, detail="EDI file not found")
+
+    # Containment check (same as download endpoint)
+    storage_root = os.path.realpath(EDI_STORAGE_PATH)
+    real_path = os.path.realpath(edi_file.file_path or "")
+    if not (real_path == storage_root or real_path.startswith(storage_root + os.sep)):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not os.path.exists(real_path):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    try:
+        with open(real_path, "r", encoding="utf-8", errors="replace") as f:
+            raw = f.read()
+    except Exception:
+        logger.exception("Failed to read EDI file %s for parse view", file_id)
+        raise HTTPException(status_code=500, detail="Failed to read file")
+
+    # Segment-level parse — strip whitespace, split on ~, skip empties.
+    segments = []
+    for idx, segment in enumerate(raw.split("~")):
+        s = segment.strip()
+        if not s:
+            continue
+        parts = s.split("*")
+        tag = parts[0]
+        elements = parts[1:]
+        segments.append({
+            "index": idx,
+            "tag": tag,
+            "raw": s,
+            "elements": elements,
+        })
+
+    # Format-specific summary so the FE can show the most useful first.
+    summary: Dict[str, Any] = {"segment_count": len(segments)}
+    if edi_file.file_type == "835":
+        # Run the existing pure parser for full payment/denial breakdown.
+        try:
+            parsed = EDIProcessor._parse_835_content(raw)
+            summary["claims_paid"] = len(parsed.get("payments", []))
+            summary["claims_denied"] = len(parsed.get("denials", []))
+            summary["total_paid"] = parsed.get("total_paid", 0)
+            summary["payments"] = parsed.get("payments", [])
+            summary["denials"] = parsed.get("denials", [])
+        except Exception as e:
+            summary["parse_error"] = str(e)
+    elif edi_file.file_type in ("277CA", "277"):
+        # Pull TRN tracking + the most recent STC code per TRN.
+        track_count = sum(1 for s in segments if s["tag"] == "TRN")
+        stc_count = sum(1 for s in segments if s["tag"] == "STC")
+        summary["tracking_numbers"] = track_count
+        summary["status_segments"] = stc_count
+
+    return {
+        "success": True,
+        "data": {
+            "id": edi_file.id,
+            "file_type": edi_file.file_type,
+            "filename": edi_file.filename,
+            "file_size": edi_file.file_size,
+            "status": edi_file.status,
+            "error_message": edi_file.error_message,
+            "raw": raw,
+            "segments": segments,
+            "summary": summary,
         },
     }
 

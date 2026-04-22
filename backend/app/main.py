@@ -123,6 +123,7 @@ def create_app() -> FastAPI:
     from api.admin_audit import router as admin_audit_router
     from api.notifications import router as notifications_router
     from api.dashboard import router as dashboard_router
+    from api.search import router as search_router
 
     app.include_router(tenants_router, prefix="/api")
     app.include_router(dev_login_router, prefix="/api")
@@ -140,6 +141,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_audit_router, prefix="/api")
     app.include_router(notifications_router, prefix="/api")
     app.include_router(dashboard_router, prefix="/api")
+    app.include_router(search_router, prefix="/api")
 
     # --- Health check ---
     # Returns 200 when DB is reachable, 503 when degraded so load balancers
