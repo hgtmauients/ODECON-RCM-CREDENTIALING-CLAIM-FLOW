@@ -98,7 +98,10 @@ async def get_denial_case(
         playbook = None
         if denial.playbook_id:
             playbook_result = await db.execute(
-                select(DenialPlaybook).where(DenialPlaybook.id == denial.playbook_id)
+                select(DenialPlaybook).where(and_(
+                    DenialPlaybook.id == denial.playbook_id,
+                    DenialPlaybook.tenant_id == current_user.tenant_id,
+                ))
             )
             playbook = playbook_result.scalar_one_or_none()
 
@@ -158,7 +161,7 @@ async def generate_appeal_letter(
 
     try:
         denial_manager = DenialManager(db)
-        result = await denial_manager.generate_appeal(denial_id)
+        result = await denial_manager.generate_appeal(denial_id, tenant_id=current_user.tenant_id)
         return {"success": True, "data": result}
     except Exception as e:
         logger.error(f"Error generating appeal: {e}")

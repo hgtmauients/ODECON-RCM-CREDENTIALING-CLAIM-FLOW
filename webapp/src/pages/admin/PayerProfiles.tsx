@@ -20,13 +20,27 @@ export default function PayerProfiles() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'draft'>('active');
 
   // Fetch payers
-  const { data, isLoading, error, refetch } = useQuery(
+  const { data, isLoading, error } = useQuery(
     ['payer-profiles', searchQuery, stateFilter, statusFilter],
-    () => payerProfileService.listPayers({
-      search: searchQuery || undefined,
-      state_code: stateFilter !== 'all' ? stateFilter : undefined,
-      is_active: statusFilter === 'active' ? true : statusFilter === 'draft' ? undefined : undefined
-    }),
+    () => {
+      const params: {
+        search?: string;
+        state_code?: string;
+        is_active?: boolean;
+        is_draft?: boolean;
+      } = {
+        search: searchQuery || undefined,
+        state_code: stateFilter !== 'all' ? stateFilter : undefined,
+      };
+      if (statusFilter === 'active') {
+        params.is_active = true;
+        params.is_draft = false;
+      } else if (statusFilter === 'draft') {
+        params.is_draft = true;
+      }
+      // 'all' leaves both flags unset to return everything
+      return payerProfileService.listPayers(params);
+    },
     {
       keepPreviousData: true
     }

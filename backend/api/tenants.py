@@ -13,6 +13,7 @@ import logging
 
 from core.database import get_db
 from api.auth import get_current_user, Principal
+from api.schemas import TenantUpdate, TenantSettingsUpdate, TestSmtpRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
@@ -59,6 +60,10 @@ async def get_tenant(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
+    # Strip out encrypted ciphertext from raw settings; only return non-sensitive keys.
+    raw_settings = tenant.settings or {}
+    safe_settings = {k: v for k, v in raw_settings.items() if not k.endswith("_encrypted")}
+
     return {
         "success": True,
         "data": {
@@ -66,7 +71,7 @@ async def get_tenant(
             "name": tenant.name,
             "slug": tenant.slug,
             "is_active": tenant.is_active,
-            "settings": tenant.settings,
+            "settings": safe_settings,
             "created_at": tenant.created_at.isoformat() if tenant.created_at else None,
         },
     }
@@ -75,7 +80,7 @@ async def get_tenant(
 @router.put("/{tenant_id}")
 async def update_tenant(
     tenant_id: str,
-    updates: Dict[str, Any],
+    updates: TenantUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
@@ -91,9 +96,8 @@ async def update_tenant(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    allowed_fields = {"name", "npi", "tax_id", "address_line_1", "address_line_2", "city", "state", "zip_code", "phone", "billing_contact_email", "settings"}
-    for key, value in updates.items():
-        if key in allowed_fields and hasattr(tenant, key):
+    for key, value in updates.model_dump(exclude_unset=True).items():
+        if hasattr(tenant, key):
             setattr(tenant, key, value)
 
     await db.commit()
@@ -147,7 +151,7 @@ async def get_tenant_settings(
 @router.put("/{tenant_id}/settings")
 async def update_tenant_settings(
     tenant_id: str,
-    settings: Dict[str, Any],
+    settings: TenantSettingsUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
@@ -159,7 +163,7 @@ async def update_tenant_settings(
     from core.tenant_config import save_tenant_settings
 
     try:
-        await save_tenant_settings(db, tenant_id, settings)
+        await save_tenant_settings(db, tenant_id, settings.model_dump(exclude_unset=True))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -172,7 +176,7 @@ async def update_tenant_settings(
 @router.post("/{tenant_id}/settings/test-smtp")
 async def test_smtp_settings(
     tenant_id: str,
-    body: Dict[str, Any],
+    body: Optional[TestSmtpRequest] = None,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
@@ -191,7 +195,7 @@ async def test_smtp_settings(
     smtp_user = await get_tenant_setting(db, tenant_id, "smtp_user", "")
     smtp_pass = await get_tenant_setting(db, tenant_id, "smtp_pass", "")
     from_email = await get_tenant_setting(db, tenant_id, "from_email", "noreply@claimflow.io")
-    to_email = body.get("to", current_user.email)
+    to_email = (body.to if body and body.to else None) or current_user.email
 
     try:
         import smtplib

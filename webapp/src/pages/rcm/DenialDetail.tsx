@@ -5,23 +5,24 @@
 
 import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation } from 'react-query';
 import { apiService } from '@/services/api';
 import { PremiumIcon } from '@/services/iconReplacementService';
 import { formatCurrency, formatDate } from '@/utils/formatters';
+import Modal from '@/components/Modal';
 import toast from 'react-hot-toast';
 
 export default function DenialDetail() {
   const { denialId } = useParams<{ denialId: string }>();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const [showAppealLetter, setShowAppealLetter] = useState(false);
   const [appealLetter, setAppealLetter] = useState('');
 
   // Fetch denial details
-  const { data, isLoading } = useQuery(
+  const { data, isLoading, isError, error } = useQuery(
     ['denial-case', denialId],
-    () => apiService.get(`/rcm/denials/cases/${denialId}`)
+    () => apiService.get(`/rcm/denials/cases/${denialId}`),
+    { retry: 1 }
   );
 
   // Generate appeal mutation
@@ -40,7 +41,7 @@ export default function DenialDetail() {
     }
   );
 
-  if (isLoading || !data) {
+  if (isLoading) {
     return (
       <div style={{ padding: 'var(--space-8)', textAlign: 'center' }}>
         <PremiumIcon name="spinner" size="xl" />
@@ -48,8 +49,30 @@ export default function DenialDetail() {
     );
   }
 
-  const denial = data?.data?.denial;
-  const playbook = data?.data?.playbook;
+  if (isError || !data?.data?.denial) {
+    return (
+      <div style={{ padding: 'var(--space-8)', maxWidth: 600, margin: '0 auto' }}>
+        <div className="card" style={{ padding: 'var(--space-6)', borderColor: 'var(--brand-error)' }}>
+          <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 700, color: 'var(--brand-error)', marginBottom: 'var(--space-3)' }}>
+            Failed to load denial case
+          </h2>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: 'var(--space-4)' }}>
+            {(error as any)?.message || 'The denial case could not be found or you do not have access.'}
+          </p>
+          <button
+            className="btn btn-ghost"
+            onClick={() => navigate('/denials')}
+            style={{ padding: 'var(--space-3) var(--space-4)' }}
+          >
+            Back to Denials
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const denial = data.data.denial;
+  const playbook = data.data.playbook;
 
   const getPriorityColor = (priority: string) => {
     const colors: Record<string, string> = {
@@ -250,108 +273,71 @@ export default function DenialDetail() {
         </div>
 
         {/* Appeal Letter Modal */}
-        {showAppealLetter && (
+        <Modal
+          isOpen={showAppealLetter}
+          onClose={() => setShowAppealLetter(false)}
+          title="Appeal Letter"
+          width={800}
+        >
           <div style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: 'rgba(0, 0, 0, 0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1000,
-            padding: 'var(--space-6)'
+            padding: 'var(--space-4)',
+            background: 'var(--surface-secondary)',
+            borderRadius: 'var(--radius-md)',
+            fontFamily: 'monospace',
+            fontSize: 'var(--font-size-sm)',
+            whiteSpace: 'pre-wrap',
+            maxHeight: '500px',
+            overflowY: 'auto',
+            marginBottom: 'var(--space-4)'
           }}>
-            <div style={{
-              background: 'var(--surface-primary)',
-              borderRadius: 'var(--radius-xl)',
-              padding: 'var(--space-6)',
-              maxWidth: '800px',
-              width: '100%',
-              maxHeight: '90vh',
-              overflow: 'auto'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
-                <h2 style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 700, color: 'var(--text-primary)' }}>
-                  Appeal Letter
-                </h2>
-                <button
-                  onClick={() => setShowAppealLetter(false)}
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: 'var(--text-secondary)',
-                    fontSize: 'var(--font-size-xl)',
-                    cursor: 'pointer'
-                  }}
-                >
-                  X
-                </button>
-              </div>
-
-              <div style={{
-                padding: 'var(--space-4)',
-                background: 'var(--surface-secondary)',
-                borderRadius: 'var(--radius-md)',
-                fontFamily: 'monospace',
-                fontSize: 'var(--font-size-sm)',
-                whiteSpace: 'pre-wrap',
-                maxHeight: '500px',
-                overflowY: 'auto',
-                marginBottom: 'var(--space-4)'
-              }}>
-                {appealLetter}
-              </div>
-
-              <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(appealLetter);
-                    toast.success('Copied to clipboard!');
-                  }}
-                  style={{
-                    padding: 'var(--space-3) var(--space-6)',
-                    background: 'transparent',
-                    border: '1px solid var(--border-primary)',
-                    borderRadius: 'var(--radius-md)',
-                    color: 'var(--text-primary)',
-                    fontSize: 'var(--font-size-base)',
-                    fontWeight: 600,
-                    cursor: 'pointer'
-                  }}
-                >
-                  Copy to Clipboard
-                </button>
-                <button
-                  onClick={() => {
-                    const blob = new Blob([appealLetter], { type: 'text/plain' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `appeal_${denial.claim_number}.txt`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                    toast.success('Appeal letter downloaded!');
-                  }}
-                  style={{
-                    padding: 'var(--space-3) var(--space-6)',
-                    background: 'var(--gradient-primary)',
-                    border: 'none',
-                    borderRadius: 'var(--radius-md)',
-                    color: 'white',
-                    fontSize: 'var(--font-size-base)',
-                    fontWeight: 600,
-                    cursor: 'pointer'
-                  }}
-                >
-                  Download Letter
-                </button>
-              </div>
-            </div>
+            {appealLetter}
           </div>
-        )}
+
+          <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(appealLetter);
+                toast.success('Copied to clipboard!');
+              }}
+              style={{
+                padding: 'var(--space-3) var(--space-6)',
+                background: 'transparent',
+                border: '1px solid var(--border-primary)',
+                borderRadius: 'var(--radius-md)',
+                color: 'var(--text-primary)',
+                fontSize: 'var(--font-size-base)',
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              Copy to Clipboard
+            </button>
+            <button
+              onClick={() => {
+                const blob = new Blob([appealLetter], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `appeal_${denial.claim_number}.txt`;
+                a.click();
+                URL.revokeObjectURL(url);
+                toast.success('Appeal letter downloaded!');
+              }}
+              style={{
+                padding: 'var(--space-3) var(--space-6)',
+                background: 'var(--gradient-primary)',
+                border: 'none',
+                borderRadius: 'var(--radius-md)',
+                color: 'white',
+                fontSize: 'var(--font-size-base)',
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              Download Letter
+            </button>
+          </div>
+        </Modal>
       </div>
     </div>
   );

@@ -11,6 +11,8 @@ httpx>=0.26.0
 python-dotenv>=1.0.0
 paramiko>=3.4.0
 apscheduler>=3.10.0
+redis>=5.0.0
+email-validator>=2.0.0
 
 # Dev/test
 pytest>=8.0.0

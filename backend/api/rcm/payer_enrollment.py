@@ -58,7 +58,12 @@ async def list_payer_credentialing_cases(
 
         cases_with_payer_names = []
         for case in cases:
-            payer_result = await db.execute(select(PayerProfile).where(PayerProfile.id == case.payer_id))
+            payer_result = await db.execute(
+                select(PayerProfile).where(and_(
+                    PayerProfile.id == case.payer_id,
+                    PayerProfile.tenant_id == current_user.tenant_id,
+                ))
+            )
             payer = payer_result.scalar_one_or_none()
 
             provider_result = await db.execute(
@@ -112,7 +117,12 @@ async def get_payer_credentialing_case(
     if not case:
         raise HTTPException(status_code=404, detail="Enrollment case not found")
 
-    payer_result = await db.execute(select(PayerProfile).where(PayerProfile.id == case.payer_id))
+    payer_result = await db.execute(
+        select(PayerProfile).where(and_(
+            PayerProfile.id == case.payer_id,
+            PayerProfile.tenant_id == current_user.tenant_id,
+        ))
+    )
     payer = payer_result.scalar_one_or_none()
 
     provider_result = await db.execute(

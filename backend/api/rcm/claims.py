@@ -282,7 +282,12 @@ async def submit_claim_batch(
                 payer_id=payer_id,
             )
 
-            edi_file_result = await db.execute(select(EDIFile).where(EDIFile.id == result["file_id"]))
+            edi_file_result = await db.execute(
+                select(EDIFile).where(and_(
+                    EDIFile.id == result["file_id"],
+                    EDIFile.tenant_id == current_user.tenant_id,
+                ))
+            )
             edi_file = edi_file_result.scalar_one_or_none()
 
             if edi_file:
@@ -291,7 +296,12 @@ async def submit_claim_batch(
                     edi_file.processed_at = datetime.utcnow()
 
                     for cid in claim_ids:
-                        claim_result = await db.execute(select(Claim).where(Claim.id == cid))
+                        claim_result = await db.execute(
+                            select(Claim).where(and_(
+                                Claim.id == cid,
+                                Claim.tenant_id == current_user.tenant_id,
+                            ))
+                        )
                         claim = claim_result.scalar_one_or_none()
                         if claim:
                             claim.state = "submitted"
@@ -420,25 +430,53 @@ async def import_claims_csv(
     """
     import csv
     import io
+    from models.patient import Patient
 
     content = await file.read()
     csv_file = io.StringIO(content.decode("utf-8"))
     reader = csv.DictReader(csv_file)
+
+    # Pre-fetch tenant-owned patient and payer ID sets for fast tenant-ownership validation.
+    patients_q = await db.execute(
+        select(Patient.id).where(Patient.tenant_id == current_user.tenant_id)
+    )
+    valid_patient_ids = {row[0] for row in patients_q.all()}
+
+    payers_q = await db.execute(
+        select(PayerProfile.id).where(PayerProfile.tenant_id == current_user.tenant_id)
+    )
+    valid_payer_ids = {row[0] for row in payers_q.all()}
 
     created_claims = []
     errors = []
 
     for row_num, row in enumerate(reader, start=2):
         try:
+            patient_id = int(row.get("patient_id", 0)) if row.get("patient_id") else None
+            payer_id = int(row.get("payer_id", 0)) if row.get("payer_id") else None
+
+            if patient_id is not None and patient_id not in valid_patient_ids:
+                errors.append({
+                    "row": row_num,
+                    "error": f"patient_id {patient_id} does not belong to your tenant or does not exist",
+                })
+                continue
+            if payer_id is not None and payer_id not in valid_payer_ids:
+                errors.append({
+                    "row": row_num,
+                    "error": f"payer_id {payer_id} does not belong to your tenant or does not exist",
+                })
+                continue
+
             import uuid as _uuid
             short_id = _uuid.uuid4().hex[:8].upper()
             claim_number = f"CLM-{datetime.now().strftime('%Y%m%d')}-{short_id}"
             new_claim = Claim(
                 tenant_id=current_user.tenant_id,
                 claim_number=claim_number,
-                patient_id=int(row.get("patient_id", 0)) if row.get("patient_id") else None,
+                patient_id=patient_id,
                 provider_id=int(row.get("provider_id", 0)) if row.get("provider_id") else None,
-                payer_id=int(row.get("payer_id", 0)) if row.get("payer_id") else None,
+                payer_id=payer_id,
                 service_date_from=datetime.strptime(row["service_date_from"], "%Y-%m-%d").date() if row.get("service_date_from") else datetime.utcnow().date(),
                 total_charges=float(row.get("total_charges", 0)),
                 claim_type=row.get("claim_type", "professional"),

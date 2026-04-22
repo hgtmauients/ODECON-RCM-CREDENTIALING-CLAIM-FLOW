@@ -45,7 +45,8 @@ async def _verify_payer_tenant(payer_id: int, tenant_id: str, db: AsyncSession) 
 @router.get("")
 async def list_payers(
     state_code: Optional[str] = None,
-    is_active: Optional[bool] = True,
+    is_active: Optional[bool] = None,
+    is_draft: Optional[bool] = None,
     search: Optional[str] = None,
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
@@ -54,16 +55,20 @@ async def list_payers(
 ):
     """
     List all payer profiles
-    Filterable by state, active status, search query
+    Filterable by state, active status, draft status, and search query.
+    Pass no is_active / is_draft to see all (including drafts).
     """
     try:
         query = select(PayerProfile).where(PayerProfile.tenant_id == current_user.tenant_id)
-        
+
         if state_code:
             query = query.where(PayerProfile.state_code == state_code)
-        
+
         if is_active is not None:
             query = query.where(PayerProfile.is_active == is_active)
+
+        if is_draft is not None:
+            query = query.where(PayerProfile.is_draft == is_draft)
         
         if search:
             search_term = f"%{search}%"
@@ -87,6 +92,8 @@ async def list_payers(
             count_query = count_query.where(PayerProfile.state_code == state_code)
         if is_active is not None:
             count_query = count_query.where(PayerProfile.is_active == is_active)
+        if is_draft is not None:
+            count_query = count_query.where(PayerProfile.is_draft == is_draft)
         
         total_result = await db.execute(count_query)
         total = total_result.scalar() or 0

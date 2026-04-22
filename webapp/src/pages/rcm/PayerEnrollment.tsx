@@ -29,16 +29,13 @@ interface PayerEnrollmentCase {
 export default function PayerEnrollment() {
   const navigate = useNavigate();
   const [statusFilter, setStatusFilter] = useState<string>('');
-  const [payerFilter, setPayerFilter] = useState<number | ''>('');
 
   // Fetch enrollment cases
-  const { data, isLoading } = useQuery(
-    ['payer-enrollment-cases', statusFilter, payerFilter],
+  const { data, isLoading, isError, error } = useQuery(
+    ['payer-enrollment-cases', statusFilter],
     async () => {
       const params: Record<string, string | undefined> = {};
       if (statusFilter) params.status = statusFilter;
-      if (payerFilter) params.payer_id = String(payerFilter);
-      
       return apiService.get('/rcm/payer-enrollment/cases', { params });
     }
   );
@@ -122,7 +119,6 @@ export default function PayerEnrollment() {
             <button
               onClick={() => {
                 setStatusFilter('');
-                setPayerFilter('');
               }}
               style={{
                 padding: 'var(--space-3) var(--space-4)',
@@ -149,7 +145,17 @@ export default function PayerEnrollment() {
         }}>
           {isLoading ? (
             <div style={{ padding: 'var(--space-8)', textAlign: 'center', color: 'var(--text-secondary)' }}>
-              Loading...
+              <div style={{ width: 24, height: 24, margin: '0 auto', border: '3px solid var(--border-light)', borderTopColor: 'var(--brand-primary)', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} />
+              <div style={{ marginTop: 'var(--space-3)' }}>Loading enrollment cases...</div>
+            </div>
+          ) : isError ? (
+            <div style={{ padding: 'var(--space-8)', textAlign: 'center', color: 'var(--brand-error)' }}>
+              <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 600, marginBottom: 'var(--space-2)' }}>
+                Failed to load enrollment cases
+              </h3>
+              <p style={{ color: 'var(--text-secondary)' }}>
+                {(error as any)?.message || 'Please refresh the page or try again later.'}
+              </p>
             </div>
           ) : cases.length === 0 ? (
             <div style={{ padding: 'var(--space-8)', textAlign: 'center', color: 'var(--text-secondary)' }}>

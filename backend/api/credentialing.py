@@ -14,6 +14,7 @@ import asyncio
 
 from core.database import get_db
 from api.auth import get_current_user, Principal
+from api.schemas import ProviderCreate, ProviderUpdate, ApproveRequest, RejectRequest, ProviderSignupWebhook
 from models.credentialing import ProviderCredentialing, CredentialingVerificationLog
 from services.credentialing_service import credentialing_service
 
@@ -186,7 +187,7 @@ async def list_credentialing_queue(
 
 @router.post("/manual")
 async def create_provider_manual(
-    body: Dict[str, Any],
+    body: ProviderCreate,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
@@ -194,49 +195,48 @@ async def create_provider_manual(
     current_user.require_role("admin")
 
     import uuid
-    npi = body.get("npi", "")
-    provider_id = f"PROV_{npi}_{uuid.uuid4().hex[:8]}" if npi else f"PROV_{uuid.uuid4().hex[:12]}"
+    npi = body.npi
+    provider_id = f"PROV_{npi}_{uuid.uuid4().hex[:8]}"
 
     credentialing = ProviderCredentialing(
         tenant_id=current_user.tenant_id,
         provider_id=provider_id,
         signup_data={
-            "first_name": body.get("first_name", ""),
-            "last_name": body.get("last_name", ""),
-            "email": body.get("email", ""),
+            "first_name": body.first_name,
+            "last_name": body.last_name,
+            "email": body.email or "",
             "npi": npi,
-            "state_code": body.get("state_code", ""),
-            "license_number": body.get("license_number", ""),
-            "specialty": body.get("specialty", ""),
-            "provider_type": body.get("provider_type", "MD"),
-            "date_of_birth": body.get("date_of_birth", ""),
-            "phone": body.get("phone", ""),
+            "state_code": body.state_code or "",
+            "license_number": body.license_number or "",
+            "specialty": body.specialty or "",
+            "provider_type": body.provider_type or "MD",
+            "date_of_birth": body.date_of_birth or "",
+            "phone": body.phone or "",
         },
-        licenses=body.get("licenses", []),
-        specialties=body.get("specialties", []),
-        dea_certificates=body.get("dea_certificates", []),
-        cned_certificates=body.get("cned_certificates", []),
-        license_url=body.get("license_url"),
+        licenses=[lic.model_dump() for lic in (body.licenses or [])],
+        specialties=[sp.model_dump() for sp in (body.specialties or [])],
+        dea_certificates=[d.model_dump() for d in (body.dea_certificates or [])],
+        cned_certificates=[c.model_dump() for c in (body.cned_certificates or [])],
+        license_url=body.license_url,
         credentialing_status="pending",
     )
     db.add(credentialing)
     await db.commit()
 
-    # Run background verification checks if requested
-    if body.get("run_checks", True):
+    if body.run_checks:
         asyncio.create_task(run_credentialing_checks(provider_id, credentialing.signup_data, current_user.tenant_id))
 
     return {
         "success": True,
         "provider_id": provider_id,
-        "status": "credentialing_initiated" if body.get("run_checks", True) else "pending",
+        "status": "credentialing_initiated" if body.run_checks else "pending",
     }
 
 
 @router.put("/{provider_id}")
 async def update_provider(
     provider_id: str,
-    body: Dict[str, Any],
+    body: ProviderUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
@@ -252,30 +252,27 @@ async def update_provider(
     if not credentialing:
         raise HTTPException(status_code=404, detail="Provider not found")
 
-    # Update signup_data fields
-    if credentialing.signup_data:
-        updated_data = {**credentialing.signup_data}
-    else:
-        updated_data = {}
-
-    for field in ["first_name", "last_name", "email", "npi", "state_code", "license_number", "specialty", "provider_type", "date_of_birth", "phone"]:
-        if field in body:
-            updated_data[field] = body[field]
-
+    updates = body.model_dump(exclude_unset=True)
+    updated_data = {**(credentialing.signup_data or {})}
+    signup_fields = {"first_name", "last_name", "email", "npi", "state_code",
+                     "license_number", "specialty", "provider_type", "date_of_birth", "phone"}
+    for f in signup_fields:
+        if f in updates and updates[f] is not None:
+            updated_data[f] = updates[f]
     credentialing.signup_data = updated_data
 
-    if "admin_notes" in body:
-        credentialing.admin_notes = body["admin_notes"]
-    if "license_url" in body:
-        credentialing.license_url = body["license_url"]
-    if "licenses" in body:
-        credentialing.licenses = body["licenses"]
-    if "specialties" in body:
-        credentialing.specialties = body["specialties"]
-    if "dea_certificates" in body:
-        credentialing.dea_certificates = body["dea_certificates"]
-    if "cned_certificates" in body:
-        credentialing.cned_certificates = body["cned_certificates"]
+    if body.admin_notes is not None:
+        credentialing.admin_notes = body.admin_notes
+    if body.license_url is not None:
+        credentialing.license_url = body.license_url
+    if body.licenses is not None:
+        credentialing.licenses = [lic.model_dump() for lic in body.licenses]
+    if body.specialties is not None:
+        credentialing.specialties = [sp.model_dump() for sp in body.specialties]
+    if body.dea_certificates is not None:
+        credentialing.dea_certificates = [d.model_dump() for d in body.dea_certificates]
+    if body.cned_certificates is not None:
+        credentialing.cned_certificates = [c.model_dump() for c in body.cned_certificates]
 
     await db.commit()
     return {"success": True, "message": "Provider updated"}
@@ -332,13 +329,13 @@ async def rerun_credentialing_checks(
 @router.post("/{provider_id}/approve")
 async def approve_provider(
     provider_id: str,
-    body: Optional[Dict[str, Any]] = None,
+    body: Optional[ApproveRequest] = None,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
     """Approve provider credentialing - scoped to tenant"""
     current_user.require_role("admin")
-    notes = (body or {}).get("notes")
+    notes = body.notes if body else None
     try:
         result = await db.execute(
             select(ProviderCredentialing).where(and_(
@@ -386,15 +383,13 @@ async def approve_provider(
 @router.post("/{provider_id}/reject")
 async def reject_provider(
     provider_id: str,
-    body: Dict[str, Any],
+    body: RejectRequest,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
     """Reject provider credentialing - scoped to tenant"""
     current_user.require_role("admin")
-    reason = body.get("reason", "")
-    if not reason:
-        raise HTTPException(status_code=422, detail="Rejection reason is required")
+    reason = body.reason
     try:
         result = await db.execute(
             select(ProviderCredentialing).where(and_(

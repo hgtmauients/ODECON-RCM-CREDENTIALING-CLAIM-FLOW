@@ -176,6 +176,7 @@ class PayerProfileService {
   async listPayers(params?: {
     state_code?: string;
     is_active?: boolean;
+    is_draft?: boolean;
     search?: string;
     limit?: number;
     offset?: number;

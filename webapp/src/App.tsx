@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from 'react-query';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './auth/AuthProvider';
 import Layout from './components/Layout';
+import ErrorBoundary from './components/ErrorBoundary';
 import LoginPage from './pages/LoginPage';
 
 const ClaimsManagement = lazy(() => import('./pages/rcm/ClaimsManagement'));
@@ -43,10 +44,11 @@ function PageLoader() {
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AuthProvider>
-          <Routes>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <AuthProvider>
+            <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route
               path="/*"
@@ -77,10 +79,11 @@ export default function App() {
                 </ProtectedRoute>
               }
             />
-          </Routes>
-          <Toaster position="top-right" />
-        </AuthProvider>
-      </BrowserRouter>
-    </QueryClientProvider>
+            </Routes>
+            <Toaster position="top-right" />
+          </AuthProvider>
+        </BrowserRouter>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }

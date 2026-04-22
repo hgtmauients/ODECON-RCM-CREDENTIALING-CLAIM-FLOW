@@ -111,13 +111,16 @@ async def create_smart_payer_enrollment_cases(
             # National payers (no state_code) - always create if provider has at least one license
             # State-specific payers - only if provider licensed in that state
             
-            # Check if case already exists
-            existing_result = await db.execute(
-                select(PayerCredentialingCase).where(and_(
-                    PayerCredentialingCase.provider_id == provider_id,
-                    PayerCredentialingCase.payer_id == payer.id
-                ))
-            )
+            # Check if case already exists (tenant-scoped to prevent cross-tenant collisions)
+            existing_query = select(PayerCredentialingCase).where(and_(
+                PayerCredentialingCase.provider_id == provider_id,
+                PayerCredentialingCase.payer_id == payer.id,
+            ))
+            if tenant_id:
+                existing_query = existing_query.where(
+                    PayerCredentialingCase.tenant_id == tenant_id
+                )
+            existing_result = await db.execute(existing_query)
             existing_case = existing_result.scalar_one_or_none()
             
             if existing_case:

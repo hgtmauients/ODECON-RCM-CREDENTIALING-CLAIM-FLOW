@@ -489,52 +489,93 @@ class EDIProcessor:
             denials = []
             total_paid = 0.0
 
+            def _flush(claim_record):
+                """Convert internal claim record to payment or denial output shape."""
+                if not claim_record:
+                    return
+                # Build the flat shape DenialManager expects, plus keep carc_codes list
+                # for backward compatibility.
+                cas_list = claim_record.get("carc_codes", [])
+                primary_cas = cas_list[0] if cas_list else None
+                flat_record = {
+                    "claim_number": claim_record["claim_number"],
+                    "status_code": claim_record["status_code"],
+                    "paid_amount": claim_record["paid_amount"],
+                    "carc_codes": cas_list,
+                    "carc": f"{primary_cas['group']}-{primary_cas['code']}" if primary_cas else None,
+                    "rarc": claim_record.get("rarc"),
+                    "denied_amount": sum(c.get("amount", 0) for c in cas_list),
+                    "denial_description": claim_record.get("denial_description", ""),
+                    "line_number": claim_record.get("line_number"),
+                }
+                if claim_record["paid_amount"] > 0 and not cas_list:
+                    payments.append(flat_record)
+                elif cas_list:
+                    denials.append(flat_record)
+                else:
+                    # Zero-pay with no adjustments — still record as a payment for visibility
+                    payments.append(flat_record)
+
             if content:
-                current_claim_number = None
-                current_payment = None
+                current_claim = None
 
                 for segment in content.split("~"):
                     segment = segment.strip()
 
                     # CLP segment: claim-level payment info
                     if segment.startswith("CLP"):
-                        if current_payment:
-                            if current_payment.get("paid_amount", 0) > 0:
-                                payments.append(current_payment)
-                            elif current_payment.get("carc_codes"):
-                                denials.append(current_payment)
+                        _flush(current_claim)
 
                         parts = segment.split("*")
                         current_claim_number = parts[1] if len(parts) > 1 else None
                         claim_status = parts[2] if len(parts) > 2 else ""
                         paid_amount = float(parts[4]) if len(parts) > 4 else 0.0
 
-                        current_payment = {
+                        current_claim = {
                             "claim_number": current_claim_number,
                             "status_code": claim_status,
                             "paid_amount": paid_amount,
                             "carc_codes": [],
+                            "rarc": None,
+                            "denial_description": "",
                         }
                         total_paid += paid_amount
 
-                    # CAS segment: adjustment/denial codes
-                    if segment.startswith("CAS") and current_payment:
+                    # CAS segment: adjustment/denial codes (group, reason, amount triplets)
+                    elif segment.startswith("CAS") and current_claim is not None:
                         parts = segment.split("*")
                         group_code = parts[1] if len(parts) > 1 else ""
-                        reason_code = parts[2] if len(parts) > 2 else ""
-                        amount = float(parts[3]) if len(parts) > 3 else 0.0
-                        current_payment["carc_codes"].append({
-                            "group": group_code,
-                            "code": reason_code,
-                            "amount": amount,
-                        })
+                        # CAS can carry up to 6 adjustment triplets in one segment.
+                        # parts[2] = reason, parts[3] = amount; then [5,6], [8,9], etc.
+                        for offset in (2, 5, 8, 11, 14, 17):
+                            if len(parts) > offset + 1:
+                                reason_code = parts[offset] or ""
+                                amount_str = parts[offset + 1] or "0"
+                                if reason_code:
+                                    try:
+                                        amount = float(amount_str)
+                                    except ValueError:
+                                        amount = 0.0
+                                    current_claim["carc_codes"].append({
+                                        "group": group_code,
+                                        "code": reason_code,
+                                        "amount": amount,
+                                    })
 
-                # Flush last payment
-                if current_payment:
-                    if current_payment.get("paid_amount", 0) > 0:
-                        payments.append(current_payment)
-                    elif current_payment.get("carc_codes"):
-                        denials.append(current_payment)
+                    # LQ segment carries Remark Codes (RARCs) when LQ01='HE'
+                    elif segment.startswith("LQ") and current_claim is not None:
+                        parts = segment.split("*")
+                        if len(parts) > 2 and parts[1] == "HE":
+                            current_claim["rarc"] = parts[2]
+
+                    # MOA segment: outpatient adjudication info, sometimes carries denial reason text
+                    elif segment.startswith("MOA") and current_claim is not None:
+                        parts = segment.split("*")
+                        descs = [p for p in parts[3:] if p and len(p) <= 5]
+                        if descs:
+                            current_claim["denial_description"] = " ".join(descs)
+
+                _flush(current_claim)
 
             edi_file.status = "processed"
             edi_file.processed_at = datetime.utcnow()

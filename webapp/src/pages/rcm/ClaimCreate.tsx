@@ -30,14 +30,19 @@ export default function ClaimCreate() {
   const navigate = useNavigate();
 
   // Fetch available payers and patients for dropdowns
-  const { data: payersData } = useQuery('payers-for-claims', () => apiService.get('/rcm/payers'));
-  const { data: patientsData } = useQuery('patients-for-claims', () => apiService.get('/rcm/patients'));
+  const { data: payersData, isLoading: loadingPayers, isError: payersError } = useQuery(
+    'payers-for-claims',
+    () => apiService.get('/rcm/payers'),
+  );
+  const { data: patientsData, isLoading: loadingPatients, isError: patientsError } = useQuery(
+    'patients-for-claims',
+    () => apiService.get('/rcm/patients'),
+  );
   const payers: Array<{ id: number; name: string; payer_id?: string }> = payersData?.data || [];
   const patients: Array<{ id: number; first_name: string; last_name: string; member_id: string }> = patientsData?.data || [];
 
   const [form, setForm] = useState({
     patient_id: '',
-    provider_id: '',
     payer_id: '',
     service_date_from: '',
     service_date_to: '',
@@ -113,14 +118,21 @@ export default function ClaimCreate() {
   const totalCharges = lines.reduce((sum, l) => sum + (parseFloat(l.charge_amount) || 0) * l.units, 0);
 
   const handleSubmit = () => {
+    if (!form.patient_id) { toast.error('Patient is required'); return; }
+    if (!form.payer_id) { toast.error('Payer is required'); return; }
     if (!form.service_date_from) { toast.error('Service date is required'); return; }
+    if (!form.billing_provider_npi || form.billing_provider_npi.length !== 10) {
+      toast.error('Billing Provider NPI (10 digits) is required'); return;
+    }
     if (!lines[0]?.cpt_code) { toast.error('At least one CPT code is required'); return; }
+    if (!lines[0]?.charge_amount || parseFloat(lines[0].charge_amount) <= 0) {
+      toast.error('First service line must have a charge amount'); return;
+    }
     if (!diagnoses[0]?.icd10_code) { toast.error('At least one diagnosis is required'); return; }
 
     createMutation.mutate({
-      patient_id: form.patient_id ? parseInt(form.patient_id) : null,
-      provider_id: form.provider_id ? parseInt(form.provider_id) : null,
-      payer_id: form.payer_id ? parseInt(form.payer_id) : null,
+      patient_id: parseInt(form.patient_id),
+      payer_id: parseInt(form.payer_id),
       service_date_from: form.service_date_from,
       service_date_to: form.service_date_to || form.service_date_from,
       total_charges: totalCharges,
@@ -211,10 +223,23 @@ export default function ClaimCreate() {
             <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 600, marginBottom: 'var(--space-4)' }}>References</h2>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
               <div>
-                <label style={labelStyle}>Patient</label>
+                <label style={labelStyle}>Patient *</label>
                 <div style={{ display: 'flex', gap: 4 }}>
-                  <select value={form.patient_id} onChange={e => handleFieldChange('patient_id', e.target.value)} style={{ ...inputStyle, flex: 1 }}>
-                    <option value="">Select patient...</option>
+                  <select
+                    value={form.patient_id}
+                    onChange={e => handleFieldChange('patient_id', e.target.value)}
+                    style={{ ...inputStyle, flex: 1 }}
+                    disabled={loadingPatients}
+                  >
+                    <option value="">
+                      {loadingPatients
+                        ? 'Loading patients...'
+                        : patientsError
+                        ? 'Failed to load patients'
+                        : patients.length === 0
+                        ? 'No patients yet — click Manage to add one'
+                        : 'Select patient...'}
+                    </option>
                     {patients.map(p => (
                       <option key={p.id} value={String(p.id)}>{p.last_name}, {p.first_name} ({p.member_id})</option>
                     ))}
@@ -223,16 +248,29 @@ export default function ClaimCreate() {
                 </div>
               </div>
               <div>
-                <label style={labelStyle}>Payer</label>
-                <select value={form.payer_id} onChange={e => handleFieldChange('payer_id', e.target.value)} style={inputStyle}>
-                  <option value="">Select payer...</option>
+                <label style={labelStyle}>Payer *</label>
+                <select
+                  value={form.payer_id}
+                  onChange={e => handleFieldChange('payer_id', e.target.value)}
+                  style={inputStyle}
+                  disabled={loadingPayers}
+                >
+                  <option value="">
+                    {loadingPayers
+                      ? 'Loading payers...'
+                      : payersError
+                      ? 'Failed to load payers'
+                      : payers.length === 0
+                      ? 'No payers configured — go to Admin > Payers'
+                      : 'Select payer...'}
+                  </option>
                   {payers.map(p => (
                     <option key={p.id} value={String(p.id)}>{p.name}{p.payer_id ? ` (${p.payer_id})` : ''}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label style={labelStyle}>Billing NPI</label>
+                <label style={labelStyle}>Billing NPI *</label>
                 <input value={form.billing_provider_npi} onChange={e => handleFieldChange('billing_provider_npi', e.target.value)} placeholder="10-digit NPI" maxLength={10} style={inputStyle} />
               </div>
               <div>

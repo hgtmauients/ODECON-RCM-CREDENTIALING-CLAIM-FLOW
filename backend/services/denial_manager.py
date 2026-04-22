@@ -51,54 +51,77 @@ class DenialManager:
             
             for denial in denials_data:
                 try:
+                    claim_number = denial.get("claim_number")
+                    if not claim_number:
+                        results["errors"].append("Denial record missing claim_number")
+                        continue
+
+                    # parse_835 produces "carc": "CO-16" (group-code). Strip the group prefix
+                    # for CARC lookup, since CARCCode.code stores the bare reason code.
+                    raw_carc = denial.get("carc") or ""
+                    if "-" in raw_carc:
+                        carc_code_only = raw_carc.split("-", 1)[1]
+                    else:
+                        carc_code_only = raw_carc
+
+                    if not carc_code_only:
+                        results["errors"].append(f"Denial for {claim_number} has no CARC code")
+                        continue
+
                     # Find claim (tenant-scoped)
-                    claim_query = select(Claim).where(Claim.claim_number == denial["claim_number"])
+                    claim_query = select(Claim).where(Claim.claim_number == claim_number)
                     if tenant_id:
                         claim_query = claim_query.where(Claim.tenant_id == tenant_id)
                     claim_result = await self.db.execute(claim_query)
                     claim = claim_result.scalar_one_or_none()
-                    
+
                     if not claim:
-                        results["errors"].append(f"Claim not found: {denial['claim_number']}")
+                        results["errors"].append(f"Claim not found: {claim_number}")
                         continue
-                    
+
                     # Get CARC code details for auto-categorization
                     carc_result = await self.db.execute(
-                        select(CARCCode).where(CARCCode.code == denial["carc"])
+                        select(CARCCode).where(CARCCode.code == carc_code_only)
                     )
                     carc = carc_result.scalar_one_or_none()
                     
                     # Determine category
                     category = carc.category if carc else "uncategorized"
                     
-                    # Find appropriate playbook
-                    playbook = await self._find_playbook(denial["carc"], denial.get("rarc"), category)
-                    
-                    # Get payer for appeal window calculation
-                    payer_result = await self.db.execute(
-                        select(PayerProfile).where(PayerProfile.id == claim.payer_id)
-                    )
-                    payer = payer_result.scalar_one_or_none()
-                    
+                    # Find appropriate playbook (tenant-scoped via _find_playbook update below)
+                    playbook = await self._find_playbook(carc_code_only, denial.get("rarc"), category, tenant_id=tenant_id or str(claim.tenant_id))
+
+                    # Get payer for appeal window calculation (tenant-scoped)
+                    payer = None
+                    if claim.payer_id:
+                        payer_result = await self.db.execute(
+                            select(PayerProfile).where(and_(
+                                PayerProfile.id == claim.payer_id,
+                                PayerProfile.tenant_id == claim.tenant_id,
+                            ))
+                        )
+                        payer = payer_result.scalar_one_or_none()
+
                     # Calculate appeal due date
                     appeal_window_days = payer.appeal_window_days if payer else 180
                     appeal_due_date = datetime.now().date() + timedelta(days=appeal_window_days)
-                    
+
+                    denied_amount = denial.get("denied_amount") or 0
                     # Create denial case
                     denial_case = DenialCase(
                         tenant_id=tenant_id or str(claim.tenant_id),
                         claim_id=claim.id,
                         claim_line_id=denial.get("line_id"),
-                        carc_code=denial["carc"],
+                        carc_code=carc_code_only,
                         rarc_code=denial.get("rarc"),
                         denial_description=denial.get("denial_description", ""),
                         denial_category=category,
-                        denied_amount=denial["denied_amount"],
+                        denied_amount=denied_amount,
                         status="new",
                         appeal_due_date=appeal_due_date,
                         days_until_due=(appeal_due_date - datetime.now().date()).days,
                         playbook_id=playbook.id if playbook else None,
-                        priority=self._determine_priority(denial["denied_amount"], appeal_due_date)
+                        priority=self._determine_priority(denied_amount, appeal_due_date)
                     )
                     self.db.add(denial_case)
                     
@@ -115,12 +138,12 @@ class DenialManager:
                         from_state=claim.previous_state or "adjudicated",
                         to_state="denied",
                         data={
-                            "carc": denial["carc"],
+                            "carc": carc_code_only,
                             "rarc": denial.get("rarc"),
-                            "denied_amount": float(denial["denied_amount"]),
+                            "denied_amount": float(denied_amount),
                             "category": category
                         },
-                        message=f"Denial: {denial['carc']} - {denial.get('denial_description', '')}",
+                        message=f"Denial: {carc_code_only} - {denial.get('denial_description', '')}",
                         edi_file_id=edi_file_id
                     )
                     self.db.add(event)
@@ -150,42 +173,57 @@ class DenialManager:
             logger.error(f"Error processing 835 denials: {e}")
             raise
     
-    async def generate_appeal(self, denial_case_id: int) -> Dict[str, Any]:
+    async def generate_appeal(self, denial_case_id: int, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Generate appeal packet from template
         Returns appeal letter with merge fields filled
+
+        tenant_id is required for multi-tenant safety. Pass it from the caller's
+        authenticated principal to prevent cross-tenant data leakage.
         """
         try:
-            # Get denial case
-            denial_result = await self.db.execute(
-                select(DenialCase).where(DenialCase.id == denial_case_id)
-            )
+            denial_query = select(DenialCase).where(DenialCase.id == denial_case_id)
+            if tenant_id:
+                denial_query = denial_query.where(DenialCase.tenant_id == tenant_id)
+            denial_result = await self.db.execute(denial_query)
             denial_case = denial_result.scalar_one_or_none()
-            
+
             if not denial_case:
                 raise ValueError("Denial case not found")
-            
-            # Get playbook
+
             if not denial_case.playbook_id:
                 raise ValueError("No playbook assigned to this denial")
-            
+
+            # Tenant comes from the case (already validated above) for downstream lookups
+            scoped_tenant_id = tenant_id or str(denial_case.tenant_id)
+
             playbook_result = await self.db.execute(
-                select(DenialPlaybook).where(DenialPlaybook.id == denial_case.playbook_id)
+                select(DenialPlaybook).where(and_(
+                    DenialPlaybook.id == denial_case.playbook_id,
+                    DenialPlaybook.tenant_id == scoped_tenant_id,
+                ))
             )
             playbook = playbook_result.scalar_one_or_none()
-            
-            # Get appeal template
+
+            if not playbook:
+                raise ValueError("Playbook not found or not accessible")
+
             template_result = await self.db.execute(
-                select(AppealTemplate).where(AppealTemplate.id == playbook.appeal_template_id)
+                select(AppealTemplate).where(and_(
+                    AppealTemplate.id == playbook.appeal_template_id,
+                    AppealTemplate.tenant_id == scoped_tenant_id,
+                ))
             )
             template = template_result.scalar_one_or_none()
-            
+
             if not template:
                 raise ValueError("Appeal template not found")
-            
-            # Get claim for merge fields
+
             claim_result = await self.db.execute(
-                select(Claim).where(Claim.id == denial_case.claim_id)
+                select(Claim).where(and_(
+                    Claim.id == denial_case.claim_id,
+                    Claim.tenant_id == scoped_tenant_id,
+                ))
             )
             claim = claim_result.scalar_one_or_none()
             
@@ -274,38 +312,48 @@ class DenialManager:
             logger.error(f"Error analyzing denial trends: {e}")
             raise
     
-    async def _find_playbook(self, carc: str, rarc: Optional[str], category: str) -> Optional[DenialPlaybook]:
-        """Find best matching playbook for denial codes"""
+    async def _find_playbook(
+        self,
+        carc: str,
+        rarc: Optional[str],
+        category: str,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[DenialPlaybook]:
+        """Find best matching playbook for denial codes (tenant-scoped)."""
         try:
-            # Try exact match on CARC + RARC
+            tenant_filter = []
+            if tenant_id:
+                tenant_filter.append(DenialPlaybook.tenant_id == tenant_id)
+
             if rarc:
                 result = await self.db.execute(
                     select(DenialPlaybook).where(and_(
                         DenialPlaybook.carc_code == carc,
                         DenialPlaybook.rarc_code == rarc,
-                        DenialPlaybook.is_active == True
+                        DenialPlaybook.is_active == True,
+                        *tenant_filter,
                     ))
                 )
                 playbook = result.scalar_one_or_none()
                 if playbook:
                     return playbook
-            
-            # Try CARC only
+
             result = await self.db.execute(
                 select(DenialPlaybook).where(and_(
                     DenialPlaybook.carc_code == carc,
-                    DenialPlaybook.is_active == True
+                    DenialPlaybook.is_active == True,
+                    *tenant_filter,
                 ))
             )
             playbook = result.scalar_one_or_none()
             if playbook:
                 return playbook
-            
-            # Try category match
+
             result = await self.db.execute(
                 select(DenialPlaybook).where(and_(
                     DenialPlaybook.denial_category == category,
-                    DenialPlaybook.is_active == True
+                    DenialPlaybook.is_active == True,
+                    *tenant_filter,
                 ))
             )
             playbook = result.scalar_one_or_none()

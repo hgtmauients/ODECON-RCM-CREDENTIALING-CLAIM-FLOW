@@ -13,7 +13,7 @@ import jwt
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-JWT_SECRET = os.getenv("JWT_SECRET", "claimflow-dev-secret-change-me")
+JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 DEV_MODE = os.getenv("ENV", "development") == "development"
 

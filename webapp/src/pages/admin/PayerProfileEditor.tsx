@@ -51,24 +51,27 @@ export default function PayerProfileEditor() {
   });
 
   // Fetch existing payer if editing
-  const { data: existingPayer, isLoading } = useQuery(
+  const { data: existingPayer, isLoading, isError, error: loadError } = useQuery(
     ['payer-profile', payerId],
     () => payerProfileService.getPayerProfile(Number(payerId)),
     {
       enabled: !isNew && !!payerId,
       onSuccess: (data) => {
         setFormData(data);
-      }
+      },
+      onError: (err) => {
+        logger.error('Failed to load payer profile', { err });
+      },
     }
   );
 
-  // Save mutation
+  // Save mutation - accepts the fully merged payload (formData + credentials)
   const saveMutation = useMutation(
-    async () => {
+    async (payload: Partial<PayerProfile>) => {
       if (isNew) {
-        return payerProfileService.createPayer(formData);
+        return payerProfileService.createPayer(payload);
       } else {
-        return payerProfileService.updatePayer(Number(payerId), formData);
+        return payerProfileService.updatePayer(Number(payerId), payload);
       }
     },
     {
@@ -124,8 +127,8 @@ export default function PayerProfileEditor() {
         dataToSave[key] = value;
       }
     });
-    
-    saveMutation.mutate();
+
+    saveMutation.mutate(dataToSave as Partial<PayerProfile>);
   };
 
   const handlePublish = () => {
@@ -152,6 +155,24 @@ export default function PayerProfileEditor() {
     return (
       <div style={{ padding: 'var(--space-8)', textAlign: 'center' }}>
         <PremiumIcon name="spinner" spin style={{ fontSize: '2rem' }} />
+      </div>
+    );
+  }
+
+  if (isError && !isNew) {
+    return (
+      <div style={{ padding: 'var(--space-8)', maxWidth: 600, margin: '0 auto' }}>
+        <div className="card" style={{ padding: 'var(--space-6)', borderColor: 'var(--brand-error)' }}>
+          <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 700, color: 'var(--brand-error)', marginBottom: 'var(--space-3)' }}>
+            Failed to load payer profile
+          </h2>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: 'var(--space-4)' }}>
+            {(loadError as any)?.message || 'The payer profile could not be loaded. It may have been deleted or you may not have access.'}
+          </p>
+          <button className="btn btn-ghost" onClick={() => navigate('/admin/payers')}>
+            Back to Payer List
+          </button>
+        </div>
       </div>
     );
   }

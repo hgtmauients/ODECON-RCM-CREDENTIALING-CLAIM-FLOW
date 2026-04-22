@@ -1,10 +1,15 @@
 """
 ClaimFlow - JWT/OIDC authentication and tenant-aware principal.
 Supports both HS256 (dev) and RS256/JWKS (production OIDC providers).
+
+Security model:
+- Tenant ID MUST come from the JWT token, never from a request header.
+- The X-Tenant-ID header is only honored when the principal has the
+  super_admin role (for cross-tenant operations like impersonation).
+- In production (ENV=production), JWT_SECRET must be set or startup fails.
 """
 
 import os
-import time
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
@@ -17,11 +22,29 @@ from jwt import PyJWKClient
 
 logger = logging.getLogger(__name__)
 
-JWT_SECRET = os.getenv("JWT_SECRET", "claimflow-dev-secret-change-me")
+ENV = os.getenv("ENV", "development")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "claimflow")
 JWT_ISSUER = os.getenv("JWT_ISSUER", "")
 JWT_JWKS_URL = os.getenv("JWT_JWKS_URL", "")
+
+_DEV_FALLBACK_SECRET = "claimflow-dev-secret-change-me-min32ch"
+JWT_SECRET = os.getenv("JWT_SECRET", "")
+
+if not JWT_SECRET:
+    if ENV == "production":
+        raise RuntimeError(
+            "JWT_SECRET is required in production. "
+            "Generate one with: openssl rand -base64 32"
+        )
+    JWT_SECRET = _DEV_FALLBACK_SECRET
+    logger.warning("JWT_SECRET not set; using dev fallback (DO NOT USE IN PRODUCTION)")
+
+if ENV == "production" and JWT_ALGORITHM == "HS256" and len(JWT_SECRET) < 32:
+    raise RuntimeError("JWT_SECRET must be at least 32 characters in production")
+
+if ENV == "production" and JWT_ALGORITHM == "RS256" and not JWT_JWKS_URL:
+    raise RuntimeError("JWT_JWKS_URL is required when JWT_ALGORITHM=RS256 in production")
 
 _jwks_client: Optional[PyJWKClient] = None
 
@@ -44,6 +67,9 @@ class Principal:
     email: str
     roles: List[str] = field(default_factory=list)
     raw_claims: Dict[str, Any] = field(default_factory=dict)
+    # The tenant_id originally embedded in the JWT (before any super_admin override).
+    # Used for audit logging when super_admin acts on a different tenant.
+    token_tenant_id: str = ""
 
     def has_role(self, role: str) -> bool:
         for user_role in self.roles:
@@ -67,7 +93,7 @@ def _get_jwks_client() -> PyJWKClient:
 
 
 def _decode_token(token: str) -> Dict[str, Any]:
-    """Decode and validate a JWT. Supports HS256 dev and RS256/JWKS prod."""
+    """Decode and validate a JWT. Supports HS256 (dev) and RS256/JWKS (prod)."""
     if JWT_ALGORITHM == "RS256" and JWT_JWKS_URL:
         try:
             client = _get_jwks_client()
@@ -77,7 +103,8 @@ def _decode_token(token: str) -> Dict[str, Any]:
                 signing_key.key,
                 algorithms=["RS256"],
                 audience=JWT_AUDIENCE,
-                issuer=JWT_ISSUER or None,
+                issuer=JWT_ISSUER if JWT_ISSUER else None,
+                options={"verify_iss": bool(JWT_ISSUER)},
             )
             return payload
         except jwt.ExpiredSignatureError:
@@ -85,19 +112,19 @@ def _decode_token(token: str) -> Dict[str, Any]:
         except jwt.InvalidTokenError as exc:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}")
 
-    options: Dict[str, Any] = {}
-    if not JWT_ISSUER:
-        options["verify_iss"] = False
-    if JWT_AUDIENCE == "claimflow" and JWT_SECRET.startswith("claimflow-dev"):
-        options["verify_aud"] = False
+    # HS256 path - audience and issuer are always verified when configured.
+    options: Dict[str, Any] = {
+        "verify_iss": bool(JWT_ISSUER),
+        "verify_aud": bool(JWT_AUDIENCE),
+    }
 
     try:
         payload = jwt.decode(
             token,
             JWT_SECRET,
             algorithms=[JWT_ALGORITHM],
-            audience=JWT_AUDIENCE if options.get("verify_aud", True) else None,
-            issuer=JWT_ISSUER if options.get("verify_iss", True) else None,
+            audience=JWT_AUDIENCE if JWT_AUDIENCE else None,
+            issuer=JWT_ISSUER if JWT_ISSUER else None,
             options=options,
         )
         return payload
@@ -111,7 +138,15 @@ async def get_current_user(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
 ) -> Principal:
-    """FastAPI dependency - validates JWT and returns a Principal with tenant context."""
+    """
+    FastAPI dependency: validates JWT and returns a Principal with tenant context.
+
+    Tenant resolution:
+    1. The JWT MUST contain a tenant_id claim (or the namespaced equivalent).
+       Without it, the request is rejected.
+    2. The X-Tenant-ID header is only honored when the principal has super_admin role
+       (allows cross-tenant operations like support / impersonation).
+    """
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -120,21 +155,41 @@ async def get_current_user(
 
     payload = _decode_token(credentials.credentials)
 
-    tenant_id = (
+    token_tenant_id = (
         payload.get("tenant_id")
         or payload.get("https://claimflow.io/tenant_id")
-        or request.headers.get("X-Tenant-ID")
+        or ""
     )
-    if not tenant_id:
+    if not token_tenant_id:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="tenant_id not found in token or headers",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token does not contain a tenant_id claim",
         )
+
+    roles = payload.get("roles", []) or []
+    is_super_admin = any(r == "super_admin" for r in roles)
+
+    # Only super_admin can override tenant via the X-Tenant-ID header
+    header_tenant_id = request.headers.get("X-Tenant-ID")
+    if header_tenant_id and header_tenant_id != token_tenant_id:
+        if not is_super_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="X-Tenant-ID override requires super_admin role",
+            )
+        logger.info(
+            "Super-admin tenant override: user=%s token_tenant=%s acting_as=%s",
+            payload.get("sub", ""), token_tenant_id, header_tenant_id,
+        )
+        effective_tenant_id = header_tenant_id
+    else:
+        effective_tenant_id = token_tenant_id
 
     return Principal(
         user_id=payload.get("sub", ""),
-        tenant_id=tenant_id,
+        tenant_id=effective_tenant_id,
         email=payload.get("email", ""),
-        roles=payload.get("roles", []),
+        roles=roles,
         raw_claims=payload,
+        token_tenant_id=token_tenant_id,
     )
