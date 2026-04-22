@@ -250,20 +250,45 @@ All users will be logged out and must sign in again.
 
 ### `CLAIMFLOW_ENCRYPTION_KEY`
 
-Encryption key rotation is graceful — the previous key continues to decrypt while the new key encrypts new data. Steps:
+Encryption key rotation is graceful — the previous key continues to decrypt
+while the new key encrypts new data. The version system makes this lossless:
 
 ```bash
 NEW_KEY=$(openssl rand -base64 32)
+
+# Inspect current state
+CURR_VERSION=$(grep '^CLAIMFLOW_ENCRYPTION_KEY_VERSION=' /opt/noodledoc/.env | cut -d= -f2-)
+CURR_VERSION=${CURR_VERSION:-1}
+NEXT_VERSION=$((CURR_VERSION + 1))
 OLD_KEY=$(grep '^CLAIMFLOW_ENCRYPTION_KEY=' /opt/noodledoc/.env | cut -d= -f2-)
 
-# Move the previous active key to v0 and set the new one
+# Park the OLD active key in its versioned slot, install NEW key as active,
+# and bump the active version pointer.
+echo "CLAIMFLOW_ENCRYPTION_KEY_v${CURR_VERSION}=$OLD_KEY" >> /opt/noodledoc/.env
 sed -i "s|^CLAIMFLOW_ENCRYPTION_KEY=.*|CLAIMFLOW_ENCRYPTION_KEY=$NEW_KEY|" /opt/noodledoc/.env
-echo "CLAIMFLOW_ENCRYPTION_KEY_v0=$OLD_KEY" >> /opt/noodledoc/.env
+sed -i "s|^CLAIMFLOW_ENCRYPTION_KEY_VERSION=.*|CLAIMFLOW_ENCRYPTION_KEY_VERSION=$NEXT_VERSION|" /opt/noodledoc/.env
 
 cd /opt/noodledoc && docker compose up -d --force-recreate backend
 ```
 
-The encryption module will use `CLAIMFLOW_ENCRYPTION_KEY` for new writes and try `CLAIMFLOW_ENCRYPTION_KEY_v0` first for legacy ciphertext. Optional: write a one-off script to read every encrypted setting and re-write it so all data uses the new key, then drop `_v0`.
+Behavior after rotation:
+- New `encrypt_credential()` writes are tagged with `NEXT_VERSION`.
+- Old ciphertext (tagged `CURR_VERSION`) keeps decrypting via the parked
+  `CLAIMFLOW_ENCRYPTION_KEY_v${CURR_VERSION}` slot.
+- Legacy (pre-v1) ciphertext continues to fall back through every loaded key.
+
+Optional sweep — re-encrypt all stored secrets under the new active version:
+
+```python
+# Inside a backend container, one-off script
+from services.encryption import reencrypt_with_active_key
+# For every encrypted column:
+new_blob = await reencrypt_with_active_key(old_blob)
+# persist new_blob
+```
+
+After the sweep is complete, the `_v${CURR_VERSION}` slot can be removed
+from `.env`.
 
 ### `POSTGRES_PASSWORD`
 
@@ -277,9 +302,24 @@ sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$NEW_PG_PASS|" /opt/noodledoc/
 cd /opt/noodledoc && docker compose up -d --force-recreate backend
 ```
 
-### `WEBHOOK_SECRET`
+### `WEBHOOK_SECRET` (per tenant)
 
-Rotated per-tenant via the Settings page. Coordinate with the integration partner.
+There is **no** shared / env-var fallback for the webhook secret — every
+tenant that wants to receive provider-signup webhooks MUST configure their
+own secret in the Settings page. This is intentional: a shared secret would
+let anyone holding it submit webhooks for any tenant.
+
+Webhook signature scheme: clients sign
+`<tenant_id>.<unix_timestamp>.<sha256_hex(body)>` with HMAC-SHA256, send the
+hex digest in `X-Webhook-Signature`, and pass the timestamp in
+`X-Webhook-Timestamp`. Replay window is 5 minutes; signatures are tracked
+in Redis so a captured signature cannot be replayed.
+
+Rotation:
+1. Generate a fresh random string (32+ bytes recommended).
+2. Save it via `Settings → Webhooks → Webhook Secret`.
+3. Coordinate with the integration partner — older signatures stop working
+   immediately on save.
 
 ---
 

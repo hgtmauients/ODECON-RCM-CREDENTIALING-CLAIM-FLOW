@@ -4,31 +4,40 @@ CRUD operations for payer profiles with credential management
 Ops can configure everything in the UI - no code changes needed
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, desc
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
 import logging
-import json
 import csv
 import io
+import os
 
 from core.database import get_db
+from core.audit import log_audit_event
 from models.rcm import (
     PayerProfile,
     PayerRule,
     TradingPartnerConnection,
-    PayerCredential,
     FeeSchedule,
-    PayerProfileVersion
+    PayerProfileVersion,
 )
 from api.auth import get_current_user, Principal
-from services.encryption import encrypt_credential, decrypt_credential
+from services.encryption import encrypt_credential
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rcm/payers", tags=["RCM - Payer Profiles"])
+
+# Fields that callers must never be allowed to overwrite via the bulk-update path.
+# tenant_id absence here is the v9-NEW-H1 reaffirmed bug — once excluded, the
+# payer cannot be reassigned to another tenant via PUT /rcm/payers/{id}.
+_PROTECTED_PAYER_FIELDS = frozenset({"id", "tenant_id", "created_at", "created_by"})
+_PROTECTED_RULE_FIELDS = frozenset({"id", "tenant_id", "payer_id", "created_at", "created_by"})
+
+# CSV upload limits (configurable per env).
+MAX_FEE_SCHEDULE_BYTES = int(os.getenv("MAX_FEE_SCHEDULE_BYTES", str(20 * 1024 * 1024)))  # 20 MB
 
 
 async def _verify_payer_tenant(payer_id: int, tenant_id: str, db: AsyncSession) -> None:
@@ -273,48 +282,51 @@ async def get_payer(
 @router.post("")
 async def create_payer(
     payer_data: Dict[str, Any],
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: Principal = Depends(get_current_user)
+    current_user: Principal = Depends(get_current_user),
 ):
-    """
-    Create new payer profile
-    Ops can do this directly in the UI
-    """
+    """Create new payer profile. Admin role required; mutation audited."""
+    current_user.require_role("admin")
     try:
-        # Create new payer
+        clean = {k: v for k, v in payer_data.items() if k not in _PROTECTED_PAYER_FIELDS}
         new_payer = PayerProfile(
-            **{k: v for k, v in payer_data.items() if k != 'id'},
+            **clean,
             tenant_id=current_user.tenant_id,
             created_by=current_user.email,
-            is_draft=True,  # Start as draft
-            version=1
+            is_draft=True,
+            version=1,
         )
-        
         db.add(new_payer)
-        await db.commit()
-        await db.refresh(new_payer)
-        
-        # Create initial version
+        await db.flush()
+
         version = PayerProfileVersion(
             payer_id=new_payer.id,
             version_number=1,
             profile_data=payer_data,
             change_summary="Initial creation",
-            changed_by=current_user.email
+            changed_by=current_user.email,
         )
         db.add(version)
+
+        await log_audit_event(
+            db, current_user, action="payer_created", resource_type="payer",
+            resource_id=str(new_payer.id), request=request,
+            metadata={"name": new_payer.name},
+        )
         await db.commit()
-        
-        logger.info(f"Created payer profile: {new_payer.name} (ID: {new_payer.id})")
-        
+        await db.refresh(new_payer)
+
         return {
             "success": True,
             "message": "Payer profile created successfully",
-            "data": {"id": new_payer.id, "version": new_payer.version}
+            "data": {"id": new_payer.id, "version": new_payer.version},
         }
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         await db.rollback()
-        logger.error(f"Error creating payer: {e}")
+        logger.exception("Error creating payer")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -322,82 +334,92 @@ async def create_payer(
 async def update_payer(
     payer_id: int,
     updates: Dict[str, Any],
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: Principal = Depends(get_current_user)
+    current_user: Principal = Depends(get_current_user),
 ):
+    """Update payer profile. Admin role required; mutation audited.
+
+    tenant_id is in _PROTECTED_PAYER_FIELDS so the payer cannot be reassigned
+    to another tenant via the bulk update path (closes NEW-H1).
     """
-    Update payer profile
-    Creates new version automatically
-    """
+    current_user.require_role("admin")
     try:
         result = await db.execute(
-            select(PayerProfile).where(and_(PayerProfile.id == payer_id, PayerProfile.tenant_id == current_user.tenant_id))
+            select(PayerProfile).where(and_(
+                PayerProfile.id == payer_id,
+                PayerProfile.tenant_id == current_user.tenant_id,
+            ))
         )
         payer = result.scalar_one_or_none()
-        
         if not payer:
             raise HTTPException(status_code=404, detail="Payer not found")
-        
-        # Update fields
+
+        applied = []
         for key, value in updates.items():
-            if key not in ['id', 'created_at', 'created_by'] and hasattr(payer, key):
+            if key in _PROTECTED_PAYER_FIELDS:
+                continue
+            if hasattr(payer, key):
                 setattr(payer, key, value)
-        
-        # Increment version
+                applied.append(key)
+
         payer.version += 1
         payer.updated_by = current_user.email
-        payer.is_draft = True  # Mark as draft after edit
-        
-        # Create new version
+        payer.is_draft = True
+
         version = PayerProfileVersion(
             payer_id=payer.id,
             version_number=payer.version,
             profile_data=updates,
-            change_summary=updates.get('change_summary', 'Updated configuration'),
-            changed_by=current_user.email
+            change_summary=updates.get("change_summary", "Updated configuration"),
+            changed_by=current_user.email,
         )
         db.add(version)
-        
+
+        await log_audit_event(
+            db, current_user, action="payer_updated", resource_type="payer",
+            resource_id=str(payer.id), request=request,
+            changes={"updated_fields": sorted(applied), "new_version": payer.version},
+        )
         await db.commit()
         await db.refresh(payer)
-        
-        logger.info(f"Updated payer profile: {payer.name} (ID: {payer.id}, Version: {payer.version})")
-        
+
         return {
             "success": True,
             "message": "Payer profile updated successfully",
-            "data": {"id": payer.id, "version": payer.version}
+            "data": {"id": payer.id, "version": payer.version},
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        logger.error(f"Error updating payer {payer_id}: {e}")
+        logger.exception("Error updating payer %s", payer_id)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/{payer_id}/publish")
 async def publish_payer(
     payer_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: Principal = Depends(get_current_user)
+    current_user: Principal = Depends(get_current_user),
 ):
-    """
-    Publish payer profile (Draft → Published workflow)
-    """
+    """Publish payer profile (Draft → Published). Admin role required."""
+    current_user.require_role("admin")
     try:
         result = await db.execute(
-            select(PayerProfile).where(and_(PayerProfile.id == payer_id, PayerProfile.tenant_id == current_user.tenant_id))
+            select(PayerProfile).where(and_(
+                PayerProfile.id == payer_id,
+                PayerProfile.tenant_id == current_user.tenant_id,
+            ))
         )
         payer = result.scalar_one_or_none()
-        
         if not payer:
             raise HTTPException(status_code=404, detail="Payer not found")
-        
+
         payer.is_draft = False
         payer.published_at = datetime.utcnow()
-        
-        # Mark latest version as published
+
         version_result = await db.execute(
             select(PayerProfileVersion)
             .where(PayerProfileVersion.payer_id == payer_id)
@@ -405,62 +427,68 @@ async def publish_payer(
             .limit(1)
         )
         latest_version = version_result.scalar_one_or_none()
-        
         if latest_version:
             latest_version.is_published = True
             latest_version.published_at = datetime.utcnow()
             latest_version.published_by = current_user.email
-        
+
+        await log_audit_event(
+            db, current_user, action="payer_published", resource_type="payer",
+            resource_id=str(payer.id), request=request,
+            metadata={"version": latest_version.version_number if latest_version else None},
+        )
         await db.commit()
-        
-        logger.info(f"Published payer profile: {payer.name} (ID: {payer.id})")
-        
+
         return {
             "success": True,
-            "message": f"Payer profile '{payer.name}' published successfully"
+            "message": f"Payer profile '{payer.name}' published successfully",
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        logger.error(f"Error publishing payer {payer_id}: {e}")
+        logger.exception("Error publishing payer %s", payer_id)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/{payer_id}")
 async def delete_payer(
     payer_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: Principal = Depends(get_current_user)
+    current_user: Principal = Depends(get_current_user),
 ):
-    """
-    Deactivate payer profile (soft delete)
-    """
+    """Deactivate payer profile (soft delete). Admin role required."""
+    current_user.require_role("admin")
     try:
         result = await db.execute(
-            select(PayerProfile).where(and_(PayerProfile.id == payer_id, PayerProfile.tenant_id == current_user.tenant_id))
+            select(PayerProfile).where(and_(
+                PayerProfile.id == payer_id,
+                PayerProfile.tenant_id == current_user.tenant_id,
+            ))
         )
         payer = result.scalar_one_or_none()
-        
         if not payer:
             raise HTTPException(status_code=404, detail="Payer not found")
-        
+
         payer.is_active = False
         payer.updated_by = current_user.email
-        
+
+        await log_audit_event(
+            db, current_user, action="payer_deactivated", resource_type="payer",
+            resource_id=str(payer.id), request=request,
+        )
         await db.commit()
-        
-        logger.info(f"Deactivated payer profile: {payer.name} (ID: {payer.id})")
-        
+
         return {
             "success": True,
-            "message": f"Payer profile '{payer.name}' deactivated successfully"
+            "message": f"Payer profile '{payer.name}' deactivated successfully",
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        logger.error(f"Error deleting payer {payer_id}: {e}")
+        logger.exception("Error deleting payer %s", payer_id)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -511,35 +539,40 @@ async def get_payer_rules(
 async def create_payer_rule(
     payer_id: int,
     rule_data: Dict[str, Any],
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: Principal = Depends(get_current_user)
+    current_user: Principal = Depends(get_current_user),
 ):
-    """
-    Create new rule for payer
-    Ops can do this in visual rule builder
-    """
+    """Create new rule for payer. Admin role required; mutation audited."""
+    current_user.require_role("admin")
     try:
         await _verify_payer_tenant(payer_id, current_user.tenant_id, db)
+        clean = {k: v for k, v in rule_data.items() if k not in _PROTECTED_RULE_FIELDS}
         new_rule = PayerRule(
             payer_id=payer_id,
-            **rule_data,
-            created_by=current_user.email
+            **clean,
+            created_by=current_user.email,
         )
-        
         db.add(new_rule)
+        await db.flush()
+
+        await log_audit_event(
+            db, current_user, action="payer_rule_created", resource_type="payer_rule",
+            resource_id=str(new_rule.id), request=request,
+            metadata={"payer_id": payer_id, "rule_name": getattr(new_rule, "rule_name", None)},
+        )
         await db.commit()
         await db.refresh(new_rule)
-        
-        logger.info(f"Created rule '{new_rule.rule_name}' for payer {payer_id}")
-        
         return {
             "success": True,
             "message": "Rule created successfully",
-            "data": {"id": new_rule.id}
+            "data": {"id": new_rule.id},
         }
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         await db.rollback()
-        logger.error(f"Error creating rule for payer {payer_id}: {e}")
+        logger.exception("Error creating rule for payer %s", payer_id)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -547,12 +580,16 @@ async def create_payer_rule(
 async def update_payer_rule(
     rule_id: int,
     updates: Dict[str, Any],
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: Principal = Depends(get_current_user)
+    current_user: Principal = Depends(get_current_user),
 ):
+    """Update payer rule. Admin role required.
+
+    tenant_id and payer_id are excluded so a rule cannot be moved to another
+    payer / tenant via this path (closes NEW-H2).
     """
-    Update payer rule
-    """
+    current_user.require_role("admin")
     try:
         result = await db.execute(
             select(PayerRule).join(PayerProfile, PayerRule.payer_id == PayerProfile.id).where(
@@ -560,41 +597,42 @@ async def update_payer_rule(
             )
         )
         rule = result.scalar_one_or_none()
-        
         if not rule:
             raise HTTPException(status_code=404, detail="Rule not found")
-        
+
+        applied = []
         for key, value in updates.items():
-            if key not in ['id', 'payer_id', 'created_at', 'created_by'] and hasattr(rule, key):
+            if key in _PROTECTED_RULE_FIELDS:
+                continue
+            if hasattr(rule, key):
                 setattr(rule, key, value)
-        
+                applied.append(key)
         rule.updated_by = current_user.email
-        
+
+        await log_audit_event(
+            db, current_user, action="payer_rule_updated", resource_type="payer_rule",
+            resource_id=str(rule_id), request=request,
+            changes={"updated_fields": sorted(applied)},
+        )
         await db.commit()
-        
-        logger.info(f"Updated rule {rule_id}")
-        
-        return {
-            "success": True,
-            "message": "Rule updated successfully"
-        }
+        return {"success": True, "message": "Rule updated successfully"}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        logger.error(f"Error updating rule {rule_id}: {e}")
+        logger.exception("Error updating rule %s", rule_id)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/rules/{rule_id}")
 async def delete_payer_rule(
     rule_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: Principal = Depends(get_current_user)
+    current_user: Principal = Depends(get_current_user),
 ):
-    """
-    Deactivate rule
-    """
+    """Deactivate rule. Admin role required."""
+    current_user.require_role("admin")
     try:
         result = await db.execute(
             select(PayerRule).join(PayerProfile, PayerRule.payer_id == PayerProfile.id).where(
@@ -602,26 +640,23 @@ async def delete_payer_rule(
             )
         )
         rule = result.scalar_one_or_none()
-        
         if not rule:
             raise HTTPException(status_code=404, detail="Rule not found")
-        
+
         rule.is_active = False
         rule.updated_by = current_user.email
-        
+
+        await log_audit_event(
+            db, current_user, action="payer_rule_deactivated", resource_type="payer_rule",
+            resource_id=str(rule_id), request=request,
+        )
         await db.commit()
-        
-        logger.info(f"Deactivated rule {rule_id}")
-        
-        return {
-            "success": True,
-            "message": "Rule deactivated successfully"
-        }
+        return {"success": True, "message": "Rule deactivated successfully"}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        logger.error(f"Error deleting rule {rule_id}: {e}")
+        logger.exception("Error deleting rule %s", rule_id)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -669,45 +704,54 @@ async def get_payer_connections(
 async def create_payer_connection(
     payer_id: int,
     connection_data: Dict[str, Any],
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: Principal = Depends(get_current_user)
+    current_user: Principal = Depends(get_current_user),
 ):
-    """
-    Create trading partner connection
-    Passwords/keys will be encrypted before storage
-    """
+    """Create trading partner connection. Admin role required (writes secrets)."""
+    current_user.require_role("admin")
     try:
         await _verify_payer_tenant(payer_id, current_user.tenant_id, db)
-        # Encrypt sensitive fields
-        if 'sftp_password' in connection_data:
-            connection_data['sftp_password_encrypted'] = await encrypt_credential(connection_data.pop('sftp_password'))
-        if 'api_key' in connection_data:
-            connection_data['api_key_encrypted'] = await encrypt_credential(connection_data.pop('api_key'))
-        if 'api_secret' in connection_data:
-            connection_data['api_secret_encrypted'] = await encrypt_credential(connection_data.pop('api_secret'))
-        if 'portal_password' in connection_data:
-            connection_data['portal_password_encrypted'] = await encrypt_credential(connection_data.pop('portal_password'))
-        
+        # Encrypt sensitive fields before storage.
+        for raw_key, enc_key in (
+            ("sftp_password", "sftp_password_encrypted"),
+            ("api_key", "api_key_encrypted"),
+            ("api_secret", "api_secret_encrypted"),
+            ("portal_password", "portal_password_encrypted"),
+        ):
+            if raw_key in connection_data:
+                connection_data[enc_key] = await encrypt_credential(connection_data.pop(raw_key))
+
+        clean = {k: v for k, v in connection_data.items() if k not in {"id", "tenant_id", "payer_id", "created_at", "created_by"}}
         new_connection = TradingPartnerConnection(
             payer_id=payer_id,
-            **connection_data,
-            created_by=current_user.email
+            **clean,
+            created_by=current_user.email,
         )
-        
         db.add(new_connection)
+        await db.flush()
+
+        await log_audit_event(
+            db, current_user, action="payer_connection_created", resource_type="payer_connection",
+            resource_id=str(new_connection.id), request=request,
+            metadata={
+                "payer_id": payer_id,
+                "connection_name": getattr(new_connection, "connection_name", None),
+                "credentials_provided": [k for k in ("sftp_password_encrypted", "api_key_encrypted", "api_secret_encrypted", "portal_password_encrypted") if k in connection_data],
+            },
+        )
         await db.commit()
         await db.refresh(new_connection)
-        
-        logger.info(f"Created connection '{new_connection.connection_name}' for payer {payer_id}")
-        
         return {
             "success": True,
             "message": "Connection created successfully (credentials encrypted)",
-            "data": {"id": new_connection.id}
+            "data": {"id": new_connection.id},
         }
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         await db.rollback()
-        logger.error(f"Error creating connection for payer {payer_id}: {e}")
+        logger.exception("Error creating connection for payer %s", payer_id)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -801,56 +845,83 @@ async def list_all_fee_schedules(
 @router.post("/{payer_id}/fee-schedules/upload")
 async def upload_fee_schedule(
     payer_id: int,
+    request: Request,
     file: UploadFile = File(...),
     state_code: Optional[str] = None,
     locality: Optional[str] = None,
     effective_date: Optional[date] = None,
     db: AsyncSession = Depends(get_db),
-    current_user: Principal = Depends(get_current_user)
+    current_user: Principal = Depends(get_current_user),
 ):
+    """Upload fee schedule CSV. Admin role; size-capped; mime-validated.
+
+    Format: cpt_code, description, allowable_amount, [facility_rate],
+    [non_facility_rate], [state_code], [locality]
     """
-    Upload fee schedule CSV
-    Format: cpt_code, description, allowable_amount, [facility_rate], [non_facility_rate]
-    """
+    current_user.require_role("admin")
     try:
         await _verify_payer_tenant(payer_id, current_user.tenant_id, db)
-        # Read CSV
-        contents = await file.read()
-        csv_file = io.StringIO(contents.decode('utf-8'))
+
+        if not (file.filename or "").lower().endswith(".csv"):
+            raise HTTPException(status_code=400, detail="File must be a .csv")
+
+        contents = await file.read(MAX_FEE_SCHEDULE_BYTES + 1)
+        if len(contents) > MAX_FEE_SCHEDULE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Fee schedule exceeds maximum size of {MAX_FEE_SCHEDULE_BYTES // (1024 * 1024)} MB",
+            )
+        if not contents:
+            raise HTTPException(status_code=400, detail="Empty file")
+
+        csv_file = io.StringIO(contents.decode("utf-8", errors="replace"))
         reader = csv.DictReader(csv_file)
-        
         batch_id = f"upload_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
         uploaded_count = 0
-        
-        for row in reader:
-            fee_schedule = FeeSchedule(
-                payer_id=payer_id,
-                state_code=state_code or row.get('state_code'),
-                locality=locality or row.get('locality'),
-                cpt_code=row['cpt_code'],
-                description=row.get('description', ''),
-                allowable_amount=float(row['allowable_amount']),
-                facility_rate=float(row['facility_rate']) if row.get('facility_rate') else None,
-                non_facility_rate=float(row['non_facility_rate']) if row.get('non_facility_rate') else None,
-                effective_date=effective_date or datetime.utcnow().date(),
-                uploaded_by=current_user.email,
-                upload_batch_id=batch_id
-            )
-            db.add(fee_schedule)
-            uploaded_count += 1
-        
+        errors: List[Dict[str, Any]] = []
+
+        for row_num, row in enumerate(reader, start=2):
+            try:
+                fee_schedule = FeeSchedule(
+                    payer_id=payer_id,
+                    state_code=state_code or row.get("state_code"),
+                    locality=locality or row.get("locality"),
+                    cpt_code=row["cpt_code"],
+                    description=row.get("description", ""),
+                    allowable_amount=float(row["allowable_amount"]),
+                    facility_rate=float(row["facility_rate"]) if row.get("facility_rate") else None,
+                    non_facility_rate=float(row["non_facility_rate"]) if row.get("non_facility_rate") else None,
+                    effective_date=effective_date or datetime.utcnow().date(),
+                    uploaded_by=current_user.email,
+                    upload_batch_id=batch_id,
+                )
+                db.add(fee_schedule)
+                # Flush per row so a bad row triggers IntegrityError now (not at
+                # the end of the loop) and we can rollback just that row before
+                # continuing.
+                await db.flush()
+                uploaded_count += 1
+            except Exception as row_err:
+                await db.rollback()
+                errors.append({"row": row_num, "error": str(row_err)})
+
+        await log_audit_event(
+            db, current_user, action="fee_schedule_uploaded", resource_type="fee_schedule",
+            resource_id=batch_id, request=request,
+            metadata={"payer_id": payer_id, "rows_inserted": uploaded_count, "errors": len(errors)},
+        )
         await db.commit()
-        
-        logger.info(f"Uploaded {uploaded_count} fee schedule entries for payer {payer_id} (batch: {batch_id})")
-        
+
         return {
             "success": True,
-            "message": f"Uploaded {uploaded_count} fee schedule entries successfully",
-            "data": {"batch_id": batch_id, "count": uploaded_count}
+            "message": f"Uploaded {uploaded_count} fee schedule entries",
+            "data": {"batch_id": batch_id, "count": uploaded_count, "errors": errors},
         }
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         await db.rollback()
-        logger.error(f"Error uploading fee schedule for payer {payer_id}: {e}")
+        logger.exception("Error uploading fee schedule for payer %s", payer_id)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

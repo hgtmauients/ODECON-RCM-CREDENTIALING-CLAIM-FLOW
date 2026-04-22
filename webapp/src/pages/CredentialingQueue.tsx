@@ -2,9 +2,12 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { apiService } from '@/services/api';
 import { PremiumIcon } from '@/services/iconReplacementService';
+import { Pagination } from '@/components/Pagination';
 import { formatDate } from '@/utils/formatters';
 import toast from 'react-hot-toast';
 import { getStateLicenseFormat, validateLicenseNumber } from '@/utils/stateLicenseFormats';
+
+const PAGE_SIZE = 100;
 
 interface CredentialingRecord {
   provider_id: string;
@@ -43,10 +46,17 @@ export default function CredentialingQueue() {
     cned_certificates: [{ state: '', certificate_number: '', expiration: '' }],
   });
   const queryClient = useQueryClient();
+  const [offset, setOffset] = useState(0);
+  React.useEffect(() => { setOffset(0); }, [selectedStatus]);
 
-  const { data, isLoading, error } = useQuery(
-    ['credentialing', selectedStatus],
-    () => apiService.get('/credentialing/', { status: selectedStatus || undefined })
+  const { data, isLoading, error, isFetching } = useQuery(
+    ['credentialing', selectedStatus, offset],
+    () => apiService.get('/credentialing/', {
+      status: selectedStatus || undefined,
+      limit: PAGE_SIZE,
+      offset,
+    }),
+    { keepPreviousData: true },
   );
 
   const approveMutation = useMutation(
@@ -132,6 +142,7 @@ export default function CredentialingQueue() {
   );
 
   const records: CredentialingRecord[] = data?.data || [];
+  const total: number = data?.total ?? records.length;
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -183,7 +194,7 @@ export default function CredentialingQueue() {
             cursor: 'pointer'
           }}
         >
-          All ({records.length})
+          All ({selectedStatus === '' ? total.toLocaleString() : '…'})
         </button>
         <button
           onClick={() => setSelectedStatus('requires_review')}
@@ -240,6 +251,7 @@ export default function CredentialingQueue() {
           </p>
         </div>
       ) : (
+        <>
         <div style={{ display: 'grid', gap: 'var(--space-4)' }}>
           {records.map((record) => (
             <div
@@ -306,6 +318,15 @@ export default function CredentialingQueue() {
             </div>
           ))}
         </div>
+        <Pagination
+          total={total}
+          limit={PAGE_SIZE}
+          offset={offset}
+          onChange={setOffset}
+          loading={isFetching}
+          itemLabel="provider"
+        />
+        </>
       )}
 
       {/* Detail Modal */}

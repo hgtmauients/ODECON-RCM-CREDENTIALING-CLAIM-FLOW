@@ -1,17 +1,22 @@
 """
 ClaimFlow - Patient/Subscriber API.
 CRUD for patient demographics used in claim generation.
+
+Access control: every endpoint requires the "billing" role (which expands
+to admin and super_admin via the role hierarchy). PHI access (reads + writes)
+is audit-logged via core.audit.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, desc
+from sqlalchemy import select, and_, or_
 from typing import Optional
 from pydantic import BaseModel, Field
 from datetime import date
 import logging
 
 from core.database import get_db
+from core.audit import log_audit_event
 from api.auth import get_current_user, Principal
 from models.patient import Patient
 
@@ -59,6 +64,7 @@ class PatientUpdate(BaseModel):
 
 @router.get("")
 async def list_patients(
+    request: Request,
     search: Optional[str] = None,
     payer_id: Optional[int] = None,
     limit: int = Query(100, ge=1, le=1000),
@@ -66,22 +72,39 @@ async def list_patients(
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """List patients - scoped to tenant."""
-    query = select(Patient).where(Patient.tenant_id == current_user.tenant_id)
+    """List patients - scoped to tenant. Requires billing role."""
+    current_user.require_role("billing")
 
+    from sqlalchemy import func as sa_func
+    filters = [Patient.tenant_id == current_user.tenant_id]
     if search:
         term = f"%{search}%"
-        query = query.where(or_(
+        filters.append(or_(
             Patient.last_name.ilike(term),
             Patient.first_name.ilike(term),
             Patient.member_id.ilike(term),
         ))
     if payer_id:
-        query = query.where(Patient.payer_id == payer_id)
+        filters.append(Patient.payer_id == payer_id)
 
-    query = query.order_by(Patient.last_name, Patient.first_name).limit(limit).offset(offset)
-    result = await db.execute(query)
+    data_query = (
+        select(Patient).where(and_(*filters))
+        .order_by(Patient.last_name, Patient.first_name).limit(limit).offset(offset)
+    )
+    count_query = select(sa_func.count(Patient.id)).where(and_(*filters))
+
+    result = await db.execute(data_query)
     patients = result.scalars().all()
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # PHI list access is audited at the LIST granularity (count + filter
+    # context) rather than per-row to avoid log explosion.
+    await log_audit_event(
+        db, current_user, action="patient_list", resource_type="patient",
+        resource_id="*", request=request,
+        metadata={"count": len(patients), "filter_search": bool(search), "filter_payer": payer_id},
+    )
+    await db.commit()
 
     return {
         "success": True,
@@ -96,22 +119,34 @@ async def list_patients(
             "city": p.city,
             "state": p.state,
         } for p in patients],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
     }
 
 
 @router.get("/{patient_id}")
 async def get_patient(
     patient_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Get patient detail."""
+    """Get patient detail. Requires billing role; PHI read is audited."""
+    current_user.require_role("billing")
+
     result = await db.execute(
         select(Patient).where(and_(Patient.id == patient_id, Patient.tenant_id == current_user.tenant_id))
     )
     patient = result.scalar_one_or_none()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+
+    await log_audit_event(
+        db, current_user, action="patient_viewed", resource_type="patient",
+        resource_id=str(patient_id), request=request,
+    )
+    await db.commit()
 
     return {
         "success": True,
@@ -141,12 +176,21 @@ async def get_patient(
 @router.post("")
 async def create_patient(
     data: PatientCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Create a new patient."""
+    """Create a new patient. Requires billing role; mutation audited."""
+    current_user.require_role("billing")
+
     patient = Patient(tenant_id=current_user.tenant_id, **data.model_dump())
     db.add(patient)
+    await db.flush()
+    await log_audit_event(
+        db, current_user, action="patient_created", resource_type="patient",
+        resource_id=str(patient.id), request=request,
+        metadata={"member_id": patient.member_id},
+    )
     await db.commit()
     await db.refresh(patient)
     return {"success": True, "data": {"id": patient.id}}
@@ -156,10 +200,13 @@ async def create_patient(
 async def update_patient(
     patient_id: int,
     data: PatientUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Update patient demographics."""
+    """Update patient demographics. Requires billing role; mutation audited."""
+    current_user.require_role("billing")
+
     result = await db.execute(
         select(Patient).where(and_(Patient.id == patient_id, Patient.tenant_id == current_user.tenant_id))
     )
@@ -167,8 +214,14 @@ async def update_patient(
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
 
-    for key, value in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    for key, value in updates.items():
         setattr(patient, key, value)
 
+    await log_audit_event(
+        db, current_user, action="patient_updated", resource_type="patient",
+        resource_id=str(patient_id), request=request,
+        changes={"updated_fields": sorted(updates.keys())},
+    )
     await db.commit()
     return {"success": True, "message": "Patient updated"}

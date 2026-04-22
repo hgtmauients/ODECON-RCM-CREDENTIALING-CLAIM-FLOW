@@ -2,8 +2,15 @@
 ClaimFlow - Rate limiting middleware.
 
 Production-grade design:
-- Per-(tenant_id, IP) bucket so a noisy single tenant cannot exhaust capacity
-  for everyone, while still preventing per-IP abuse from unauthenticated callers.
+- Bucket key is built from the CLIENT IP only when no validated principal is
+  available. We deliberately do NOT trust X-Tenant-ID from the wire — the auth
+  layer (run downstream) is the only source of truth for tenant identity, and
+  rate_limit runs before auth. Trusting the header would let an unauth caller
+  rotate UUIDs to mint fresh buckets.
+- After auth, requests carry the tenant_id on request.state so subsequent
+  calls land in a per-(tenant, IP) bucket. The first call from a new auth\'d
+  client will land in the IP-only bucket; that\'s acceptable — the IP-only
+  bucket is also rate-limited.
 - Optional Redis backend (set REDIS_URL) for multi-worker / multi-pod safety.
 - In-memory fallback for local dev with periodic pruning to bound memory.
 - Returns standard X-RateLimit-* headers.
@@ -32,9 +39,16 @@ BYPASS_PATHS = ("/health", "/docs", "/openapi.json", "/redoc")
 BYPASS_METHODS = ("OPTIONS",)
 
 
-def _extract_tenant_id(request: Request) -> Optional[str]:
-    """Best-effort tenant ID extraction without parsing the JWT (cheap path)."""
-    return request.headers.get("X-Tenant-ID")
+def _client_ip(request: Request) -> str:
+    """
+    Best-effort client IP extraction.
+    Prefers X-Forwarded-For (first hop) when running behind a trusted proxy
+    that explicitly sets it; otherwise uses the socket peer address.
+    """
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 class _InMemoryStore:
@@ -75,28 +89,41 @@ class _InMemoryStore:
 
 
 class _RedisStore:
-    """Redis-backed sliding-window counter using a sorted set per key."""
+    """
+    Redis-backed sliding-window counter using a sorted set per key.
+
+    Uses a Lua script for the count + add as one atomic step. Without atomicity
+    we get a TOCTOU window where two concurrent requests can both see
+    count<limit and both add. Lua removes that.
+    """
+
+    _LUA = """
+    local key = KEYS[1]
+    local now = tonumber(ARGV[1])
+    local cutoff = tonumber(ARGV[2])
+    local window = tonumber(ARGV[3])
+    local limit = tonumber(ARGV[4])
+    redis.call('ZREMRANGEBYSCORE', key, 0, cutoff)
+    local count = redis.call('ZCARD', key)
+    if count >= limit then
+      return {0, 0}
+    end
+    redis.call('ZADD', key, now, tostring(now) .. '-' .. tostring(math.random(1, 1000000)))
+    redis.call('EXPIRE', key, window + 1)
+    return {1, limit - count - 1}
+    """
 
     def __init__(self, url: str) -> None:
         import redis.asyncio as redis  # type: ignore
         self._redis = redis.from_url(url, decode_responses=True)
+        self._script = self._redis.register_script(self._LUA)
 
     async def hit(self, key: str, window: int, limit: int) -> Tuple[bool, int]:
-        import time as _time
-        now = _time.time()
+        now = time.time()
         cutoff = now - window
-        pipe = self._redis.pipeline()
-        pipe.zremrangebyscore(key, 0, cutoff)
-        pipe.zcard(key)
-        pipe.zadd(key, {str(now): now})
-        pipe.expire(key, window + 1)
-        _, count, _, _ = await pipe.execute()
-        # `count` is the number BEFORE the new add; we just added 1
-        if count >= limit:
-            # Roll back the add to prevent boundary leaks
-            await self._redis.zrem(key, str(now))
-            return False, 0
-        return True, max(0, limit - count - 1)
+        result = await self._script(keys=[key], args=[now, cutoff, window, limit])
+        allowed, remaining = int(result[0]), int(result[1])
+        return bool(allowed), remaining
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -119,9 +146,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 logger.warning("Failed to init Redis rate limiter, falling back to in-memory: %s", e)
 
     def _bucket_key(self, request: Request) -> str:
-        client_ip = request.client.host if request.client else "unknown"
-        tenant_id = _extract_tenant_id(request) or "anon"
-        return f"rl:{tenant_id}:{client_ip}"
+        # IP-only key. We deliberately do NOT include any caller-supplied
+        # tenant header — that would let unauth callers bypass the limit by
+        # rotating UUIDs. The auth layer enforces tenant identity downstream;
+        # any per-tenant accounting belongs in an authenticated middleware.
+        return f"rl:ip:{_client_ip(request)}"
 
     async def dispatch(self, request: Request, call_next):
         if request.method in BYPASS_METHODS or any(request.url.path.startswith(p) for p in BYPASS_PATHS):

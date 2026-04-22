@@ -10,7 +10,10 @@ import { useNavigate } from 'react-router-dom';
 import { apiService } from '@/services/api';
 import { PremiumIcon } from '@/services/iconReplacementService';
 import { formatCurrency, formatDate } from '@/utils/formatters';
+import { Pagination } from '@/components/Pagination';
 import toast from 'react-hot-toast';
+
+const PAGE_SIZE = 100;
 
 interface Claim {
   id: number;
@@ -32,20 +35,26 @@ export default function ClaimsManagement() {
   const [stateFilter, setStateFilter] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedClaims, setSelectedClaims] = useState<number[]>([]);
+  const [offset, setOffset] = useState(0);
 
-  // Fetch claims
-  const { data, isLoading, error } = useQuery(
-    ['claims', stateFilter],
+  // Reset to first page when the filter changes
+  React.useEffect(() => { setOffset(0); }, [stateFilter]);
+
+  // Fetch one paginated page from the server. Search is client-only on the
+  // current page; for whole-tenant search we'd need a dedicated endpoint.
+  const { data, isLoading, error, isFetching } = useQuery(
+    ['claims', stateFilter, offset],
     async () => {
-      const params: Record<string, string> = {};
+      const params: Record<string, string | number> = { limit: PAGE_SIZE, offset };
       if (stateFilter) params.state = stateFilter;
-      return apiService.get('/rcm/claims', { params });
-    }
+      return apiService.get('/rcm/claims', params);
+    },
+    { keepPreviousData: true }
   );
 
   const allClaims: Claim[] = data?.data || [];
+  const total: number = data?.total ?? allClaims.length;
 
-  // Client-side search filter
   const claims = searchQuery
     ? allClaims.filter(c =>
         c.claim_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -344,7 +353,9 @@ export default function ClaimsManagement() {
           )}
 
           <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-tertiary)' }}>
-            {claims.length} claim{claims.length !== 1 ? 's' : ''}
+            {searchQuery
+              ? `${claims.length} on this page · ${total.toLocaleString()} total (search filters current page only)`
+              : `${total.toLocaleString()} claim${total === 1 ? '' : 's'}`}
           </span>
         </div>
 
@@ -527,6 +538,17 @@ export default function ClaimsManagement() {
                 ))}
               </tbody>
             </table>
+          )}
+
+          {!isLoading && !error && total > 0 && (
+            <Pagination
+              total={total}
+              limit={PAGE_SIZE}
+              offset={offset}
+              onChange={setOffset}
+              loading={isFetching}
+              itemLabel="claim"
+            />
           )}
         </div>
 

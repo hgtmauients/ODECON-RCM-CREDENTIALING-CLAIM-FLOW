@@ -9,7 +9,10 @@ import { useQuery } from 'react-query';
 import { useNavigate } from 'react-router-dom';
 import { apiService } from '@/services/api';
 import { PremiumIcon } from '@/services/iconReplacementService';
+import { Pagination } from '@/components/Pagination';
 import { formatDate } from '@/utils/formatters';
+
+const PAGE_SIZE = 100;
 
 interface PayerEnrollmentCase {
   id: number;
@@ -29,18 +32,24 @@ interface PayerEnrollmentCase {
 export default function PayerEnrollment() {
   const navigate = useNavigate();
   const [statusFilter, setStatusFilter] = useState<string>('');
+  const [offset, setOffset] = useState(0);
+  React.useEffect(() => { setOffset(0); }, [statusFilter]);
 
-  // Fetch enrollment cases
-  const { data, isLoading, isError, error } = useQuery(
-    ['payer-enrollment-cases', statusFilter],
-    async () => {
-      const params: Record<string, string | undefined> = {};
+  const { data, isLoading, isError, error, isFetching } = useQuery(
+    ['payer-enrollment-cases', statusFilter, offset],
+    () => {
+      const params: Record<string, string | number | undefined> = {
+        limit: PAGE_SIZE,
+        offset,
+      };
       if (statusFilter) params.status = statusFilter;
-      return apiService.get('/rcm/payer-enrollment/cases', { params });
-    }
+      return apiService.get('/rcm/payer-enrollment/cases', params);
+    },
+    { keepPreviousData: true },
   );
 
   const cases: PayerEnrollmentCase[] = data?.data || [];
+  const total: number = data?.total ?? cases.length;
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -289,6 +298,17 @@ export default function PayerEnrollment() {
                 ))}
               </tbody>
             </table>
+          )}
+
+          {!isLoading && !isError && total > 0 && (
+            <Pagination
+              total={total}
+              limit={PAGE_SIZE}
+              offset={offset}
+              onChange={setOffset}
+              loading={isFetching}
+              itemLabel="enrollment case"
+            />
           )}
         </div>
 

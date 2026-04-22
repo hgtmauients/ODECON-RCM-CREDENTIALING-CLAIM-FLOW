@@ -4,39 +4,54 @@ Provides CRUD for tenant onboarding and metadata lookup,
 plus per-tenant settings management with encrypted credential storage.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import Dict, Any, Optional
-from datetime import datetime
+from typing import Optional
 import logging
 
 from core.database import get_db
+from core.audit import log_audit_event
 from api.auth import get_current_user, Principal
-from api.schemas import TenantUpdate, TenantSettingsUpdate, TestSmtpRequest
+from api.schemas import TenantCreate, TenantUpdate, TenantSettingsUpdate, TestSmtpRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
 
+# Fields the bulk update path must NEVER touch — settings has its own
+# dedicated /settings endpoint that handles encryption; bypassing that path
+# stomps on encrypted secrets (closes NEW-M3).
+_PROTECTED_TENANT_FIELDS = frozenset({"id", "settings", "is_active", "created_at", "created_by"})
+
 
 @router.post("")
 async def create_tenant(
-    tenant_data: Dict[str, Any],
+    payload: TenantCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Create a new tenant (super-admin only)."""
+    """Create a new tenant (super-admin only). Validated via TenantCreate."""
     current_user.require_role("super_admin")
 
     from models.tenant import Tenant
 
+    name = payload.name.strip()
+    slug = (payload.slug or name).lower().replace(" ", "-")
     tenant = Tenant(
-        name=tenant_data["name"],
-        slug=tenant_data.get("slug", tenant_data["name"].lower().replace(" ", "-")),
-        settings=tenant_data.get("settings", {}),
+        name=name,
+        slug=slug,
+        settings={},  # Use /settings endpoint for any non-trivial config.
         created_by=current_user.email,
     )
     db.add(tenant)
+    await db.flush()
+
+    await log_audit_event(
+        db, current_user, action="tenant_created", resource_type="tenant",
+        resource_id=str(tenant.id), request=request,
+        metadata={"name": name, "slug": slug},
+    )
     await db.commit()
     await db.refresh(tenant)
 
@@ -81,10 +96,15 @@ async def get_tenant(
 async def update_tenant(
     tenant_id: str,
     updates: TenantUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Update tenant metadata. Admin or super-admin only."""
+    """Update tenant metadata. Admin or super-admin only.
+
+    `settings` is intentionally rejected here — use PUT /tenants/{id}/settings
+    so encryption is applied. (Closes NEW-M3.)
+    """
     from models.tenant import Tenant
 
     if current_user.tenant_id != tenant_id and not current_user.has_role("super_admin"):
@@ -96,10 +116,19 @@ async def update_tenant(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
+    applied = []
     for key, value in updates.model_dump(exclude_unset=True).items():
+        if key in _PROTECTED_TENANT_FIELDS:
+            continue
         if hasattr(tenant, key):
             setattr(tenant, key, value)
+            applied.append(key)
 
+    await log_audit_event(
+        db, current_user, action="tenant_updated", resource_type="tenant",
+        resource_id=tenant_id, request=request,
+        changes={"updated_fields": sorted(applied)},
+    )
     await db.commit()
     return {"success": True, "message": "Tenant updated"}
 
@@ -152,6 +181,7 @@ async def get_tenant_settings(
 async def update_tenant_settings(
     tenant_id: str,
     settings: TenantSettingsUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
@@ -162,15 +192,24 @@ async def update_tenant_settings(
 
     from core.tenant_config import save_tenant_settings
 
+    incoming = settings.model_dump(exclude_unset=True)
     try:
-        await save_tenant_settings(db, tenant_id, settings.model_dump(exclude_unset=True))
+        await save_tenant_settings(db, tenant_id, incoming)
     except ValueError:
-        # Tenant not found — log details server-side, return generic message
         logger.info("save_tenant_settings: tenant %s not found", tenant_id)
         raise HTTPException(status_code=404, detail="Tenant not found")
     except Exception:
         logger.exception("Failed to save tenant settings for %s", tenant_id)
         raise HTTPException(status_code=500, detail="Failed to save settings")
+
+    # Audit logs the FIELD NAMES touched, not the values (which include
+    # secrets). The secrets themselves are encrypted in the DB.
+    await log_audit_event(
+        db, current_user, action="tenant_settings_updated", resource_type="tenant",
+        resource_id=tenant_id, request=request,
+        changes={"updated_fields": sorted(incoming.keys())},
+    )
+    await db.commit()
 
     return {"success": True, "message": "Settings saved"}
 

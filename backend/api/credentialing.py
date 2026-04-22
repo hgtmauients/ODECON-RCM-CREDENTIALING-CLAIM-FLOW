@@ -15,9 +15,10 @@ import asyncio
 from pydantic import ValidationError
 
 from core.database import get_db
+from core.audit import log_audit_event
 from api.auth import get_current_user, Principal
 from api.schemas import ProviderCreate, ProviderUpdate, ApproveRequest, RejectRequest, ProviderSignupWebhook
-from models.credentialing import ProviderCredentialing, CredentialingVerificationLog
+from models.credentialing import ProviderCredentialing
 from services.credentialing_service import credentialing_service
 
 logger = logging.getLogger(__name__)
@@ -43,33 +44,50 @@ def _spawn_background(coro, name: str) -> None:
 WEBHOOK_REPLAY_WINDOW = 300  # 5 minutes
 
 
-async def _verify_webhook_signature(payload: bytes, signature: str, secret: str, timestamp: str = "") -> bool:
-    """Verify HMAC-SHA256 webhook signature with replay protection (Redis-backed when configured)."""
+async def _verify_webhook_signature(
+    *,
+    payload: bytes,
+    signature: str,
+    secret: str,
+    timestamp: str,
+    tenant_id: str,
+) -> bool:
+    """
+    Verify HMAC-SHA256 webhook signature with tenant binding + replay protection.
+
+    Signed message = "<tenant_id>.<timestamp>.<sha256(body_hex)>"
+    The tenant_id is part of the signed bytes so that an attacker who learns
+    one tenant\'s secret cannot replay against a different tenant by changing
+    only the X-Tenant-ID header.
+    """
     if not secret:
-        if os.getenv("ENV", "development") == "development":
-            logger.warning("WEBHOOK_SECRET not set; allowing in dev mode only")
-            return True
-        logger.error("WEBHOOK_SECRET not configured - rejecting webhook")
+        logger.error("Per-tenant webhook_secret not configured for tenant=%s", tenant_id)
+        return False
+    if not signature or not timestamp:
         return False
 
-    if timestamp:
-        try:
-            ts = int(timestamp)
-            import time
-            if abs(time.time() - ts) > WEBHOOK_REPLAY_WINDOW:
-                logger.warning("Webhook timestamp outside acceptable window")
-                return False
-        except ValueError:
-            pass
+    try:
+        ts = int(timestamp)
+    except ValueError:
+        logger.warning("Webhook timestamp not numeric: %r", timestamp)
+        return False
+    import time as _time
+    if abs(_time.time() - ts) > WEBHOOK_REPLAY_WINDOW:
+        logger.warning("Webhook timestamp outside acceptable window")
+        return False
 
-    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    body_digest = hashlib.sha256(payload).hexdigest()
+    signed_message = f"{tenant_id}.{timestamp}.{body_digest}".encode("ascii")
+    expected = hmac.new(secret.encode(), signed_message, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
         return False
 
     # Signature valid — now check for replay (multi-worker safe via Redis).
+    # Use the FULL signature so two valid signatures from the same secret
+    # (legitimate retry vs. attacker replay) are still distinguishable.
     from core.nonce_store import is_replay
-    if await is_replay(signature):
-        logger.warning("Webhook signature replay detected")
+    if await is_replay(f"{tenant_id}:{signature}"):
+        logger.warning("Webhook signature replay detected for tenant=%s", tenant_id)
         return False
 
     return True
@@ -80,7 +98,13 @@ async def handle_provider_signup(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Webhook endpoint for provider signups with signature validation."""
+    """Webhook endpoint for provider signups with signature validation.
+
+    Tenant binding: every tenant MUST configure their own webhook_secret in
+    /tenants/{id}/settings. We deliberately refuse to fall back to a shared
+    env-var secret here — that would let anyone holding the env value submit
+    webhooks for any tenant.
+    """
     signature = request.headers.get("X-Webhook-Signature", "")
     timestamp = request.headers.get("X-Webhook-Timestamp", "")
     body = await request.body()
@@ -90,8 +114,20 @@ async def handle_provider_signup(
         raise HTTPException(status_code=400, detail="X-Tenant-ID header required for webhooks")
 
     from core.tenant_config import get_tenant_setting
-    webhook_secret = await get_tenant_setting(db, tenant_id, "webhook_secret", default=os.getenv("WEBHOOK_SECRET", ""))
-    if not await _verify_webhook_signature(body, signature, webhook_secret, timestamp):
+    webhook_secret = await get_tenant_setting(
+        db, tenant_id, "webhook_secret", allow_env_fallback=False,
+    )
+    if not webhook_secret:
+        # Generic 401 — do NOT leak whether the tenant exists or whether
+        # the secret is configured.
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+    if not await _verify_webhook_signature(
+        payload=body,
+        signature=signature,
+        secret=webhook_secret,
+        timestamp=timestamp,
+        tenant_id=tenant_id,
+    ):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     # Parse + validate the body via Pydantic AFTER the signature check, so
@@ -251,6 +287,7 @@ async def list_credentialing_queue(
 @router.post("/manual")
 async def create_provider_manual(
     body: ProviderCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
@@ -284,6 +321,11 @@ async def create_provider_manual(
         credentialing_status="pending",
     )
     db.add(credentialing)
+    await log_audit_event(
+        db, current_user, action="provider_created_manual", resource_type="provider",
+        resource_id=provider_id, request=request,
+        metadata={"run_checks": body.run_checks, "npi": npi},
+    )
     await db.commit()
 
     if body.run_checks:
@@ -300,6 +342,7 @@ async def create_provider_manual(
 async def update_provider(
     provider_id: str,
     body: ProviderUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
@@ -337,6 +380,11 @@ async def update_provider(
     if body.cned_certificates is not None:
         credentialing.cned_certificates = [c.model_dump() for c in body.cned_certificates]
 
+    await log_audit_event(
+        db, current_user, action="provider_updated", resource_type="provider",
+        resource_id=provider_id, request=request,
+        changes={"updated_fields": sorted(updates.keys())},
+    )
     await db.commit()
     return {"success": True, "message": "Provider updated"}
 
@@ -344,6 +392,7 @@ async def update_provider(
 @router.delete("/{provider_id}")
 async def delete_provider(
     provider_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
@@ -360,6 +409,10 @@ async def delete_provider(
         raise HTTPException(status_code=404, detail="Provider not found")
 
     await db.delete(credentialing)
+    await log_audit_event(
+        db, current_user, action="provider_deleted", resource_type="provider",
+        resource_id=provider_id, request=request,
+    )
     await db.commit()
     return {"success": True, "message": "Provider deleted"}
 
@@ -367,6 +420,7 @@ async def delete_provider(
 @router.post("/{provider_id}/rerun-checks")
 async def rerun_credentialing_checks(
     provider_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
@@ -395,6 +449,10 @@ async def rerun_credentialing_checks(
         )
 
     credentialing.credentialing_status = "pending"
+    await log_audit_event(
+        db, current_user, action="credentialing_rerun", resource_type="provider",
+        resource_id=provider_id, request=request,
+    )
     await db.commit()
 
     _spawn_background(run_credentialing_checks(provider_id, credentialing.signup_data or {}, current_user.tenant_id), "credentialing-checks")
@@ -404,6 +462,7 @@ async def rerun_credentialing_checks(
 @router.post("/{provider_id}/approve")
 async def approve_provider(
     provider_id: str,
+    request: Request,
     body: Optional[ApproveRequest] = None,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
@@ -443,7 +502,16 @@ async def approve_provider(
         credentialing.credentialing_status = "passed"
         credentialing.verified_by = current_user.user_id
         credentialing.verified_at = datetime.utcnow()
-        credentialing.admin_notes = notes
+        # Only overwrite admin_notes when the caller actually supplied notes;
+        # passing None/null must NOT wipe pre-existing notes (closes v9-H1).
+        if notes is not None:
+            credentialing.admin_notes = notes
+
+        await log_audit_event(
+            db, current_user, action="provider_approved", resource_type="provider",
+            resource_id=provider_id, request=request,
+            metadata={"notes_provided": notes is not None},
+        )
         await db.commit()
 
         # Auto-create payer enrollment cases for the approved provider
@@ -477,6 +545,7 @@ async def approve_provider(
 async def reject_provider(
     provider_id: str,
     body: RejectRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
@@ -511,6 +580,12 @@ async def reject_provider(
         credentialing.verified_by = current_user.user_id
         credentialing.verified_at = datetime.utcnow()
         credentialing.rejection_reason = reason
+
+        await log_audit_event(
+            db, current_user, action="provider_rejected", resource_type="provider",
+            resource_id=provider_id, request=request,
+            metadata={"reason_length": len(reason or "")},
+        )
         await db.commit()
 
         return {"success": True, "message": "Provider rejected"}

@@ -43,16 +43,30 @@ def _storage_key(key: str) -> str:
     return key
 
 
+# Settings whose env-var fallback represents a CROSS-TENANT secret. For these
+# we deliberately refuse the env fallback so one tenant cannot inherit
+# another tenant\'s integration secret simply by leaving its own slot blank.
+# webhook_secret is the canonical example: it gates an unauthenticated
+# webhook, and the env-var has historically been shared across tenants.
+TENANT_SCOPED_KEYS = frozenset({"webhook_secret"})
+
+
 async def get_tenant_setting(
     db: AsyncSession,
     tenant_id: str,
     key: str,
     default: Any = None,
+    *,
+    allow_env_fallback: Optional[bool] = None,
 ) -> Any:
     """
     Resolve a single tenant setting.
     Priority: tenant DB value → environment variable → default.
     Encrypted values are transparently decrypted.
+
+    For TENANT_SCOPED_KEYS the env fallback is disabled by default to prevent
+    cross-tenant secret inheritance. Pass allow_env_fallback=True to override
+    (only legitimate when the caller is explicitly an admin tooling path).
     """
     from models.tenant import Tenant
 
@@ -72,10 +86,13 @@ async def get_tenant_setting(
             else:
                 return value
 
-    env_name = ENV_VAR_MAP.get(key, key.upper())
-    env_val = os.getenv(env_name)
-    if env_val is not None and env_val != "":
-        return env_val
+    if allow_env_fallback is None:
+        allow_env_fallback = key not in TENANT_SCOPED_KEYS
+    if allow_env_fallback:
+        env_name = ENV_VAR_MAP.get(key, key.upper())
+        env_val = os.getenv(env_name)
+        if env_val is not None and env_val != "":
+            return env_val
 
     return default
 

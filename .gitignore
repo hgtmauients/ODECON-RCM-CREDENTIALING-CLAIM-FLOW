@@ -37,3 +37,4 @@ logs/
 
 # Temp files
 nginx-api-noodledoc.conf
+.git_commit_msg.tmp

@@ -9,7 +9,9 @@ Security model:
 - In production (ENV=production), JWT_SECRET must be set or startup fails.
 """
 
+import base64
 import os
+import secrets
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
@@ -28,11 +30,15 @@ JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "claimflow")
 JWT_ISSUER = os.getenv("JWT_ISSUER", "")
 JWT_JWKS_URL = os.getenv("JWT_JWKS_URL", "")
 
-_DEV_FALLBACK_SECRET = "claimflow-dev-secret-change-me-min32ch"
-
 
 def get_jwt_secret() -> str:
-    """Resolve JWT signing secret. Fail-fast in production, dev fallback otherwise."""
+    """Resolve JWT signing secret.
+
+    Production: fail-fast unless JWT_SECRET is set.
+    Dev/test: when unset, generate a fresh per-process random secret so a
+    static value is never compiled into the source tree (and so different
+    processes can\'t accidentally cross-trust each other).
+    """
     secret = os.getenv("JWT_SECRET", "")
     if secret:
         return secret
@@ -41,8 +47,13 @@ def get_jwt_secret() -> str:
             "JWT_SECRET is required in production. "
             "Generate one with: openssl rand -base64 32"
         )
-    logger.warning("JWT_SECRET not set; using dev fallback (DO NOT USE IN PRODUCTION)")
-    return _DEV_FALLBACK_SECRET
+    ephemeral = base64.urlsafe_b64encode(secrets.token_bytes(48)).decode("ascii")
+    logger.warning(
+        "JWT_SECRET not set; using ephemeral per-process secret (env=%s). "
+        "Tokens issued by this process will not validate after restart.",
+        ENV,
+    )
+    return ephemeral
 
 
 JWT_SECRET = get_jwt_secret()

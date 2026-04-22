@@ -38,14 +38,30 @@ class EDIProcessor:
         """
         Generate 837P (professional) file for claim submission.
         Persists the file to EDI_STORAGE_PATH and returns metadata.
+
+        tenant_id is REQUIRED. If the caller cannot supply one, the call is
+        rejected — defense-in-depth so a regressed caller cannot sweep
+        cross-tenant claims into a single 837 (closes NEW-H4).
         """
+        if not tenant_id:
+            raise ValueError("tenant_id is required to generate 837")
         try:
-            payer_result = await self.db.execute(select(PayerProfile).where(PayerProfile.id == payer_id))
+            payer_result = await self.db.execute(
+                select(PayerProfile).where(and_(
+                    PayerProfile.id == payer_id,
+                    PayerProfile.tenant_id == tenant_id,
+                ))
+            )
             payer = payer_result.scalar_one_or_none()
             if not payer:
                 raise ValueError("Payer not found")
 
-            claims_result = await self.db.execute(select(Claim).where(Claim.id.in_(claim_ids)))
+            claims_result = await self.db.execute(
+                select(Claim).where(and_(
+                    Claim.id.in_(claim_ids),
+                    Claim.tenant_id == tenant_id,
+                ))
+            )
             claims = claims_result.scalars().all()
             if not claims:
                 raise ValueError("No claims found")
@@ -74,7 +90,7 @@ class EDIProcessor:
 
                 claim_data.append({"claim": claim, "lines": lines, "diagnoses": diagnoses, "patient": patient})
 
-            effective_tenant_id = tenant_id or str(claims[0].tenant_id)
+            effective_tenant_id = tenant_id  # already required above
 
             file_type = payer.format_837_type or "837P"
             icn = self._generate_control_number()
@@ -376,7 +392,12 @@ class EDIProcessor:
         - 277CA: Claim-level accept/reject from clearinghouse or payer
         - 277: Claim status response (to a 276 inquiry)
         Updates claim state based on status codes.
+
+        tenant_id is REQUIRED. Without it, we would risk updating claims
+        belonging to any tenant (closes NEW-H3).
         """
+        if not tenant_id:
+            raise ValueError("tenant_id is required to parse 277")
         try:
             logger.info(f"Parsing 277 file: {file_path}")
 
@@ -413,16 +434,13 @@ class EDIProcessor:
                         parts = segment.split("*")
                         if len(parts) >= 3:
                             tracking_number = parts[2]
-                            # Try to find claim by ICN
+                            # tenant_id is required (validated above) so we
+                            # always filter by it — never sweep across tenants.
                             claim_result = await self.db.execute(
-                                select(Claim).where(
-                                    and_(
-                                        Claim.interchange_control_number == tracking_number,
-                                        Claim.tenant_id == tenant_id,
-                                    )
-                                ) if tenant_id else select(Claim).where(
-                                    Claim.interchange_control_number == tracking_number
-                                )
+                                select(Claim).where(and_(
+                                    Claim.interchange_control_number == tracking_number,
+                                    Claim.tenant_id == tenant_id,
+                                ))
                             )
                             claim = claim_result.scalar_one_or_none()
                             if claim:
@@ -772,11 +790,17 @@ class EDIProcessor:
         }
 
     async def parse_277_with_record(self, file_path: str, edi_file) -> Dict[str, Any]:
-        """Parse 277CA using an existing EDIFile record (avoids duplicate creation)."""
+        """Parse 277CA using an existing EDIFile record (avoids duplicate creation).
+
+        EDIFile.tenant_id is required (database column is NOT NULL); we still
+        guard against an unexpected None to avoid a cross-tenant write.
+        """
         content = await self._read_file_async(file_path)
 
         claims_updated = 0
         tenant_id = str(edi_file.tenant_id) if edi_file.tenant_id else None
+        if not tenant_id:
+            raise ValueError("EDIFile.tenant_id is required to parse 277CA")
 
         if content:
             for segment in content.split("~"):
@@ -785,10 +809,12 @@ class EDIProcessor:
                     parts = segment.split("*")
                     if len(parts) >= 3:
                         tracking_number = parts[2]
-                        query = select(Claim).where(Claim.interchange_control_number == tracking_number)
-                        if tenant_id:
-                            query = query.where(Claim.tenant_id == tenant_id)
-                        claim_result = await self.db.execute(query)
+                        claim_result = await self.db.execute(
+                            select(Claim).where(and_(
+                                Claim.interchange_control_number == tracking_number,
+                                Claim.tenant_id == tenant_id,
+                            ))
+                        )
                         claim = claim_result.scalar_one_or_none()
                         if claim:
                             claim.state = ClaimState.ACCEPTED

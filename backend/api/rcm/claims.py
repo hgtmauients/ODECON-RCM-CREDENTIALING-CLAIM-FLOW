@@ -1,16 +1,21 @@
 """
 Claims API Endpoints
-Create, validate, submit, and track claims through full lifecycle
+Create, validate, submit, and track claims through full lifecycle.
+
+Access control: every route requires billing role (which expands to
+admin / super_admin via the role hierarchy). Mutations are audit-logged.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+import os
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, desc
+from sqlalchemy import select, func, and_, desc
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
 import logging
 
 from core.database import get_db
+from core.audit import log_audit_event
 from models.claims import Claim, ClaimLine, ClaimDiagnosis, ClaimEvent, EDIFile, ClaimQueue
 from models.rcm import PayerProfile
 from api.auth import get_current_user, Principal
@@ -20,6 +25,8 @@ from services.edi_processor import EDIProcessor
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rcm/claims", tags=["RCM - Claims"])
+
+MAX_CLAIMS_CSV_BYTES = int(os.getenv("MAX_CLAIMS_CSV_BYTES", str(20 * 1024 * 1024)))  # 20 MB
 
 
 @router.get("")
@@ -36,8 +43,8 @@ async def list_claims(
     current_user: Principal = Depends(get_current_user),
 ):
     """List claims with filters - scoped to tenant. Returns full filtered total."""
+    current_user.require_role("billing")
     try:
-        # Build the filter clause once and reuse it for both data and count.
         filters = [Claim.tenant_id == current_user.tenant_id]
         if state:
             filters.append(Claim.state == state)
@@ -98,6 +105,7 @@ async def get_claim_detail(
     current_user: Principal = Depends(get_current_user),
 ):
     """Get single claim detail - scoped to tenant"""
+    current_user.require_role("billing")
     result = await db.execute(
         select(Claim).where(and_(Claim.id == claim_id, Claim.tenant_id == current_user.tenant_id))
     )
@@ -161,10 +169,12 @@ async def get_claim_detail(
 @router.post("")
 async def create_claim(
     claim_data: Dict[str, Any],
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Create new claim - scoped to tenant"""
+    """Create new claim - scoped to tenant; mutation audited."""
+    current_user.require_role("billing")
     try:
         import uuid
         short_id = uuid.uuid4().hex[:8].upper()
@@ -205,6 +215,11 @@ async def create_claim(
                 dx = ClaimDiagnosis(claim_id=new_claim.id, **dx_data)
                 db.add(dx)
 
+        await log_audit_event(
+            db, current_user, action="claim_created", resource_type="claim",
+            resource_id=str(new_claim.id), request=request,
+            metadata={"claim_number": claim_number, "payer_id": new_claim.payer_id},
+        )
         await db.commit()
         await db.refresh(new_claim)
 
@@ -215,9 +230,11 @@ async def create_claim(
             "message": "Claim created successfully",
             "data": {"id": new_claim.id, "claim_number": claim_number},
         }
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         await db.rollback()
-        logger.error(f"Error creating claim: {e}")
+        logger.exception("Error creating claim")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -225,11 +242,13 @@ async def create_claim(
 async def update_draft_claim(
     claim_id: int,
     updates: Dict[str, Any],
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
     """Edit a draft claim. Only allowed when state == 'draft' to keep submitted
-    claims immutable for audit + EDI integrity."""
+    claims immutable for audit + EDI integrity. Mutation audited."""
+    current_user.require_role("billing")
     try:
         result = await db.execute(
             select(Claim)
@@ -245,20 +264,29 @@ async def update_draft_claim(
                 detail=f"Cannot edit claim in state '{claim.state}' — only draft claims are editable. Use the corrected-claim flow instead.",
             )
 
+        # total_charges is derived from line items, not user-set, so it's
+        # excluded from the editable set (closes v9-M4: desync risk).
         editable = {
             "patient_id", "provider_id", "payer_id",
             "service_date_from", "service_date_to",
             "claim_type", "billing_provider_npi", "rendering_provider_npi",
-            "prior_auth_number", "total_charges",
+            "prior_auth_number",
         }
         date_fields = {"service_date_from", "service_date_to"}
+        applied = []
         for key, value in (updates or {}).items():
             if key not in editable or not hasattr(claim, key):
                 continue
             if key in date_fields and isinstance(value, str):
                 value = date.fromisoformat(value)
             setattr(claim, key, value)
+            applied.append(key)
 
+        await log_audit_event(
+            db, current_user, action="claim_updated", resource_type="claim",
+            resource_id=str(claim_id), request=request,
+            changes={"updated_fields": sorted(applied)},
+        )
         await db.commit()
         return {"success": True, "message": "Claim updated"}
     except HTTPException:
@@ -276,6 +304,7 @@ async def validate_claim(
     current_user: Principal = Depends(get_current_user),
 ):
     """Validate claim against payer rules - scoped to tenant"""
+    current_user.require_role("billing")
     try:
         claim_result = await db.execute(
             select(Claim).where(and_(Claim.id == claim_id, Claim.tenant_id == current_user.tenant_id))
@@ -304,10 +333,11 @@ async def validate_claim(
 @router.post("/batch/submit")
 async def submit_claim_batch(
     batch: Dict[str, Any],
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Submit batch of claims - scoped to tenant"""
+    """Submit batch of claims - scoped to tenant; submission audited."""
     current_user.require_role("billing")
     claim_ids: List[int] = batch.get("claim_ids", [])
     payer_id: int = batch.get("payer_id", 0)
@@ -331,7 +361,7 @@ async def submit_claim_batch(
             raise HTTPException(status_code=404, detail="Payer not found")
 
         edi_processor = EDIProcessor(db)
-        result = await edi_processor.generate_837(claim_ids, payer_id)
+        result = await edi_processor.generate_837(claim_ids, payer_id, tenant_id=current_user.tenant_id)
 
         try:
             from services.clearinghouse_transport import ClearinghouseService
@@ -376,6 +406,15 @@ async def submit_claim_batch(
                             )
                             db.add(event)
 
+                    await log_audit_event(
+                        db, current_user, action="claim_batch_submitted", resource_type="claim",
+                        resource_id="batch", request=request,
+                        metadata={
+                            "claim_ids": claim_ids, "payer_id": payer_id,
+                            "transmission_method": send_result.get("method"),
+                            "edi_file_id": result.get("file_id"),
+                        },
+                    )
                     await db.commit()
                     return {
                         "success": True,
@@ -412,7 +451,7 @@ async def get_claim_events(
     current_user: Principal = Depends(get_current_user),
 ):
     """Get event timeline for claim - scoped to tenant"""
-    # Verify claim belongs to tenant
+    current_user.require_role("billing")
     claim_check = await db.execute(
         select(Claim.id).where(and_(Claim.id == claim_id, Claim.tenant_id == current_user.tenant_id))
     )
@@ -444,6 +483,7 @@ async def list_queues(
     current_user: Principal = Depends(get_current_user),
 ):
     """List all claim queues with counts - scoped to tenant"""
+    current_user.require_role("billing")
     try:
         result = await db.execute(
             select(ClaimQueue).where(
@@ -479,24 +519,43 @@ async def list_queues(
 
 @router.post("/import/csv")
 async def import_claims_csv(
+    request: Request,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """
-    Import claims from CSV file.
+    """Import claims from CSV. Billing role; size-capped; per-row rollback.
+
     Expected columns: patient_id, provider_id, payer_id, service_date_from,
     total_charges, claim_type, cpt_code, units, charge_amount, icd10_code
+
+    Hardening (closes v9-M5/M6/M7):
+      - billing role gate
+      - 20 MB size cap, .csv extension check
+      - per-row commit so a bad row does NOT cascade-fail subsequent rows
+      - audit log at end with batch counts
     """
+    current_user.require_role("billing")
     import csv
     import io
+    import uuid as _uuid
     from models.patient import Patient
 
-    content = await file.read()
-    csv_file = io.StringIO(content.decode("utf-8"))
+    if not (file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a .csv")
+
+    content = await file.read(MAX_CLAIMS_CSV_BYTES + 1)
+    if len(content) > MAX_CLAIMS_CSV_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"CSV exceeds maximum size of {MAX_CLAIMS_CSV_BYTES // (1024 * 1024)} MB",
+        )
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    csv_file = io.StringIO(content.decode("utf-8", errors="replace"))
     reader = csv.DictReader(csv_file)
 
-    # Pre-fetch tenant-owned patient and payer ID sets for fast tenant-ownership validation.
     patients_q = await db.execute(
         select(Patient.id).where(Patient.tenant_id == current_user.tenant_id)
     )
@@ -507,8 +566,8 @@ async def import_claims_csv(
     )
     valid_payer_ids = {row[0] for row in payers_q.all()}
 
-    created_claims = []
-    errors = []
+    created_claims: List[str] = []
+    errors: List[Dict[str, Any]] = []
 
     for row_num, row in enumerate(reader, start=2):
         try:
@@ -516,19 +575,12 @@ async def import_claims_csv(
             payer_id = int(row.get("payer_id", 0)) if row.get("payer_id") else None
 
             if patient_id is not None and patient_id not in valid_patient_ids:
-                errors.append({
-                    "row": row_num,
-                    "error": f"patient_id {patient_id} does not belong to your tenant or does not exist",
-                })
+                errors.append({"row": row_num, "error": f"patient_id {patient_id} not in tenant"})
                 continue
             if payer_id is not None and payer_id not in valid_payer_ids:
-                errors.append({
-                    "row": row_num,
-                    "error": f"payer_id {payer_id} does not belong to your tenant or does not exist",
-                })
+                errors.append({"row": row_num, "error": f"payer_id {payer_id} not in tenant"})
                 continue
 
-            import uuid as _uuid
             short_id = _uuid.uuid4().hex[:8].upper()
             claim_number = f"CLM-{datetime.now().strftime('%Y%m%d')}-{short_id}"
             new_claim = Claim(
@@ -548,47 +600,55 @@ async def import_claims_csv(
             await db.flush()
 
             if row.get("cpt_code"):
-                line = ClaimLine(
+                db.add(ClaimLine(
                     claim_id=new_claim.id,
                     line_number=1,
                     cpt_code=row["cpt_code"],
                     units=int(row.get("units", 1)),
                     charge_amount=float(row.get("charge_amount", row.get("total_charges", 0))),
-                )
-                db.add(line)
+                ))
 
             if row.get("icd10_code"):
-                dx = ClaimDiagnosis(
+                db.add(ClaimDiagnosis(
                     claim_id=new_claim.id,
                     diagnosis_pointer=1,
                     icd10_code=row["icd10_code"],
                     is_primary=True,
-                )
-                db.add(dx)
+                ))
 
+            # Per-row commit. If a row fails on flush/commit, rollback ONLY
+            # this row's transaction so subsequent rows aren't poisoned by a
+            # PendingRollbackError cascade (closes v9-M5).
+            await db.commit()
             created_claims.append(claim_number)
         except Exception as e:
+            await db.rollback()
             errors.append({"row": row_num, "error": str(e)})
 
+    # Audit log on a fresh transaction so it isn't affected by per-row state.
+    await log_audit_event(
+        db, current_user, action="claims_csv_imported", resource_type="claim",
+        resource_id="batch", request=request,
+        metadata={"created": len(created_claims), "errors": len(errors)},
+    )
     await db.commit()
 
     return {
         "success": True,
         "message": f"Imported {len(created_claims)} claims",
-        "data": {
-            "claims_created": len(created_claims),
-            "errors": errors,
-        },
+        "data": {"claims_created": len(created_claims), "errors": errors},
     }
 
 
 @router.delete("/{claim_id}")
 async def delete_claim(
     claim_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Delete a claim - scoped to tenant. Only draft/rejected claims can be deleted."""
+    """Delete a claim. Admin role; only draft/rejected/void claims allowed."""
+    current_user.require_role("admin")
     result = await db.execute(
         select(Claim).where(and_(Claim.id == claim_id, Claim.tenant_id == current_user.tenant_id))
     )
@@ -597,7 +657,13 @@ async def delete_claim(
         raise HTTPException(status_code=404, detail="Claim not found")
     if claim.state not in ("draft", "rejected", "void"):
         raise HTTPException(status_code=400, detail=f"Cannot delete claim in '{claim.state}' state. Void it first.")
+    claim_number = claim.claim_number
     await db.delete(claim)
+    await log_audit_event(
+        db, current_user, action="claim_deleted", resource_type="claim",
+        resource_id=str(claim_id), request=request,
+        metadata={"claim_number": claim_number, "previous_state": claim.state},
+    )
     await db.commit()
     return {"success": True, "message": "Claim deleted"}
 
@@ -605,16 +671,19 @@ async def delete_claim(
 @router.post("/batch/delete")
 async def batch_delete_claims(
     body: Dict[str, Any],
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Delete multiple claims. Only draft/rejected/void claims can be deleted."""
+    """Delete multiple claims. Admin role; only draft/rejected/void allowed."""
+    current_user.require_role("admin")
     claim_ids = body.get("claim_ids", [])
     if not claim_ids:
         raise HTTPException(status_code=422, detail="claim_ids required")
 
     deleted = 0
-    errors = []
+    deleted_ids: List[int] = []
+    errors: List[str] = []
     for cid in claim_ids:
         result = await db.execute(
             select(Claim).where(and_(Claim.id == cid, Claim.tenant_id == current_user.tenant_id))
@@ -626,8 +695,14 @@ async def batch_delete_claims(
             errors.append(f"Claim {cid} in '{claim.state}' state cannot be deleted")
         else:
             await db.delete(claim)
+            deleted_ids.append(cid)
             deleted += 1
 
+    await log_audit_event(
+        db, current_user, action="claims_batch_deleted", resource_type="claim",
+        resource_id="batch", request=request,
+        metadata={"deleted": deleted, "deleted_ids": deleted_ids, "errors": len(errors)},
+    )
     await db.commit()
     return {"success": True, "data": {"deleted": deleted, "errors": errors}}
 
@@ -635,10 +710,12 @@ async def batch_delete_claims(
 @router.post("/{claim_id}/void")
 async def void_claim(
     claim_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Void a claim (soft-delete, keeps record for audit)."""
+    """Void a claim (soft-delete, keeps record for audit). Billing role."""
+    current_user.require_role("billing")
     result = await db.execute(
         select(Claim).where(and_(Claim.id == claim_id, Claim.tenant_id == current_user.tenant_id))
     )
@@ -646,15 +723,20 @@ async def void_claim(
     if not claim:
         raise HTTPException(status_code=404, detail="Claim not found")
 
-    claim.previous_state = claim.state
+    previous_state = claim.state
+    claim.previous_state = previous_state
     claim.state = "void"
-    event = ClaimEvent(
+    db.add(ClaimEvent(
         claim_id=claim.id,
         event_type="voided",
-        from_state=claim.previous_state,
+        from_state=previous_state,
         to_state="void",
         message=f"Claim voided by {current_user.email}",
+    ))
+    await log_audit_event(
+        db, current_user, action="claim_voided", resource_type="claim",
+        resource_id=str(claim_id), request=request,
+        metadata={"previous_state": previous_state},
     )
-    db.add(event)
     await db.commit()
     return {"success": True, "message": "Claim voided"}

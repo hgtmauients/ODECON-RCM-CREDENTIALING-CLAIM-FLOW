@@ -1,25 +1,68 @@
 """
 Payer Enrollment API
-Manages provider enrollment with specific payers
+Manages provider enrollment with specific payers.
+
+Access control: list/get require billing or credentialing; mutations require
+credentialing (which expands via the role hierarchy to admin / super_admin).
+All mutations are audit-logged.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, desc
+from sqlalchemy import select, and_, desc
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date, timedelta
 import logging
+import os
+
+from pydantic import BaseModel, Field, ConfigDict
 
 from core.database import get_db
-from models.payer_credentialing import PayerCredentialingCase, ERAEnrollmentCase, ProviderDocument, CredentialingRenewal
+from core.audit import log_audit_event
+from core.storage import safe_filename, build_relative_path, StoragePathError
+from models.payer_credentialing import PayerCredentialingCase, ERAEnrollmentCase, ProviderDocument
 from models.credentialing import ProviderCredentialing
 from models.rcm import PayerProfile
 from api.auth import get_current_user, Principal
-from services.encryption import encrypt_credential, decrypt_credential
+from services.encryption import encrypt_credential
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rcm/payer-enrollment", tags=["RCM - Payer Enrollment"])
+
+# Allowed PayerCredentialingCase status values.
+_VALID_CASE_STATUSES = frozenset({
+    "draft", "in_progress", "ready_to_submit", "submitted",
+    "in_review", "approved", "rejected", "renewal_due",
+})
+
+
+class EnrollmentCaseUpdate(BaseModel):
+    """Whitelisted updatable fields with proper validation."""
+    model_config = ConfigDict(extra="ignore")
+
+    notes: Optional[str] = None
+    assigned_to: Optional[str] = None
+    status: Optional[str] = None  # validated against enum below
+    payer_rep_name: Optional[str] = None
+    payer_rep_email: Optional[str] = None
+    payer_rep_phone: Optional[str] = None
+    ticket_number: Optional[str] = None
+    submitted_date: Optional[date] = None
+    effective_date: Optional[date] = None
+    expiration_date: Optional[date] = None
+
+
+async def _verify_provider_in_tenant(provider_id: str, tenant_id: str, db: AsyncSession) -> None:
+    """404 if provider_id does not belong to the current user\'s tenant."""
+    check = await db.execute(
+        select(ProviderCredentialing.id).where(and_(
+            ProviderCredentialing.provider_id == provider_id,
+            ProviderCredentialing.tenant_id == tenant_id,
+        ))
+    )
+    if not check.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Provider not found")
 
 
 @router.get("/cases")
@@ -34,6 +77,7 @@ async def list_payer_credentialing_cases(
     current_user: Principal = Depends(get_current_user),
 ):
     """List payer credentialing cases - scoped to tenant. Returns full filtered total."""
+    current_user.require_role("credentialing")
     try:
         from sqlalchemy import func as sa_func
 
@@ -123,6 +167,7 @@ async def get_payer_credentialing_case(
     current_user: Principal = Depends(get_current_user),
 ):
     """Get single payer credentialing case detail - scoped to tenant."""
+    current_user.require_role("credentialing")
     result = await db.execute(
         select(PayerCredentialingCase).where(and_(
             PayerCredentialingCase.id == case_id,
@@ -181,11 +226,17 @@ async def get_payer_credentialing_case(
 @router.put("/cases/{case_id}")
 async def update_payer_credentialing_case(
     case_id: int,
-    updates: Dict[str, Any],
+    updates: EnrollmentCaseUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Update editable case fields. Tenant-scoped."""
+    """Update editable case fields. Tenant-scoped; mutation audited.
+
+    Status is validated against an allowed enum; date fields are parsed by
+    Pydantic. (Closes v9-M1 + v9-M2.)
+    """
+    current_user.require_role("credentialing")
     try:
         result = await db.execute(
             select(PayerCredentialingCase)
@@ -199,17 +250,22 @@ async def update_payer_credentialing_case(
         if not case:
             raise HTTPException(status_code=404, detail="Enrollment case not found")
 
-        # Only allow specific fields to be updated via this endpoint.
-        editable = {
-            "notes", "assigned_to", "status",
-            "payer_rep_name", "payer_rep_email", "payer_rep_phone",
-            "ticket_number",
-            "submitted_date", "effective_date", "expiration_date",
-        }
-        for key, value in (updates or {}).items():
-            if key in editable and hasattr(case, key):
+        applied = updates.model_dump(exclude_unset=True)
+        if "status" in applied and applied["status"] not in _VALID_CASE_STATUSES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"status must be one of {sorted(_VALID_CASE_STATUSES)}",
+            )
+
+        for key, value in applied.items():
+            if hasattr(case, key):
                 setattr(case, key, value)
 
+        await log_audit_event(
+            db, current_user, action="enrollment_case_updated",
+            resource_type="enrollment_case", resource_id=str(case_id),
+            request=request, changes={"updated_fields": sorted(applied.keys())},
+        )
         await db.commit()
         return {"success": True, "message": "Case updated"}
     except HTTPException:
@@ -223,10 +279,13 @@ async def update_payer_credentialing_case(
 @router.post("/cases/auto-create")
 async def auto_create_payer_cases(
     provider_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
     """Auto-create payer credentialing cases for all active payers - scoped to tenant"""
+    current_user.require_role("credentialing")
+    await _verify_provider_in_tenant(provider_id, current_user.tenant_id, db)
     try:
         payers_result = await db.execute(
             select(PayerProfile).where(and_(
@@ -271,12 +330,19 @@ async def auto_create_payer_cases(
                 db.add(new_case)
                 cases_created += 1
 
+        await log_audit_event(
+            db, current_user, action="enrollment_cases_auto_created",
+            resource_type="provider", resource_id=provider_id,
+            request=request, metadata={"cases_created": cases_created},
+        )
         await db.commit()
         logger.info(f"Auto-created {cases_created} payer credentialing cases for provider {provider_id}")
         return {"success": True, "message": f"Created {cases_created} payer credentialing cases", "data": {"cases_created": cases_created}}
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         await db.rollback()
-        logger.error(f"Error auto-creating payer cases: {e}")
+        logger.exception("Error auto-creating payer cases")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -284,10 +350,12 @@ async def auto_create_payer_cases(
 async def update_case_checklist(
     case_id: int,
     checklist_updates: List[Dict[str, Any]],
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
     """Update checklist items for credentialing case - scoped to tenant"""
+    current_user.require_role("credentialing")
     try:
         result = await db.execute(
             select(PayerCredentialingCase).where(and_(
@@ -306,14 +374,21 @@ async def update_case_checklist(
         if case.completion_percentage == 100:
             case.status = "ready_to_submit"
         case.updated_by = current_user.email
+
+        await log_audit_event(
+            db, current_user, action="enrollment_checklist_updated",
+            resource_type="enrollment_case", resource_id=str(case_id),
+            request=request,
+            metadata={"completed_items": completed, "completion_percentage": case.completion_percentage},
+        )
         await db.commit()
 
         return {"success": True, "message": "Checklist updated", "data": {"completion_percentage": case.completion_percentage, "status": case.status}}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        logger.error(f"Error updating checklist: {e}")
+        logger.exception("Error updating checklist")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -326,6 +401,7 @@ async def list_era_enrollments(
     current_user: Principal = Depends(get_current_user),
 ):
     """List ERA/EFT enrollment cases - scoped to tenant"""
+    current_user.require_role("credentialing")
     try:
         query = select(ERAEnrollmentCase).where(ERAEnrollmentCase.tenant_id == current_user.tenant_id)
         if provider_id:
@@ -359,49 +435,92 @@ async def list_era_enrollments(
 @router.post("/era-enrollment")
 async def create_era_enrollment(
     enrollment_data: Dict[str, Any],
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Create ERA/EFT enrollment case - scoped to tenant"""
+    """Create ERA/EFT enrollment case - scoped to tenant. Writes encrypted bank info."""
+    current_user.require_role("credentialing")
     try:
+        # Encrypt sensitive bank account fields before storage.
         if 'routing_number' in enrollment_data:
             enrollment_data['routing_number_encrypted'] = await encrypt_credential(enrollment_data.pop('routing_number'))
         if 'account_number' in enrollment_data:
             enrollment_data['account_number_encrypted'] = await encrypt_credential(enrollment_data.pop('account_number'))
 
+        provider_id = enrollment_data.get("provider_id")
+        if provider_id:
+            await _verify_provider_in_tenant(provider_id, current_user.tenant_id, db)
+
+        clean = {k: v for k, v in enrollment_data.items() if k not in {"id", "tenant_id", "created_at", "created_by", "status"}}
         new_enrollment = ERAEnrollmentCase(
             tenant_id=current_user.tenant_id,
-            **enrollment_data,
+            **clean,
             status="pending",
             created_by=current_user.email,
         )
         db.add(new_enrollment)
+        await db.flush()
+
+        await log_audit_event(
+            db, current_user, action="era_enrollment_created",
+            resource_type="era_enrollment", resource_id=str(new_enrollment.id),
+            request=request,
+            metadata={"payer_id": enrollment_data.get("payer_id"), "provider_id": provider_id,
+                       "bank_credentials_provided": "routing_number_encrypted" in enrollment_data},
+        )
         await db.commit()
         await db.refresh(new_enrollment)
-
         return {"success": True, "message": "ERA enrollment case created", "data": {"id": new_enrollment.id}}
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         await db.rollback()
-        logger.error(f"Error creating ERA enrollment: {e}")
+        logger.exception("Error creating ERA enrollment")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-MAX_DOC_UPLOAD_BYTES = int(__import__("os").getenv("MAX_DOC_UPLOAD_BYTES", str(20 * 1024 * 1024)))  # 20 MB
+MAX_DOC_UPLOAD_BYTES = int(os.getenv("MAX_DOC_UPLOAD_BYTES", str(20 * 1024 * 1024)))  # 20 MB
 ALLOWED_DOC_MIME_PREFIXES = ("application/pdf", "image/", "application/vnd.openxmlformats", "application/msword")
+# Whitelist of supported document type slugs. Restrictive on purpose so the
+# value is safe to embed in a storage path.
+_VALID_DOCUMENT_TYPES = frozenset({
+    "license", "dea", "cned", "malpractice_insurance", "w9", "caqh", "npi",
+    "board_certification", "diploma", "cv", "passport", "drivers_license",
+    "specialty_certification", "other",
+})
 
 
 @router.post("/documents/upload")
 async def upload_provider_document(
     provider_id: str,
     document_type: str,
+    request: Request,
     file: UploadFile = File(...),
     expiration_date: Optional[date] = None,
     state_code: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Upload a provider credentialing document. Persists bytes via storage backend."""
-    # Read with cap+1 for size enforcement
+    """Upload a provider credentialing document.
+
+    Hardening:
+      - require credentialing role (mutates a credentialing artifact)
+      - verify provider_id ∈ tenant (closes v9-H2)
+      - validate document_type against an allowlist (closes path-traversal vector)
+      - sanitize filename via core.storage.safe_filename
+      - storage layer rejects any "../" or absolute components (closes NEW-C2)
+      - audit-log the upload
+    """
+    current_user.require_role("credentialing")
+    await _verify_provider_in_tenant(provider_id, current_user.tenant_id, db)
+
+    if document_type not in _VALID_DOCUMENT_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"document_type must be one of {sorted(_VALID_DOCUMENT_TYPES)}",
+        )
+
     content = await file.read(MAX_DOC_UPLOAD_BYTES + 1)
     if len(content) > MAX_DOC_UPLOAD_BYTES:
         raise HTTPException(
@@ -413,19 +532,27 @@ async def upload_provider_document(
 
     mime_type = file.content_type or "application/octet-stream"
     if not any(mime_type.startswith(p) for p in ALLOWED_DOC_MIME_PREFIXES):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported document mime type: {mime_type}",
-        )
+        raise HTTPException(status_code=400, detail=f"Unsupported document mime type: {mime_type}")
 
-    # Persist to configured storage backend (local or S3)
     from core.storage import storage
-    safe_name = (file.filename or f"{document_type}.bin").replace("/", "_").replace("\\", "_")
-    relative_path = f"providers/{provider_id}/{document_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}"
+    safe_name = safe_filename(file.filename, fallback=f"{document_type}.bin")
+    timestamp_segment = datetime.now().strftime("%Y%m%d_%H%M%S")
+    try:
+        relative_path = build_relative_path(
+            "providers", provider_id, f"{document_type}_{timestamp_segment}_{safe_name}",
+        )
+    except StoragePathError:
+        # provider_id failed sanitization (e.g. contained "/" or "..").
+        # _verify_provider_in_tenant should have already rejected it, but we
+        # still treat this as a 400 — never a 500 — to avoid revealing
+        # internal validation state.
+        raise HTTPException(status_code=400, detail="Invalid provider_id")
 
     try:
         stored_path = await storage.write(relative_path, content, tenant_id=str(current_user.tenant_id))
-    except Exception as e:
+    except StoragePathError:
+        raise HTTPException(status_code=400, detail="Invalid storage path")
+    except Exception:
         logger.exception("Failed to persist provider document")
         raise HTTPException(status_code=500, detail="Failed to persist document")
 
@@ -445,6 +572,16 @@ async def upload_provider_document(
             is_encrypted=False,
         )
         db.add(new_doc)
+        await db.flush()
+        await log_audit_event(
+            db, current_user, action="provider_document_uploaded",
+            resource_type="provider_document", resource_id=str(new_doc.id),
+            request=request,
+            metadata={
+                "provider_id": provider_id, "document_type": document_type,
+                "file_size": new_doc.file_size, "mime_type": mime_type,
+            },
+        )
         await db.commit()
         await db.refresh(new_doc)
 
@@ -458,7 +595,9 @@ async def upload_provider_document(
                 "mime_type": new_doc.mime_type,
             },
         }
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         await db.rollback()
         logger.exception("Error creating ProviderDocument row after storage write")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -472,7 +611,9 @@ async def list_provider_documents(
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """List provider documents - scoped to tenant"""
+    """List provider documents - scoped to tenant + verified provider membership."""
+    current_user.require_role("credentialing")
+    await _verify_provider_in_tenant(provider_id, current_user.tenant_id, db)
     try:
         query = select(ProviderDocument).where(and_(
             ProviderDocument.provider_id == provider_id,

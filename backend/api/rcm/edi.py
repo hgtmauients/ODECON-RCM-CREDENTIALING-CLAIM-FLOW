@@ -1,9 +1,12 @@
 """
 EDI File Management API
-Upload, list, and manage EDI files (837, 277, 835)
+Upload, list, and manage EDI files (837, 277, 835).
+
+Access control: list/get/download require billing; upload requires billing
+(uploads can drive claim state machine and so are mutations).
 """
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
 from typing import Optional
@@ -12,6 +15,8 @@ import os
 import logging
 
 from core.database import get_db
+from core.audit import log_audit_event
+from core.storage import safe_filename, sanitize_component, StoragePathError
 from api.auth import get_current_user, Principal
 from models.claims import EDIFile
 from services.edi_processor import EDIProcessor, EDI_STORAGE_PATH
@@ -32,6 +37,7 @@ async def list_edi_files(
     current_user: Principal = Depends(get_current_user),
 ):
     """List EDI files - scoped to tenant"""
+    current_user.require_role("billing")
     query = select(EDIFile).where(EDIFile.tenant_id == current_user.tenant_id)
 
     if file_type:
@@ -69,36 +75,33 @@ ALLOWED_EDI_TYPES = {"835", "277CA", "277", "271", "999", "unknown"}
 
 @router.post("/upload")
 async def upload_edi_file(
+    request: Request,
     file: UploadFile = File(...),
     file_type: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
+    """Upload an EDI file (835, 277, etc.) for processing.
+
+    Hardening: billing role gate, size cap, ISA sniff, sanitized filename
+    + tenant component, audit log on success.
     """
-    Upload an EDI file (835, 277, etc.) for processing.
-    Ingests inbound files manually when clearinghouse polling is not configured.
-    """
-    # Read with a hard cap to prevent OOM from oversized uploads.
+    current_user.require_role("billing")
+
     content = await file.read(MAX_EDI_UPLOAD_BYTES + 1)
     if len(content) > MAX_EDI_UPLOAD_BYTES:
         raise HTTPException(
             status_code=413,
             detail=f"EDI file exceeds maximum size of {MAX_EDI_UPLOAD_BYTES // (1024 * 1024)} MB",
         )
-
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
-
-    # Lightweight content sniff: EDI files always start with ISA*
     if not content[:3] == b"ISA":
         raise HTTPException(
             status_code=400,
             detail="File does not look like a valid X12 EDI file (must start with ISA segment)",
         )
 
-    content_str = content.decode("utf-8", errors="replace")
-
-    # Auto-detect file type if not provided
     if not file_type:
         if "835" in (file.filename or ""):
             file_type = "835"
@@ -112,10 +115,18 @@ async def upload_edi_file(
     if file_type not in ALLOWED_EDI_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported file_type: {file_type}")
 
-    # Persist file (non-blocking)
+    # Path safety: sanitize the tenant component and filename. The tenant id
+    # comes from the JWT-authenticated principal so it is already trusted, but
+    # we run it through sanitize_component as defense in depth.
+    try:
+        tenant_segment = sanitize_component(str(current_user.tenant_id), label="tenant_id")
+    except StoragePathError:
+        raise HTTPException(status_code=400, detail="Invalid tenant context")
+    safe_name = safe_filename(file.filename, fallback=f"{file_type}.edi")
+
     import asyncio
-    inbound_dir = os.path.join(EDI_STORAGE_PATH, current_user.tenant_id, "inbound")
-    dest_path = os.path.join(inbound_dir, f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}")
+    inbound_dir = os.path.join(EDI_STORAGE_PATH, tenant_segment, "inbound")
+    dest_path = os.path.join(inbound_dir, f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}")
 
     def _write_file():
         os.makedirs(inbound_dir, exist_ok=True)
@@ -124,7 +135,6 @@ async def upload_edi_file(
 
     await asyncio.to_thread(_write_file)
 
-    # Create EDI file record
     edi_file = EDIFile(
         tenant_id=current_user.tenant_id,
         file_type=file_type,
@@ -139,9 +149,8 @@ async def upload_edi_file(
     await db.commit()
     await db.refresh(edi_file)
 
-    # Process the file (parsers will use the existing edi_file record)
     processor = EDIProcessor(db)
-    parse_result = {}
+    parse_result: dict = {}
     try:
         if file_type == "835":
             parse_result = await processor.parse_835_with_record(dest_path, edi_file)
@@ -151,14 +160,21 @@ async def upload_edi_file(
             edi_file.status = "processed"
             await db.commit()
     except Exception as e:
-        logger.error(f"Error processing uploaded EDI file: {e}")
+        logger.exception("Error processing uploaded EDI file")
         edi_file.status = "error"
         edi_file.error_message = str(e)
         await db.commit()
 
+    await log_audit_event(
+        db, current_user, action="edi_file_uploaded", resource_type="edi_file",
+        resource_id=str(edi_file.id), request=request,
+        metadata={"file_type": file_type, "size": len(content), "status": edi_file.status},
+    )
+    await db.commit()
+
     return {
         "success": True,
-        "message": f"EDI file uploaded and processing initiated",
+        "message": "EDI file uploaded and processing initiated",
         "data": {
             "id": edi_file.id,
             "file_type": file_type,
@@ -176,6 +192,7 @@ async def get_edi_file(
     current_user: Principal = Depends(get_current_user),
 ):
     """Get EDI file details - scoped to tenant"""
+    current_user.require_role("billing")
     result = await db.execute(
         select(EDIFile).where(and_(EDIFile.id == file_id, EDIFile.tenant_id == current_user.tenant_id))
     )
@@ -206,12 +223,14 @@ async def get_edi_file(
 @router.get("/files/{file_id}/download")
 async def download_edi_file(
     file_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Download raw EDI file content."""
-    from fastapi.responses import FileResponse, PlainTextResponse
+    """Download raw EDI file content. Audited at the access layer."""
+    from fastapi.responses import FileResponse
 
+    current_user.require_role("billing")
     result = await db.execute(
         select(EDIFile).where(and_(EDIFile.id == file_id, EDIFile.tenant_id == current_user.tenant_id))
     )
@@ -219,11 +238,31 @@ async def download_edi_file(
     if not edi_file:
         raise HTTPException(status_code=404, detail="EDI file not found")
 
-    if not os.path.exists(edi_file.file_path):
+    # Defense in depth: only serve files that live under the configured EDI
+    # storage root. Without this, a corrupted file_path could be coerced into
+    # serving arbitrary readable files.
+    storage_root = os.path.realpath(EDI_STORAGE_PATH)
+    real_path = os.path.realpath(edi_file.file_path)
+    if not (real_path == storage_root or real_path.startswith(storage_root + os.sep)):
+        logger.warning("Refusing to serve EDI file outside storage root: %s", real_path)
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if not os.path.exists(real_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
 
+    # Serve with sanitized download filename so a corrupted DB row can't
+    # inject control characters into Content-Disposition.
+    download_name = safe_filename(edi_file.filename, fallback=f"edi_{file_id}.edi")
+
+    await log_audit_event(
+        db, current_user, action="edi_file_downloaded", resource_type="edi_file",
+        resource_id=str(file_id), request=request,
+        metadata={"file_type": edi_file.file_type},
+    )
+    await db.commit()
+
     return FileResponse(
-        path=edi_file.file_path,
-        filename=edi_file.filename,
+        path=real_path,
+        filename=download_name,
         media_type="application/octet-stream",
     )

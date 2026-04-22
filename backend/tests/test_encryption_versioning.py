@@ -83,26 +83,60 @@ async def test_legacy_blob_decrypts_with_v0_after_rotation(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_versioned_v1_blob_requires_v1_key(monkeypatch):
-    """A v1 ciphertext written today must still decrypt after we rotate
-    keys (provided v1 key is loaded)."""
+async def test_versioned_v1_blob_decrypts_after_rotation_to_v2(monkeypatch):
+    """v1 ciphertext written today MUST still decrypt after rotating to v2,
+    as long as the v1 key is parked in CLAIMFLOW_ENCRYPTION_KEY_v1.
+
+    This codifies the rotation contract: bump CLAIMFLOW_ENCRYPTION_KEY_VERSION,
+    install the new key in CLAIMFLOW_ENCRYPTION_KEY, move the OLD key to its
+    versioned slot. New writes use the new active version; old reads still work.
+    """
     key1 = AESGCM.generate_key(bit_length=256)
     monkeypatch.setenv("CLAIMFLOW_ENCRYPTION_KEY", base64.b64encode(key1).decode())
+    monkeypatch.setenv("CLAIMFLOW_ENCRYPTION_KEY_VERSION", "1")
     monkeypatch.setenv("ENV", "test")
 
     import importlib, services.encryption as enc
     importlib.reload(enc)
-    versioned_ct = await enc.encrypt_credential("important secret")
+    versioned_ct_v1 = await enc.encrypt_credential("v1 secret")
+    assert (await enc.decrypt_credential(versioned_ct_v1)) == "v1 secret"
 
-    # Now rotate: a NEW key becomes active, the previous key gets demoted to v0,
-    # but the v1 ciphertext was written by the previous active key (which was v1).
-    # In real usage we'd preserve the v1 key under CLAIMFLOW_ENCRYPTION_KEY_v0
-    # AND in version slot 1 — for now this test confirms decrypt fails cleanly
-    # if the originating key version isn't loaded.
+    # Rotate to v2: new key is active, OLD key parked in v1 slot.
     key2 = AESGCM.generate_key(bit_length=256)
     monkeypatch.setenv("CLAIMFLOW_ENCRYPTION_KEY", base64.b64encode(key2).decode())
-    monkeypatch.delenv("CLAIMFLOW_ENCRYPTION_KEY_v0", raising=False)
+    monkeypatch.setenv("CLAIMFLOW_ENCRYPTION_KEY_VERSION", "2")
+    monkeypatch.setenv("CLAIMFLOW_ENCRYPTION_KEY_v1", base64.b64encode(key1).decode())
     importlib.reload(enc)
 
-    with pytest.raises(Exception):
-        await enc.decrypt_credential(versioned_ct)
+    # OLD ciphertext still decrypts via the v1 slot.
+    assert (await enc.decrypt_credential(versioned_ct_v1)) == "v1 secret"
+
+    # New writes use v2.
+    versioned_ct_v2 = await enc.encrypt_credential("v2 secret")
+    raw = base64.b64decode(versioned_ct_v2)
+    assert raw[0:1] == b"v" and raw[1] == 2
+    assert (await enc.decrypt_credential(versioned_ct_v2)) == "v2 secret"
+
+
+@pytest.mark.asyncio
+async def test_reencrypt_with_active_key_migrates_version(monkeypatch):
+    """reencrypt_with_active_key reads a v1 blob and writes a v2 blob."""
+    key1 = AESGCM.generate_key(bit_length=256)
+    monkeypatch.setenv("CLAIMFLOW_ENCRYPTION_KEY", base64.b64encode(key1).decode())
+    monkeypatch.setenv("CLAIMFLOW_ENCRYPTION_KEY_VERSION", "1")
+    monkeypatch.setenv("ENV", "test")
+
+    import importlib, services.encryption as enc
+    importlib.reload(enc)
+    blob_v1 = await enc.encrypt_credential("rotateme")
+
+    key2 = AESGCM.generate_key(bit_length=256)
+    monkeypatch.setenv("CLAIMFLOW_ENCRYPTION_KEY", base64.b64encode(key2).decode())
+    monkeypatch.setenv("CLAIMFLOW_ENCRYPTION_KEY_VERSION", "2")
+    monkeypatch.setenv("CLAIMFLOW_ENCRYPTION_KEY_v1", base64.b64encode(key1).decode())
+    importlib.reload(enc)
+
+    blob_v2 = await enc.reencrypt_with_active_key(blob_v1)
+    raw = base64.b64decode(blob_v2)
+    assert raw[1] == 2  # now under v2
+    assert (await enc.decrypt_credential(blob_v2)) == "rotateme"
