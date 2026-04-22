@@ -107,21 +107,40 @@ export default function ClaimDetail() {
                 Service Date: {formatDate(claim.service_date_from)}
               </p>
             </div>
-            <button
-              onClick={() => navigate('/claims')}
-              style={{
-                padding: 'var(--space-3) var(--space-4)',
-                background: 'transparent',
-                border: '1px solid var(--border-primary)',
-                borderRadius: 'var(--radius-md)',
-                color: 'var(--text-secondary)',
-                fontSize: 'var(--font-size-sm)',
-                fontWeight: 600,
-                cursor: 'pointer'
-              }}
-            >
-              Back to Claims
-            </button>
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+              {claim.state === 'draft' && (
+                <button
+                  onClick={() => navigate(`/claims/${claim.id}/edit`)}
+                  style={{
+                    padding: 'var(--space-3) var(--space-4)',
+                    background: 'var(--brand-primary)',
+                    border: 'none',
+                    borderRadius: 'var(--radius-md)',
+                    color: 'white',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                  title="Edit this draft claim"
+                >
+                  Edit Draft
+                </button>
+              )}
+              <button
+                onClick={() => navigate('/claims')}
+                style={{
+                  padding: 'var(--space-3) var(--space-4)',
+                  background: 'transparent',
+                  border: '1px solid var(--border-primary)',
+                  borderRadius: 'var(--radius-md)',
+                  color: 'var(--text-secondary)',
+                  fontSize: 'var(--font-size-sm)',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Back to Claims
+              </button>
+            </div>
           </div>
         </div>
 

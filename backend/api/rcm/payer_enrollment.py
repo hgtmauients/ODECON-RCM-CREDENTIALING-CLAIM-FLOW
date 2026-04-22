@@ -178,6 +178,48 @@ async def get_payer_credentialing_case(
     }
 
 
+@router.put("/cases/{case_id}")
+async def update_payer_credentialing_case(
+    case_id: int,
+    updates: Dict[str, Any],
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Update editable case fields. Tenant-scoped."""
+    try:
+        result = await db.execute(
+            select(PayerCredentialingCase)
+            .where(and_(
+                PayerCredentialingCase.id == case_id,
+                PayerCredentialingCase.tenant_id == current_user.tenant_id,
+            ))
+            .with_for_update()
+        )
+        case = result.scalar_one_or_none()
+        if not case:
+            raise HTTPException(status_code=404, detail="Enrollment case not found")
+
+        # Only allow specific fields to be updated via this endpoint.
+        editable = {
+            "notes", "assigned_to", "status",
+            "payer_rep_name", "payer_rep_email", "payer_rep_phone",
+            "ticket_number",
+            "submitted_date", "effective_date", "expiration_date",
+        }
+        for key, value in (updates or {}).items():
+            if key in editable and hasattr(case, key):
+                setattr(case, key, value)
+
+        await db.commit()
+        return {"success": True, "message": "Case updated"}
+    except HTTPException:
+        raise
+    except Exception:
+        await db.rollback()
+        logger.exception("Error updating enrollment case %s", case_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.post("/cases/auto-create")
 async def auto_create_payer_cases(
     provider_id: str,

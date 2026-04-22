@@ -132,6 +132,39 @@ export default function ClaimsManagement() {
     }
   );
 
+  const csvImportMutation = useMutation(
+    (file: File) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      return apiService.upload('/rcm/claims/import/csv', fd);
+    },
+    {
+      onSuccess: (response: any) => {
+        const data = response?.data || response;
+        const created = data?.message || `Imported ${(data?.created_claims || []).length} claims`;
+        toast.success(created);
+        if (data?.errors?.length) {
+          toast.error(`${data.errors.length} row(s) had errors — check console for details`);
+          console.error('[csv-import] errors:', data.errors);
+        }
+        queryClient.invalidateQueries(['claims']);
+      },
+      onError: (err: any) => { toast.error(err?.message || 'CSV import failed'); },
+    },
+  );
+
+  const csvFileInputRef = React.useRef<HTMLInputElement>(null);
+  const handleCsvSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      toast.error('Please select a .csv file');
+      return;
+    }
+    csvImportMutation.mutate(file);
+  };
+
   const getStateColor = (state: string) => {
     switch (state) {
       case 'paid': return 'var(--brand-success)';
@@ -235,6 +268,21 @@ export default function ClaimsManagement() {
                   </button>
                 </>
               )}
+              <button
+                onClick={() => csvFileInputRef.current?.click()}
+                className="btn btn-ghost btn-lg"
+                disabled={csvImportMutation.isLoading}
+                title="Import claims from a CSV file"
+              >
+                {csvImportMutation.isLoading ? 'Importing...' : 'Import CSV'}
+              </button>
+              <input
+                type="file"
+                accept=".csv"
+                ref={csvFileInputRef}
+                onChange={handleCsvSelected}
+                style={{ display: 'none' }}
+              />
               <button
                 onClick={() => navigate('/claims/new')}
                 className="btn btn-primary btn-lg"

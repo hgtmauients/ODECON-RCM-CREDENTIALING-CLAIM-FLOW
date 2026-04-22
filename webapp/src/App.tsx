@@ -10,6 +10,7 @@ import LoginPage from './pages/LoginPage';
 const ClaimsManagement = lazy(() => import('./pages/rcm/ClaimsManagement'));
 const ClaimCreate = lazy(() => import('./pages/rcm/ClaimCreate'));
 const ClaimDetail = lazy(() => import('./pages/rcm/ClaimDetail'));
+const ClaimEdit = lazy(() => import('./pages/rcm/ClaimEdit'));
 const DenialDashboard = lazy(() => import('./pages/rcm/DenialDashboard'));
 const DenialDetail = lazy(() => import('./pages/rcm/DenialDetail'));
 const PayerEnrollment = lazy(() => import('./pages/rcm/PayerEnrollment'));
@@ -61,6 +62,7 @@ export default function App() {
                         <Route path="/claims" element={<ClaimsManagement />} />
                         <Route path="/claims/new" element={<ClaimCreate />} />
                         <Route path="/claims/:claimId" element={<ClaimDetail />} />
+                        <Route path="/claims/:claimId/edit" element={<ClaimEdit />} />
                         <Route path="/denials" element={<DenialDashboard />} />
                         <Route path="/denials/:denialId" element={<DenialDetail />} />
                         <Route path="/payer-enrollment" element={<PayerEnrollment />} />

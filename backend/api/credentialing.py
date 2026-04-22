@@ -370,17 +370,29 @@ async def rerun_credentialing_checks(
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Re-run all verification checks for a provider."""
+    """Re-run all verification checks for a provider.
+    Refuses while a previous run is already in_progress to prevent duplicate
+    parallel runs that would race on writes."""
     current_user.require_role("admin")
+    # Take a row-level lock so two concurrent rerun-checks calls cannot both
+    # observe the row in a non-in_progress state and then both flip to pending.
     result = await db.execute(
-        select(ProviderCredentialing).where(and_(
+        select(ProviderCredentialing)
+        .where(and_(
             ProviderCredentialing.provider_id == provider_id,
             ProviderCredentialing.tenant_id == current_user.tenant_id,
         ))
+        .with_for_update()
     )
     credentialing = result.scalar_one_or_none()
     if not credentialing:
         raise HTTPException(status_code=404, detail="Provider not found")
+
+    if credentialing.credentialing_status == "in_progress":
+        raise HTTPException(
+            status_code=409,
+            detail="Verification checks already in progress for this provider",
+        )
 
     credentialing.credentialing_status = "pending"
     await db.commit()
@@ -396,19 +408,37 @@ async def approve_provider(
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Approve provider credentialing - scoped to tenant"""
+    """Approve provider credentialing - scoped to tenant.
+
+    Refuses to approve while verification is in_progress and refuses to re-approve
+    a provider already in a terminal state (passed/failed). Uses SELECT FOR UPDATE
+    to serialize concurrent approval attempts.
+    """
     current_user.require_role("admin")
     notes = body.notes if body else None
     try:
         result = await db.execute(
-            select(ProviderCredentialing).where(and_(
+            select(ProviderCredentialing)
+            .where(and_(
                 ProviderCredentialing.provider_id == provider_id,
                 ProviderCredentialing.tenant_id == current_user.tenant_id,
             ))
+            .with_for_update()
         )
         credentialing = result.scalar_one_or_none()
         if not credentialing:
             raise HTTPException(status_code=404, detail="Credentialing record not found")
+
+        if credentialing.credentialing_status == "in_progress":
+            raise HTTPException(
+                status_code=409,
+                detail="Verification is still running; wait for it to finish before approving",
+            )
+        if credentialing.credentialing_status in ("passed", "failed"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Provider already in terminal state '{credentialing.credentialing_status}'",
+            )
 
         credentialing.credentialing_status = "passed"
         credentialing.verified_by = current_user.user_id
@@ -450,19 +480,32 @@ async def reject_provider(
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Reject provider credentialing - scoped to tenant"""
+    """Reject provider credentialing - scoped to tenant. Same state guards as approve."""
     current_user.require_role("admin")
     reason = body.reason
     try:
         result = await db.execute(
-            select(ProviderCredentialing).where(and_(
+            select(ProviderCredentialing)
+            .where(and_(
                 ProviderCredentialing.provider_id == provider_id,
                 ProviderCredentialing.tenant_id == current_user.tenant_id,
             ))
+            .with_for_update()
         )
         credentialing = result.scalar_one_or_none()
         if not credentialing:
             raise HTTPException(status_code=404, detail="Credentialing record not found")
+
+        if credentialing.credentialing_status == "in_progress":
+            raise HTTPException(
+                status_code=409,
+                detail="Verification is still running; wait for it to finish before rejecting",
+            )
+        if credentialing.credentialing_status in ("passed", "failed"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Provider already in terminal state '{credentialing.credentialing_status}'",
+            )
 
         credentialing.credentialing_status = "failed"
         credentialing.verified_by = current_user.user_id

@@ -63,7 +63,8 @@ export default function CredentialingQueue() {
         }
         setSelectedProvider(null);
         setApprovalNotes('');
-      }
+      },
+      onError: (err: any) => { toast.error(err?.message || 'Failed to approve provider'); },
     }
   );
 
@@ -72,10 +73,12 @@ export default function CredentialingQueue() {
       apiService.post(`/credentialing/${providerId}/reject`, { reason }),
     {
       onSuccess: () => {
+        toast.success('Provider rejected');
         queryClient.invalidateQueries(['credentialing']);
         setSelectedProvider(null);
         setRejectionReason('');
-      }
+      },
+      onError: (err: any) => { toast.error(err?.message || 'Failed to reject provider'); },
     }
   );
 
@@ -124,7 +127,7 @@ export default function CredentialingQueue() {
         toast.success('Verification checks re-initiated');
         queryClient.invalidateQueries(['credentialing']);
       },
-      onError: () => { toast.error('Failed to re-run checks'); },
+      onError: (err: any) => { toast.error(err?.message || 'Failed to re-run checks'); },
     }
   );
 
@@ -383,83 +386,70 @@ export default function CredentialingQueue() {
               </div>
             </div>
 
-            {/* Actions */}
-            {['requires_review', 'pending', 'in_progress'].includes(selectedProvider.credentialing_status) && (
-              <div style={{ display: 'flex', gap: 'var(--space-3)', flexDirection: 'column' }}>
-                <div>
-                  <label style={{ display: 'block', marginBottom: 'var(--space-2)' }}>Approval Notes (Optional)</label>
-                  <textarea
-                    value={approvalNotes}
-                    onChange={(e) => setApprovalNotes(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: 'var(--space-3)',
-                      borderRadius: 'var(--radius-lg)',
-                      border: '1px solid var(--border-primary)',
-                      background: 'var(--surface-glass)'
-                    }}
-                    rows={3}
-                  />
+            {/* Actions — only when reviewable AND not currently running checks */}
+            {(() => {
+              const isReviewable = ['requires_review', 'pending'].includes(selectedProvider.credentialing_status);
+              const isRunning = selectedProvider.credentialing_status === 'in_progress';
+              if (!isReviewable && !isRunning) return null;
+              return (
+                <div style={{ display: 'flex', gap: 'var(--space-3)', flexDirection: 'column' }}>
+                  {isRunning && (
+                    <div style={{ padding: 'var(--space-3)', background: 'rgba(0,157,221,0.1)', border: '1px solid #009DDD', borderRadius: 'var(--radius-md)', fontSize: 'var(--font-size-sm)' }}>
+                      Verification checks in progress. Approve / Reject are disabled until checks complete.
+                    </div>
+                  )}
+                  <div>
+                    <label style={{ display: 'block', marginBottom: 'var(--space-2)' }}>Approval Notes (Optional)</label>
+                    <textarea
+                      value={approvalNotes}
+                      onChange={(e) => setApprovalNotes(e.target.value)}
+                      disabled={isRunning}
+                      style={{ width: '100%', padding: 'var(--space-3)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-primary)', background: 'var(--surface-glass)' }}
+                      rows={3}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: 'var(--space-2)' }}>Rejection Reason</label>
+                    <textarea
+                      value={rejectionReason}
+                      onChange={(e) => setRejectionReason(e.target.value)}
+                      disabled={isRunning}
+                      style={{ width: '100%', padding: 'var(--space-3)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-primary)', background: 'var(--surface-glass)' }}
+                      rows={3}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+                    <button
+                      onClick={() => approveMutation.mutate({ providerId: selectedProvider.provider_id, notes: approvalNotes })}
+                      disabled={approveMutation.isLoading || isRunning}
+                      style={{ flex: 1, padding: 'var(--space-4)', borderRadius: 'var(--radius-lg)', background: '#25D366', color: 'white', border: 'none', cursor: (approveMutation.isLoading || isRunning) ? 'not-allowed' : 'pointer', opacity: (approveMutation.isLoading || isRunning) ? 0.5 : 1 }}
+                    >
+                      Approve Provider
+                    </button>
+                    <button
+                      onClick={() => rejectMutation.mutate({ providerId: selectedProvider.provider_id, reason: rejectionReason })}
+                      disabled={rejectMutation.isLoading || !rejectionReason || isRunning}
+                      style={{ flex: 1, padding: 'var(--space-4)', borderRadius: 'var(--radius-lg)', background: '#ef4444', color: 'white', border: 'none', cursor: (rejectMutation.isLoading || !rejectionReason || isRunning) ? 'not-allowed' : 'pointer', opacity: (rejectMutation.isLoading || !rejectionReason || isRunning) ? 0.5 : 1 }}
+                    >
+                      Reject Provider
+                    </button>
+                  </div>
                 </div>
-                <div>
-                  <label style={{ display: 'block', marginBottom: 'var(--space-2)' }}>Rejection Reason</label>
-                  <textarea
-                    value={rejectionReason}
-                    onChange={(e) => setRejectionReason(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: 'var(--space-3)',
-                      borderRadius: 'var(--radius-lg)',
-                      border: '1px solid var(--border-primary)',
-                      background: 'var(--surface-glass)'
-                    }}
-                    rows={3}
-                  />
-                </div>
-                <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
-                  <button
-                    onClick={() => approveMutation.mutate({ providerId: selectedProvider.provider_id, notes: approvalNotes })}
-                    disabled={approveMutation.isLoading}
-                    style={{
-                      flex: 1,
-                      padding: 'var(--space-4)',
-                      borderRadius: 'var(--radius-lg)',
-                      background: '#25D366',
-                      color: 'white',
-                      border: 'none',
-                      cursor: approveMutation.isLoading ? 'not-allowed' : 'pointer',
-                      opacity: approveMutation.isLoading ? 0.5 : 1
-                    }}
-                  >
-                    Approve Provider
-                  </button>
-                  <button
-                    onClick={() => rejectMutation.mutate({ providerId: selectedProvider.provider_id, reason: rejectionReason })}
-                    disabled={rejectMutation.isLoading || !rejectionReason}
-                    style={{
-                      flex: 1,
-                      padding: 'var(--space-4)',
-                      borderRadius: 'var(--radius-lg)',
-                      background: '#ef4444',
-                      color: 'white',
-                      border: 'none',
-                      cursor: rejectMutation.isLoading || !rejectionReason ? 'not-allowed' : 'pointer',
-                      opacity: rejectMutation.isLoading || !rejectionReason ? 0.5 : 1
-                    }}
-                  >
-                    Reject Provider
-                  </button>
-                </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Action buttons */}
             <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-6)', borderTop: '1px solid var(--border-light)', paddingTop: 'var(--space-4)' }}>
               <button className="btn btn-ghost btn-sm" onClick={() => { setEditingProvider(selectedProvider); setShowAddModal(true); setSelectedProvider(null); }}>
                 Edit
               </button>
-              <button className="btn btn-ghost btn-sm" onClick={() => rerunMutation.mutate(selectedProvider.provider_id)}>
-                Re-run Checks
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={selectedProvider.credentialing_status === 'in_progress' || rerunMutation.isLoading}
+                onClick={() => rerunMutation.mutate(selectedProvider.provider_id)}
+                title={selectedProvider.credentialing_status === 'in_progress' ? 'Already running' : 'Re-run all verification checks'}
+              >
+                {rerunMutation.isLoading ? 'Re-running...' : selectedProvider.credentialing_status === 'in_progress' ? 'Running...' : 'Re-run Checks'}
               </button>
               <button className="btn btn-ghost btn-sm" style={{ color: 'var(--brand-error)' }} onClick={() => {
                 if (confirm('Delete this provider? This cannot be undone.')) {

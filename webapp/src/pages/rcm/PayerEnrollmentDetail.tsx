@@ -3,7 +3,7 @@
  * View and manage a single payer enrollment case (checklist, status, documents)
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { apiService } from '@/services/api';
@@ -15,6 +15,7 @@ interface ChecklistItem {
   required: boolean;
   completed: boolean;
   doc_id?: number;
+  doc_type?: string;
   completed_date?: string;
 }
 
@@ -53,6 +54,11 @@ export default function PayerEnrollmentDetail() {
 
   const enrollmentCase: EnrollmentCaseDetail | null = data?.data || null;
 
+  // Hydrate the notes editor whenever the case loads/changes
+  useEffect(() => {
+    setNotes(enrollmentCase?.notes || '');
+  }, [enrollmentCase?.notes]);
+
   const checklistMutation = useMutation(
     (updatedChecklist: ChecklistItem[]) =>
       apiService.put(`/rcm/payer-enrollment/cases/${caseId}/checklist`, updatedChecklist),
@@ -64,6 +70,53 @@ export default function PayerEnrollmentDetail() {
       onError: () => { toast.error('Failed to update checklist'); },
     }
   );
+
+  const notesMutation = useMutation(
+    (newNotes: string) => apiService.put(`/rcm/payer-enrollment/cases/${caseId}`, { notes: newNotes }),
+    {
+      onSuccess: () => {
+        toast.success('Notes saved');
+        setEditingNotes(false);
+        queryClient.invalidateQueries(['enrollment-case', caseId]);
+      },
+      onError: (err: any) => { toast.error(err?.message || 'Failed to save notes'); },
+    }
+  );
+
+  const documentUploadMutation = useMutation(
+    async ({ file, doc_type }: { file: File; doc_type: string }) => {
+      if (!enrollmentCase) throw new Error('Case not loaded');
+      const fd = new FormData();
+      fd.append('file', file);
+      const params = new URLSearchParams({
+        provider_id: enrollmentCase.provider_id,
+        document_type: doc_type,
+      });
+      return apiService.upload(`/rcm/payer-enrollment/documents/upload?${params.toString()}`, fd);
+    },
+    {
+      onSuccess: () => {
+        toast.success('Document uploaded');
+        queryClient.invalidateQueries(['enrollment-case', caseId]);
+      },
+      onError: (err: any) => { toast.error(err?.message || 'Document upload failed'); },
+    }
+  );
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingDocType, setPendingDocType] = useState<string>('');
+
+  const triggerDocUpload = (docType: string) => {
+    setPendingDocType(docType);
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !pendingDocType) return;
+    documentUploadMutation.mutate({ file, doc_type: pendingDocType });
+  };
 
   const handleChecklistToggle = (index: number) => {
     if (!enrollmentCase) return;
@@ -169,7 +222,7 @@ export default function PayerEnrollmentDetail() {
             {/* Checklist items */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
               {(enrollmentCase.checklist || []).map((item, idx) => (
-                <label
+                <div
                   key={idx}
                   style={{
                     display: 'flex',
@@ -178,7 +231,6 @@ export default function PayerEnrollmentDetail() {
                     padding: 'var(--space-3)',
                     borderRadius: 'var(--radius-md)',
                     border: '1px solid var(--border-light)',
-                    cursor: 'pointer',
                     transition: 'background var(--transition-fast)',
                     background: item.completed ? 'var(--brand-success-light)' : 'transparent',
                   }}
@@ -202,13 +254,33 @@ export default function PayerEnrollmentDetail() {
                       <span style={{ marginLeft: 'var(--space-2)', fontSize: 'var(--font-size-xs)', color: 'var(--brand-error)' }}>Required</span>
                     )}
                   </div>
+                  {item.doc_type && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => triggerDocUpload(item.doc_type!)}
+                      disabled={documentUploadMutation.isLoading}
+                      style={{ fontSize: 'var(--font-size-xs)' }}
+                    >
+                      {documentUploadMutation.isLoading ? 'Uploading...' : (item.doc_id ? 'Replace' : 'Upload')}
+                    </button>
+                  )}
                   {item.completed_date && (
                     <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-tertiary)' }}>
                       {item.completed_date}
                     </span>
                   )}
-                </label>
+                </div>
               ))}
+
+              {/* Hidden file input shared by all upload buttons */}
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileSelected}
+                style={{ display: 'none' }}
+                accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+              />
             </div>
 
             {totalCount === 0 && (
@@ -250,10 +322,58 @@ export default function PayerEnrollmentDetail() {
 
           {/* Notes */}
           <div className="card" style={{ padding: 'var(--space-5)' }}>
-            <h3 style={{ fontSize: 'var(--font-size-base)', fontWeight: 600, marginBottom: 'var(--space-3)' }}>Notes</h3>
-            <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
-              {enrollmentCase.notes || 'No notes added.'}
-            </p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' }}>
+              <h3 style={{ fontSize: 'var(--font-size-base)', fontWeight: 600, margin: 0 }}>Notes</h3>
+              {!editingNotes && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setEditingNotes(true)}
+                  style={{ fontSize: 'var(--font-size-xs)' }}
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+            {editingNotes ? (
+              <div>
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  rows={6}
+                  style={{
+                    width: '100%',
+                    padding: 'var(--space-3)',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1px solid var(--border-light)',
+                    fontSize: 'var(--font-size-sm)',
+                    fontFamily: 'inherit',
+                    background: 'var(--surface-primary)',
+                    color: 'var(--text-primary)',
+                    resize: 'vertical',
+                  }}
+                  placeholder="Add notes about this enrollment case..."
+                />
+                <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-3)', justifyContent: 'flex-end' }}>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => { setNotes(enrollmentCase.notes || ''); setEditingNotes(false); }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={() => notesMutation.mutate(notes)}
+                    disabled={notesMutation.isLoading}
+                  >
+                    {notesMutation.isLoading ? 'Saving...' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', minHeight: 24 }}>
+                {enrollmentCase.notes || 'No notes added.'}
+              </p>
+            )}
           </div>
         </div>
       </div>

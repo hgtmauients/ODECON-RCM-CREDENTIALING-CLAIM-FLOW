@@ -85,9 +85,13 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # --- Rate limiting ---
+    # --- Request ID + Rate limiting ---
+    # NB: Starlette runs middlewares in REVERSE add order, so RequestIDMiddleware
+    # (added last) runs FIRST and can tag the request id on every downstream log line.
     from core.rate_limit import RateLimitMiddleware
+    from core.request_id import RequestIDMiddleware
     app.add_middleware(RateLimitMiddleware, requests_per_window=200, window_seconds=60)
+    app.add_middleware(RequestIDMiddleware)
 
     # --- Global exception handler ---
     # Logs the full exception server-side; returns a generic message to clients

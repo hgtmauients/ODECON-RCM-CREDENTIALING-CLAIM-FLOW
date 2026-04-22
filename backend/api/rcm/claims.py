@@ -221,6 +221,54 @@ async def create_claim(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.put("/{claim_id}")
+async def update_draft_claim(
+    claim_id: int,
+    updates: Dict[str, Any],
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Edit a draft claim. Only allowed when state == 'draft' to keep submitted
+    claims immutable for audit + EDI integrity."""
+    try:
+        result = await db.execute(
+            select(Claim)
+            .where(and_(Claim.id == claim_id, Claim.tenant_id == current_user.tenant_id))
+            .with_for_update()
+        )
+        claim = result.scalar_one_or_none()
+        if not claim:
+            raise HTTPException(status_code=404, detail="Claim not found")
+        if claim.state != "draft":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot edit claim in state '{claim.state}' — only draft claims are editable. Use the corrected-claim flow instead.",
+            )
+
+        editable = {
+            "patient_id", "provider_id", "payer_id",
+            "service_date_from", "service_date_to",
+            "claim_type", "billing_provider_npi", "rendering_provider_npi",
+            "prior_auth_number", "total_charges",
+        }
+        date_fields = {"service_date_from", "service_date_to"}
+        for key, value in (updates or {}).items():
+            if key not in editable or not hasattr(claim, key):
+                continue
+            if key in date_fields and isinstance(value, str):
+                value = date.fromisoformat(value)
+            setattr(claim, key, value)
+
+        await db.commit()
+        return {"success": True, "message": "Claim updated"}
+    except HTTPException:
+        raise
+    except Exception:
+        await db.rollback()
+        logger.exception("Error updating claim %s", claim_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.post("/{claim_id}/validate")
 async def validate_claim(
     claim_id: int,
