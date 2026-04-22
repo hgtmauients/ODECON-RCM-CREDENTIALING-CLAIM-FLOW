@@ -328,6 +328,10 @@ async def create_era_enrollment(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+MAX_DOC_UPLOAD_BYTES = int(__import__("os").getenv("MAX_DOC_UPLOAD_BYTES", str(20 * 1024 * 1024)))  # 20 MB
+ALLOWED_DOC_MIME_PREFIXES = ("application/pdf", "image/", "application/vnd.openxmlformats", "application/msword")
+
+
 @router.post("/documents/upload")
 async def upload_provider_document(
     provider_id: str,
@@ -338,32 +342,67 @@ async def upload_provider_document(
     db: AsyncSession = Depends(get_db),
     current_user: Principal = Depends(get_current_user),
 ):
-    """Upload provider document to secure vault - scoped to tenant"""
-    try:
-        file_path = f"/secure_storage/{current_user.tenant_id}/providers/{provider_id}/{document_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    """Upload a provider credentialing document. Persists bytes via storage backend."""
+    # Read with cap+1 for size enforcement
+    content = await file.read(MAX_DOC_UPLOAD_BYTES + 1)
+    if len(content) > MAX_DOC_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Document exceeds maximum size of {MAX_DOC_UPLOAD_BYTES // (1024 * 1024)} MB",
+        )
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
 
+    mime_type = file.content_type or "application/octet-stream"
+    if not any(mime_type.startswith(p) for p in ALLOWED_DOC_MIME_PREFIXES):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported document mime type: {mime_type}",
+        )
+
+    # Persist to configured storage backend (local or S3)
+    from core.storage import storage
+    safe_name = (file.filename or f"{document_type}.bin").replace("/", "_").replace("\\", "_")
+    relative_path = f"providers/{provider_id}/{document_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}"
+
+    try:
+        stored_path = await storage.write(relative_path, content, tenant_id=str(current_user.tenant_id))
+    except Exception as e:
+        logger.exception("Failed to persist provider document")
+        raise HTTPException(status_code=500, detail="Failed to persist document")
+
+    try:
         new_doc = ProviderDocument(
             tenant_id=current_user.tenant_id,
             provider_id=provider_id,
             document_type=document_type,
             document_name=file.filename or f"{document_type}_document",
-            file_path=file_path,
-            file_size=0,
-            mime_type=file.content_type,
+            file_path=stored_path,
+            file_size=len(content),
+            mime_type=mime_type,
             original_filename=file.filename,
             expiration_date=expiration_date,
             state_code=state_code,
             uploaded_by=current_user.email,
-            is_encrypted=True,
+            is_encrypted=False,
         )
         db.add(new_doc)
         await db.commit()
         await db.refresh(new_doc)
 
-        return {"success": True, "message": "Document uploaded successfully", "data": {"id": new_doc.id, "document_type": document_type}}
+        return {
+            "success": True,
+            "message": "Document uploaded successfully",
+            "data": {
+                "id": new_doc.id,
+                "document_type": document_type,
+                "file_size": new_doc.file_size,
+                "mime_type": new_doc.mime_type,
+            },
+        }
     except Exception as e:
         await db.rollback()
-        logger.error(f"Error uploading document: {e}")
+        logger.exception("Error creating ProviderDocument row after storage write")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

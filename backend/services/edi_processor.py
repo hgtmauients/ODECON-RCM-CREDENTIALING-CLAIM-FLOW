@@ -572,17 +572,23 @@ class EDIProcessor:
             content = await self._read_file_async(file_path)
             file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest() if content else ""
 
-            # Idempotency check
+            # Idempotency check. Use .first() instead of scalar_one_or_none()
+            # because while the DB has a unique partial index on (tenant_id,
+            # file_hash, file_type), legacy rows from before rcm_009 may not
+            # have a file_hash and could legitimately collide on shape alone.
             if file_hash and tenant_id:
                 existing = await self.db.execute(
-                    select(EDIFile).where(and_(
+                    select(EDIFile)
+                    .where(and_(
                         EDIFile.tenant_id == tenant_id,
                         EDIFile.file_hash == file_hash,
                         EDIFile.file_type == "835",
                         EDIFile.status == "processed",
                     ))
+                    .order_by(EDIFile.id.asc())
+                    .limit(1)
                 )
-                dup = existing.scalar_one_or_none()
+                dup = existing.scalars().first()
                 if dup:
                     logger.info(f"835 file {file_path} already processed (id={dup.id}), skipping")
                     return {

@@ -73,8 +73,7 @@ services:
           memory: 2G
 
   # Daily pg_dump at 03:00 UTC. Keeps last 30 days. Backups land in the
-  # pgbackups volume, mounted from the postgres service as well so backups
-  # survive container removal.
+  # pgbackups volume so they survive container removal/recreation.
   backup:
     image: postgres:16-alpine
     depends_on:
@@ -82,22 +81,12 @@ services:
         condition: service_healthy
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      RETENTION_DAYS: "30"
+      BACKUP_HOUR_UTC: "3"
     volumes:
       - pgbackups:/backups
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        echo 'Backup sidecar started';
-        while true; do
-          NOW=$$(date +%Y%m%d_%H%M%S);
-          OUT=/backups/noodledoc_$$NOW.sql.gz;
-          echo "Running pg_dump → $$OUT";
-          pg_dump -h postgres -U noodledoc -d noodledoc | gzip > "$$OUT" || echo 'pg_dump failed';
-          # prune backups older than 30 days
-          find /backups -name 'noodledoc_*.sql.gz' -mtime +30 -delete;
-          # sleep until next 03:00 UTC
-          sleep $$(( ( ( 27 - $$(date -u +%H) ) % 24 ) * 3600 + ( 60 - $$(date -u +%M) ) * 60 ));
-        done
+      - ./backend/backup-runner.sh:/usr/local/bin/backup-runner.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/backup-runner.sh"]
     restart: unless-stopped
 
 volumes:

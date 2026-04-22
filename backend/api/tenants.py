@@ -164,10 +164,12 @@ async def update_tenant_settings(
 
     try:
         await save_tenant_settings(db, tenant_id, settings.model_dump(exclude_unset=True))
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to save tenant settings: {e}")
+    except ValueError:
+        # Tenant not found — log details server-side, return generic message
+        logger.info("save_tenant_settings: tenant %s not found", tenant_id)
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    except Exception:
+        logger.exception("Failed to save tenant settings for %s", tenant_id)
         raise HTTPException(status_code=500, detail="Failed to save settings")
 
     return {"success": True, "message": "Settings saved"}

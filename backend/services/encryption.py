@@ -90,22 +90,46 @@ async def encrypt_credential(plaintext: str) -> str:
 
 
 async def decrypt_credential(ciphertext: str) -> str:
-    """Decrypt a base64-encoded ciphertext, supporting both legacy and versioned format."""
+    """Decrypt a base64-encoded ciphertext, supporting both legacy and versioned format.
+
+    For legacy (v0) blobs we try every available key in priority order:
+    CLAIMFLOW_ENCRYPTION_KEY_v0 first (the documented "previous active key"
+    slot), then the current active key, then any other configured keys.
+    This matches the rotation runbook: rotate by setting a new
+    CLAIMFLOW_ENCRYPTION_KEY and moving the previous key to v0.
+    """
     _initialize()
     raw = base64.b64decode(ciphertext)
 
     if raw[:1] == VERSIONED_PREFIX and len(raw) > NONCE_SIZE + 2:
-        # Versioned format: 'v' + version byte + nonce + ct
         version = raw[1]
         nonce = raw[2:2 + NONCE_SIZE]
         ct = raw[2 + NONCE_SIZE:]
         key = _get_key_for_version(version)
-    else:
-        # Legacy format: nonce + ct, encrypted with the current key
-        nonce = raw[:NONCE_SIZE]
-        ct = raw[NONCE_SIZE:]
-        key = _get_key_for_version(_active_version) if _active_version is not None else _get_key_for_version(CURRENT_VERSION)
+        aesgcm = AESGCM(key)
+        return aesgcm.decrypt(nonce, ct, None).decode("utf-8")
 
-    aesgcm = AESGCM(key)
-    plaintext = aesgcm.decrypt(nonce, ct, None)
-    return plaintext.decode("utf-8")
+    # Legacy format: nonce + ct, encrypted with whichever key was active at
+    # the time. Try v0 first (canonical "old key" slot) then the rest.
+    nonce = raw[:NONCE_SIZE]
+    ct = raw[NONCE_SIZE:]
+
+    candidate_versions: list[int] = []
+    if 0 in _keys:
+        candidate_versions.append(0)
+    if _active_version is not None and _active_version not in candidate_versions:
+        candidate_versions.append(_active_version)
+    for v in sorted(_keys.keys()):
+        if v not in candidate_versions:
+            candidate_versions.append(v)
+
+    last_err: Exception | None = None
+    for v in candidate_versions:
+        try:
+            aesgcm = AESGCM(_keys[v])
+            return aesgcm.decrypt(nonce, ct, None).decode("utf-8")
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise ValueError("Legacy ciphertext could not be decrypted with any configured key") from last_err
