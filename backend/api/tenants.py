@@ -214,6 +214,47 @@ async def update_tenant_settings(
     return {"success": True, "message": "Settings saved"}
 
 
+@router.post("/{tenant_id}/webhook/regenerate-secret")
+async def regenerate_webhook_secret(
+    tenant_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Generate a fresh per-tenant webhook secret + return it once.
+
+    The plaintext is returned ONLY in this response. Subsequent reads via
+    /tenants/{id}/settings come back masked.
+    """
+    if current_user.tenant_id != tenant_id and not current_user.has_role("super_admin"):
+        raise HTTPException(status_code=403, detail="Not authorized for this tenant")
+    current_user.require_role("admin")
+
+    import secrets as _secrets
+    from core.tenant_config import save_tenant_settings
+
+    new_secret = _secrets.token_hex(32)  # 64-char hex, ~256 bits
+    try:
+        await save_tenant_settings(db, tenant_id, {"webhook_secret": new_secret})
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    await log_audit_event(
+        db, current_user, action="webhook_secret_rotated", resource_type="tenant",
+        resource_id=tenant_id, request=request,
+        metadata={"length": len(new_secret)},
+    )
+    await db.commit()
+
+    return {
+        "success": True,
+        "data": {
+            "webhook_secret": new_secret,
+            "warning": "This value is shown ONCE. Store it now — subsequent reads return only a masked preview.",
+        },
+    }
+
+
 @router.post("/{tenant_id}/settings/test-smtp")
 async def test_smtp_settings(
     tenant_id: str,

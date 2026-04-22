@@ -24,6 +24,15 @@ type DashboardData = {
   credentialing: { by_status: Record<string, number> };
   enrollment: { expiring_30d: number };
   work_queues: { key: string; label: string; count: number; link: string }[];
+  month_to_date?: { claims_created: number; charges: number; paid: number };
+  year_to_date?: {
+    submitted: number;
+    denied: number;
+    denial_rate_pct: number;
+    collection_rate_pct: number;
+    charges: number;
+    paid: number;
+  };
 };
 
 const fmtCurrency = (v: number) =>
@@ -71,6 +80,38 @@ export default function Dashboard() {
         <KPI label="Open denials" value={summary.denials.open.toLocaleString()} accent={summary.denials.open > 0 ? 'var(--brand-error)' : undefined} onClick={() => navigate('/denials')} />
         <KPI label="Expiring credentials (≤30d)" value={summary.enrollment.expiring_30d.toLocaleString()} accent={summary.enrollment.expiring_30d > 0 ? 'var(--brand-warning, #f59e0b)' : undefined} onClick={() => navigate('/payer-enrollment')} />
       </div>
+
+      {(summary.month_to_date || summary.year_to_date) && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 'var(--space-4)', marginBottom: 'var(--space-6)' }}>
+          {summary.month_to_date && (
+            <>
+              <KPI
+                label="Claims this month"
+                value={summary.month_to_date.claims_created.toLocaleString()}
+              />
+              <KPI
+                label="Revenue this month"
+                value={fmtCurrency(summary.month_to_date.paid)}
+                accent="var(--brand-success)"
+              />
+            </>
+          )}
+          {summary.year_to_date && (
+            <>
+              <KPI
+                label="Denial rate (YTD)"
+                value={`${summary.year_to_date.denial_rate_pct}%`}
+                accent={summary.year_to_date.denial_rate_pct >= 10 ? 'var(--brand-error)' : 'var(--text-primary)'}
+              />
+              <KPI
+                label="Collection rate (YTD)"
+                value={`${summary.year_to_date.collection_rate_pct}%`}
+                accent={summary.year_to_date.collection_rate_pct >= 90 ? 'var(--brand-success)' : 'var(--brand-primary)'}
+              />
+            </>
+          )}
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 'var(--space-6)', marginBottom: 'var(--space-6)' }}>
         {/* Work queues */}

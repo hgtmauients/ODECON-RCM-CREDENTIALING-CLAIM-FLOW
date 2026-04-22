@@ -107,7 +107,7 @@ export default function ClaimDetail() {
                 Service Date: {formatDate(claim.service_date_from)}
               </p>
             </div>
-            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }} className="no-print">
               {claim.state === 'draft' && (
                 <button
                   onClick={() => navigate(`/claims/${claim.id}/edit`)}
@@ -125,6 +125,22 @@ export default function ClaimDetail() {
                   Edit Draft
                 </button>
               )}
+              <button
+                onClick={() => window.print()}
+                style={{
+                  padding: 'var(--space-3) var(--space-4)',
+                  background: 'transparent',
+                  border: '1px solid var(--border-primary)',
+                  borderRadius: 'var(--radius-md)',
+                  color: 'var(--text-primary)',
+                  fontSize: 'var(--font-size-sm)',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+                title="Print a clean copy of this claim"
+              >
+                Print
+              </button>
               <button
                 onClick={() => navigate('/claims')}
                 style={{

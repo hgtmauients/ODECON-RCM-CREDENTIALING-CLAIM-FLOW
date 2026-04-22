@@ -15,6 +15,8 @@ import logging
 
 from core.database import get_db
 from core.audit import log_audit_event
+from core.csv_export import csv_response
+from datetime import datetime
 from models.denials import DenialCase, DenialPlaybook
 from models.claims import Claim
 from api.auth import get_current_user, Principal
@@ -95,6 +97,80 @@ async def list_denial_cases(
     except Exception:
         logger.exception("Error listing denial cases")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/cases/export.csv")
+async def export_denials_csv(
+    request: Request,
+    category: Optional[str] = None,
+    priority: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = Query(10000, ge=1, le=50000),
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Stream filtered denial cases as CSV."""
+    current_user.require_role("billing")
+    filters = [DenialCase.tenant_id == current_user.tenant_id]
+    if category:
+        filters.append(DenialCase.denial_category == category)
+    if priority:
+        filters.append(DenialCase.priority == priority)
+    if status:
+        filters.append(DenialCase.status == status)
+
+    rows = (await db.execute(
+        select(DenialCase).where(and_(*filters))
+        .order_by(desc(DenialCase.created_at)).limit(limit)
+    )).scalars().all()
+
+    # Single batched lookup for claim_number to avoid N+1.
+    from models.claims import Claim
+    claim_ids = [d.claim_id for d in rows if d.claim_id]
+    claim_numbers: dict = {}
+    if claim_ids:
+        cl = await db.execute(
+            select(Claim.id, Claim.claim_number).where(and_(
+                Claim.id.in_(claim_ids),
+                Claim.tenant_id == current_user.tenant_id,
+            ))
+        )
+        claim_numbers = {row[0]: row[1] for row in cl.all()}
+
+    await log_audit_event(
+        db, current_user, action="denials_csv_exported", resource_type="denial",
+        resource_id="batch", request=request,
+        metadata={"row_count": len(rows)},
+    )
+    await db.commit()
+
+    fieldnames = [
+        "id", "claim_id", "claim_number", "carc_code", "rarc_code",
+        "denial_description", "denial_category", "denied_amount",
+        "status", "priority", "appeal_due_date", "days_until_due",
+        "assigned_to", "created_at",
+    ]
+    return csv_response(
+        filename=f"denials_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        rows=rows,
+        fieldnames=fieldnames,
+        row_to_dict=lambda d: {
+            "id": d.id,
+            "claim_id": d.claim_id,
+            "claim_number": claim_numbers.get(d.claim_id, ""),
+            "carc_code": d.carc_code,
+            "rarc_code": d.rarc_code,
+            "denial_description": d.denial_description,
+            "denial_category": d.denial_category,
+            "denied_amount": float(d.denied_amount) if d.denied_amount else 0.0,
+            "status": d.status,
+            "priority": d.priority,
+            "appeal_due_date": d.appeal_due_date,
+            "days_until_due": d.days_until_due,
+            "assigned_to": d.assigned_to,
+            "created_at": d.created_at,
+        },
+    )
 
 
 @router.get("/cases/{denial_id}")

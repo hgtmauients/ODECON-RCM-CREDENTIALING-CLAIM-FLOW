@@ -406,3 +406,54 @@ tbody tr:last-child td {
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
 }
+
+/* ─── Print ─── */
+/* Strip the chrome and color so a single page prints cleanly. Pages that
+   want to opt-out can wrap themselves in .no-print, individual nodes can
+   add the class to vanish from print output. */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  /* Hide app shell + interactive controls */
+  .sidebar,
+  aside,
+  .no-print,
+  button,
+  nav,
+  .toast,
+  [data-sonner-toaster] {
+    display: none !important;
+  }
+  /* Expand main content full width and remove animations */
+  main,
+  .animate-in {
+    animation: none !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+  /* Cards become borderless flat blocks for print */
+  .card,
+  [style*="surface-glass"] {
+    background: #ffffff !important;
+    border: 1px solid #cccccc !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    page-break-inside: avoid;
+  }
+  /* Headings print darker */
+  h1, h2, h3 {
+    color: #000000 !important;
+    background: none !important;
+    -webkit-text-fill-color: #000000 !important;
+  }
+  a {
+    color: #000000 !important;
+    text-decoration: underline;
+  }
+  /* Tables shouldn't be cut across pages mid-row when avoidable */
+  tr {
+    page-break-inside: avoid;
+  }
+}

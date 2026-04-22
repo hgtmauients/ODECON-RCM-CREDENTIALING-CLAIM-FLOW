@@ -87,7 +87,22 @@ export default function PatientManagement() {
           <h1 className="page-title">Patients</h1>
           <p className="page-subtitle">Manage patient demographics for claim creation</p>
         </div>
-        <button className="btn btn-primary btn-lg" onClick={() => { resetForm(); setShowForm(true); }}>+ New Patient</button>
+        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+          <button
+            className="btn btn-ghost btn-lg"
+            onClick={() => {
+              const params: Record<string, string | number> = { limit: 10000 };
+              if (search) params.search = search;
+              apiService
+                .downloadFile('/rcm/patients/export.csv', 'patients.csv', params)
+                .catch((err: any) => toast.error(err?.message || 'Export failed'));
+            }}
+            title="Download patients as CSV (PHI — audited)"
+          >
+            Export CSV
+          </button>
+          <button className="btn btn-primary btn-lg" onClick={() => { resetForm(); setShowForm(true); }}>+ New Patient</button>
+        </div>
       </div>
 
       <div className="card" style={{ padding: 'var(--space-4)', marginBottom: 'var(--space-4)' }}>

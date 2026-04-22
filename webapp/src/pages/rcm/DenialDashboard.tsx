@@ -80,20 +80,38 @@ export default function DenialDashboard() {
           padding: 'var(--space-6)',
           marginBottom: 'var(--space-6)'
         }}>
-          <h1 style={{
-            fontSize: 'var(--font-size-3xl)',
-            fontWeight: 700,
-            marginBottom: 'var(--space-2)',
-            background: 'var(--gradient-primary)',
-            backgroundClip: 'text',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent'
-          }}>
-            Denial Management
-          </h1>
-          <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--font-size-base)' }}>
-            Review denials, generate appeals, and track outcomes
-          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div>
+              <h1 style={{
+                fontSize: 'var(--font-size-3xl)',
+                fontWeight: 700,
+                marginBottom: 'var(--space-2)',
+                background: 'var(--gradient-primary)',
+                backgroundClip: 'text',
+                WebkitBackgroundClip: 'text',
+                WebkitTextFillColor: 'transparent',
+              }}>
+                Denial Management
+              </h1>
+              <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--font-size-base)' }}>
+                Review denials, generate appeals, and track outcomes
+              </p>
+            </div>
+            <button
+              className="btn btn-ghost btn-lg"
+              onClick={() => {
+                const params: Record<string, string | number> = { limit: 10000 };
+                if (categoryFilter) params.category = categoryFilter;
+                if (priorityFilter) params.priority = priorityFilter;
+                apiService
+                  .downloadFile('/rcm/denials/cases/export.csv', 'denials.csv', params)
+                  .catch((err: any) => toast.error(err?.message || 'Export failed'));
+              }}
+              title="Download denial cases as CSV"
+            >
+              Export CSV
+            </button>
+          </div>
         </div>
 
         {/* Summary Cards */}

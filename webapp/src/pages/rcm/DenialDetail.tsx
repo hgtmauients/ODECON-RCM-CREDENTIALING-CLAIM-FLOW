@@ -124,21 +124,39 @@ export default function DenialDetail() {
                 CARC: {denial.carc_code} {denial.rarc_code && `| RARC: ${denial.rarc_code}`}
               </p>
             </div>
-            <button
-              onClick={() => navigate('/denials')}
-              style={{
-                padding: 'var(--space-3) var(--space-4)',
-                background: 'transparent',
-                border: '1px solid var(--border-primary)',
-                borderRadius: 'var(--radius-md)',
-                color: 'var(--text-secondary)',
-                fontSize: 'var(--font-size-sm)',
-                fontWeight: 600,
-                cursor: 'pointer'
-              }}
-            >
-              Back to Denials
-            </button>
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }} className="no-print">
+              <button
+                onClick={() => window.print()}
+                style={{
+                  padding: 'var(--space-3) var(--space-4)',
+                  background: 'transparent',
+                  border: '1px solid var(--border-primary)',
+                  borderRadius: 'var(--radius-md)',
+                  color: 'var(--text-primary)',
+                  fontSize: 'var(--font-size-sm)',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+                title="Print this denial case + appeal letter"
+              >
+                Print
+              </button>
+              <button
+                onClick={() => navigate('/denials')}
+                style={{
+                  padding: 'var(--space-3) var(--space-4)',
+                  background: 'transparent',
+                  border: '1px solid var(--border-primary)',
+                  borderRadius: 'var(--radius-md)',
+                  color: 'var(--text-secondary)',
+                  fontSize: 'var(--font-size-sm)',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Back to Denials
+              </button>
+            </div>
           </div>
         </div>
 

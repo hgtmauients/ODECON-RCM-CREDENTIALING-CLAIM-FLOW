@@ -120,27 +120,24 @@ export default function PayerProfiles() {
                 Configure insurance payers with connection details, rules, and credentials
               </p>
             </div>
-            <button
-              onClick={() => navigate('/admin/payers/new')}
-              style={{
-                padding: 'var(--space-3) var(--space-6)',
-                background: 'var(--gradient-primary)',
-                border: 'none',
-                borderRadius: 'var(--radius-md)',
-                color: 'white',
-                fontSize: 'var(--font-size-base)',
-                fontWeight: 600,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 'var(--space-2)',
-                transition: 'all var(--transition-fast)'
-              }}
-              onMouseEnter={(e) => e.currentTarget.style.transform = 'translateY(-2px)'}
-              onMouseLeave={(e) => e.currentTarget.style.transform = 'translateY(0)'}
-            >
-              + New Payer
-            </button>
+            <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+              <button
+                onClick={() => navigate('/admin/payers/wizard')}
+                className="btn btn-primary"
+                style={{ padding: 'var(--space-3) var(--space-5)', display: 'flex', alignItems: 'center', gap: 6 }}
+                title="Step-by-step guided setup"
+              >
+                + Wizard
+              </button>
+              <button
+                onClick={() => navigate('/admin/payers/new')}
+                className="btn btn-ghost"
+                style={{ padding: 'var(--space-3) var(--space-5)' }}
+                title="Open the full 11-tab editor"
+              >
+                Advanced editor
+              </button>
+            </div>
           </div>
         </div>
 

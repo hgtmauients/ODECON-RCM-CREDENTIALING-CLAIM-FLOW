@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import get_current_user, Principal
 from core.database import get_db
+from core.csv_export import csv_response
 from models.audit import SecurityAuditLog
+import json as _json
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/audit-log", tags=["Admin - Audit Log"])
@@ -93,6 +95,70 @@ async def list_audit_events(
         "limit": limit,
         "offset": offset,
     }
+
+
+@router.get("/export.csv")
+async def export_audit_log_csv(
+    action: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
+    user_email: Optional[str] = None,
+    success: Optional[bool] = None,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    limit: int = Query(20000, ge=1, le=100000),
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Stream filtered audit events as CSV."""
+    current_user.require_role("admin")
+
+    filters = [SecurityAuditLog.tenant_id == current_user.tenant_id]
+    if action:
+        filters.append(SecurityAuditLog.action == action)
+    if resource_type:
+        filters.append(SecurityAuditLog.resource_type == resource_type)
+    if resource_id:
+        filters.append(SecurityAuditLog.resource_id == resource_id)
+    if user_email:
+        filters.append(SecurityAuditLog.user_email.ilike(f"%{user_email.strip()}%"))
+    if success is not None:
+        filters.append(SecurityAuditLog.success.is_(success))
+    if since:
+        filters.append(SecurityAuditLog.timestamp >= since)
+    if until:
+        filters.append(SecurityAuditLog.timestamp <= until)
+
+    rows = (await db.execute(
+        select(SecurityAuditLog).where(and_(*filters))
+        .order_by(SecurityAuditLog.timestamp.desc()).limit(limit)
+    )).scalars().all()
+
+    fieldnames = [
+        "id", "timestamp", "user_email", "user_role", "action",
+        "resource_type", "resource_id", "success", "ip_address",
+        "user_agent", "error_message", "changes", "metadata",
+    ]
+    return csv_response(
+        filename=f"audit_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        rows=rows,
+        fieldnames=fieldnames,
+        row_to_dict=lambda r: {
+            "id": r.id,
+            "timestamp": r.timestamp,
+            "user_email": r.user_email,
+            "user_role": r.user_role,
+            "action": r.action,
+            "resource_type": r.resource_type,
+            "resource_id": r.resource_id,
+            "success": r.success,
+            "ip_address": r.ip_address,
+            "user_agent": r.user_agent,
+            "error_message": r.error_message,
+            "changes": _json.dumps(r.changes) if r.changes else "",
+            "metadata": _json.dumps(r.extra_data) if r.extra_data else "",
+        },
+    )
 
 
 @router.get("/_meta/actions")

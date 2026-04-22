@@ -148,6 +148,45 @@ async function downloadBlob(path: string): Promise<Blob> {
   return resp.blob();
 }
 
+/**
+ * Fetch a CSV / file export and trigger the browser download.
+ * Reads filename from Content-Disposition when present, falls back to `fallback`.
+ */
+async function downloadFile(path: string, fallback: string, query?: ParamsInput): Promise<void> {
+  let url = `${BASE_URL}${path}`;
+  const params = resolveParams(query);
+  if (params) {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null) qs.set(k, String(v));
+    });
+    const qsStr = qs.toString();
+    if (qsStr) url += `?${qsStr}`;
+  }
+
+  const resp = await fetch(url, { method: 'GET', headers: authHeaders() });
+  if (!resp.ok) {
+    const errorBody = await resp.json().catch(() => ({ detail: resp.statusText }));
+    const error: any = new Error(errorBody.detail || `HTTP ${resp.status}`);
+    error.status = resp.status;
+    throw error;
+  }
+
+  const cd = resp.headers.get('Content-Disposition') || '';
+  const match = /filename="?([^"]+)"?/.exec(cd);
+  const filename = match ? match[1] : fallback;
+
+  const blob = await resp.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(blobUrl);
+}
+
 export const apiService = {
   get,
   post,
@@ -156,6 +195,7 @@ export const apiService = {
   delete: del,
   upload,
   downloadBlob,
+  downloadFile,
   setAuthToken,
   setTenantId,
 };

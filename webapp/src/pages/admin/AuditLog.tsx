@@ -69,9 +69,31 @@ export default function AuditLog() {
 
   return (
     <div>
-      <div style={{ marginBottom: 'var(--space-6)' }}>
-        <h1 className="page-title">Audit Log</h1>
-        <p className="page-subtitle">Every PHI / credential / configuration mutation in this tenant</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--space-6)' }}>
+        <div>
+          <h1 className="page-title">Audit Log</h1>
+          <p className="page-subtitle">Every PHI / credential / configuration mutation in this tenant</p>
+        </div>
+        <button
+          className="btn btn-ghost btn-lg"
+          onClick={() => {
+            const params: Record<string, string | number | boolean | undefined> = { limit: 20000 };
+            if (action) params.action = action;
+            if (resourceType) params.resource_type = resourceType;
+            if (resourceId) params.resource_id = resourceId;
+            if (userEmail) params.user_email = userEmail;
+            if (successFilter === 'success') params.success = true;
+            if (successFilter === 'failure') params.success = false;
+            if (since) params.since = new Date(since).toISOString();
+            if (until) params.until = new Date(until).toISOString();
+            apiService.downloadFile('/admin/audit-log/export.csv', 'audit_log.csv', params).catch((err: any) => {
+              alert(err?.message || 'Export failed');
+            });
+          }}
+          title="Download filtered audit events as CSV"
+        >
+          Export CSV
+        </button>
       </div>
 
       <div className="card" style={{ padding: 'var(--space-4)', marginBottom: 'var(--space-4)', display: 'grid', gap: 'var(--space-3)', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>

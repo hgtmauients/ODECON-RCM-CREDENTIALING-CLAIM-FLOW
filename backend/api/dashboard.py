@@ -74,6 +74,7 @@ async def dashboard_summary(
 
     # ---- denial counts (open vs total this month) ----
     month_start = date(today.year, today.month, 1)
+    year_start = date(today.year, 1, 1)
     open_denials_row = await db.execute(
         select(func.count(DenialCase.id)).where(and_(
             DenialCase.tenant_id == tenant_filter,
@@ -89,6 +90,59 @@ async def dashboard_summary(
         ))
     )
     denials_this_month = int(denials_this_month_row.scalar() or 0)
+
+    # ---- this-month claim counts + revenue ----
+    this_month_claims_row = await db.execute(
+        select(
+            func.count(Claim.id),
+            func.coalesce(func.sum(Claim.total_charges), 0),
+            func.coalesce(func.sum(Claim.total_paid), 0),
+        ).where(and_(
+            Claim.tenant_id == tenant_filter,
+            Claim.created_date.isnot(None),
+            func.date(Claim.created_date) >= month_start,
+        ))
+    )
+    mtd_claims, mtd_charges, mtd_paid = this_month_claims_row.one()
+    mtd_claims = int(mtd_claims or 0)
+    mtd_charges = float(mtd_charges or 0)
+    mtd_paid = float(mtd_paid or 0)
+
+    # ---- denial rate YTD: distinct denied claims / submitted claims ----
+    ytd_submitted_row = await db.execute(
+        select(func.count(Claim.id)).where(and_(
+            Claim.tenant_id == tenant_filter,
+            Claim.submitted_date.isnot(None),
+            func.date(Claim.submitted_date) >= year_start,
+        ))
+    )
+    ytd_submitted = int(ytd_submitted_row.scalar() or 0)
+
+    ytd_denied_row = await db.execute(
+        select(func.count(func.distinct(DenialCase.claim_id))).where(and_(
+            DenialCase.tenant_id == tenant_filter,
+            func.date(DenialCase.created_at) >= year_start,
+        ))
+    )
+    ytd_denied = int(ytd_denied_row.scalar() or 0)
+
+    denial_rate_pct = round((ytd_denied / ytd_submitted) * 100, 1) if ytd_submitted else 0.0
+
+    # ---- collection rate YTD: total_paid / total_charges across paid+denied claims ----
+    ytd_collection_row = await db.execute(
+        select(
+            func.coalesce(func.sum(Claim.total_charges), 0),
+            func.coalesce(func.sum(Claim.total_paid), 0),
+        ).where(and_(
+            Claim.tenant_id == tenant_filter,
+            Claim.submitted_date.isnot(None),
+            func.date(Claim.submitted_date) >= year_start,
+        ))
+    )
+    ytd_charges_total, ytd_paid_total = ytd_collection_row.one()
+    ytd_charges_total = float(ytd_charges_total or 0)
+    ytd_paid_total = float(ytd_paid_total or 0)
+    collection_rate_pct = round((ytd_paid_total / ytd_charges_total) * 100, 1) if ytd_charges_total else 0.0
 
     # ---- credentialing queue counts ----
     cred_status_rows = await db.execute(
@@ -155,5 +209,18 @@ async def dashboard_summary(
             "credentialing": {"by_status": credentialing_by_status},
             "enrollment": {"expiring_30d": expiring_enrollments},
             "work_queues": work_queues,
+            "month_to_date": {
+                "claims_created": mtd_claims,
+                "charges": mtd_charges,
+                "paid": mtd_paid,
+            },
+            "year_to_date": {
+                "submitted": ytd_submitted,
+                "denied": ytd_denied,
+                "denial_rate_pct": denial_rate_pct,
+                "collection_rate_pct": collection_rate_pct,
+                "charges": ytd_charges_total,
+                "paid": ytd_paid_total,
+            },
         },
     }

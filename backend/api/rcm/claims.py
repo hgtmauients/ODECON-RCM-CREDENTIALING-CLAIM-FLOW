@@ -16,6 +16,7 @@ import logging
 
 from core.database import get_db
 from core.audit import log_audit_event
+from core.csv_export import csv_response
 from models.claims import Claim, ClaimLine, ClaimDiagnosis, ClaimEvent, EDIFile, ClaimQueue
 from models.rcm import PayerProfile
 from api.auth import get_current_user, Principal
@@ -96,6 +97,87 @@ async def list_claims(
     except Exception as e:
         logger.exception("Error listing claims")
         raise HTTPException(status_code=500, detail="Failed to list claims")
+
+
+@router.get("/export.csv")
+async def export_claims_csv(
+    request: Request,
+    state: Optional[str] = None,
+    queue: Optional[str] = None,
+    payer_id: Optional[int] = None,
+    provider_id: Optional[int] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    limit: int = Query(10000, ge=1, le=50000),
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Stream filtered claims as CSV. Same filters as GET /rcm/claims."""
+    current_user.require_role("billing")
+
+    filters = [Claim.tenant_id == current_user.tenant_id]
+    if state:
+        filters.append(Claim.state == state)
+    if queue:
+        filters.append(Claim.current_queue == queue)
+    if payer_id:
+        filters.append(Claim.payer_id == payer_id)
+    if provider_id:
+        filters.append(Claim.provider_id == provider_id)
+    if date_from:
+        filters.append(Claim.service_date_from >= date_from)
+    if date_to:
+        filters.append(Claim.service_date_from <= date_to)
+
+    query = (
+        select(Claim).where(and_(*filters))
+        .order_by(desc(Claim.created_date)).limit(limit)
+    )
+    rows = (await db.execute(query)).scalars().all()
+
+    await log_audit_event(
+        db, current_user, action="claims_csv_exported", resource_type="claim",
+        resource_id="batch", request=request,
+        metadata={"row_count": len(rows), "filters": {"state": state, "payer_id": payer_id}},
+    )
+    await db.commit()
+
+    fieldnames = [
+        "id", "claim_number", "payer_claim_id", "payer_id", "patient_id",
+        "provider_id", "state", "current_queue",
+        "service_date_from", "service_date_to",
+        "total_charges", "total_allowed", "total_paid",
+        "billing_provider_npi", "rendering_provider_npi",
+        "claim_type", "denial_reason", "denial_category",
+        "created_date", "submitted_date",
+    ]
+    return csv_response(
+        filename=f"claims_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        rows=rows,
+        fieldnames=fieldnames,
+        row_to_dict=lambda c: {
+            "id": c.id,
+            "claim_number": c.claim_number,
+            "payer_claim_id": c.payer_claim_id,
+            "payer_id": c.payer_id,
+            "patient_id": c.patient_id,
+            "provider_id": c.provider_id,
+            "state": c.state,
+            "current_queue": c.current_queue,
+            "service_date_from": c.service_date_from,
+            "service_date_to": c.service_date_to,
+            "total_charges": float(c.total_charges) if c.total_charges else 0,
+            "total_allowed": float(c.total_allowed) if c.total_allowed else None,
+            "total_paid": float(c.total_paid) if c.total_paid else None,
+            "billing_provider_npi": c.billing_provider_npi,
+            "rendering_provider_npi": c.rendering_provider_npi,
+            "claim_type": c.claim_type,
+            "denial_reason": c.denial_reason,
+            "denial_category": c.denial_category,
+            "created_date": c.created_date,
+            "submitted_date": c.submitted_date,
+        },
+    )
 
 
 @router.get("/{claim_id}")

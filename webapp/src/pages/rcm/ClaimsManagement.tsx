@@ -285,6 +285,19 @@ export default function ClaimsManagement() {
               >
                 {csvImportMutation.isLoading ? 'Importing...' : 'Import CSV'}
               </button>
+              <button
+                onClick={() => {
+                  const params: Record<string, string | number> = { limit: 10000 };
+                  if (stateFilter) params.state = stateFilter;
+                  apiService
+                    .downloadFile('/rcm/claims/export.csv', 'claims.csv', params)
+                    .catch((err: any) => toast.error(err?.message || 'Export failed'));
+                }}
+                className="btn btn-ghost btn-lg"
+                title="Download claims as CSV"
+              >
+                Export CSV
+              </button>
               <input
                 type="file"
                 accept=".csv"

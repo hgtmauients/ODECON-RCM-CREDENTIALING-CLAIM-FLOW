@@ -270,10 +270,147 @@ export default function Settings() {
         );
       })}
 
+      {/* Webhook self-service */}
+      <WebhooksSection tenantId={tenantId} settings={settings} />
+
       {/* System-level info */}
       <div style={{ padding: 'var(--space-4)', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)', fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
         <strong>System-level settings</strong> (DATABASE_URL, JWT config, encryption key, CORS, storage paths) are configured via environment variables or <code>docker-compose.yml</code> and require a container restart. Only per-tenant integration settings are editable above.
       </div>
+    </div>
+  );
+}
+
+function WebhooksSection({ tenantId, settings }: { tenantId: string; settings: Record<string, string> }) {
+  const [generated, setGenerated] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const apiBase = (import.meta.env?.VITE_API_BASE_URL as string | undefined) || '/api';
+  const webhookUrl = `${apiBase.replace(/\/$/, '')}/credentialing/webhook/provider-signup`;
+
+  const secretSource = settings['webhook_secret_source'] || 'none';
+  const secretMask = settings['webhook_secret'] || '';
+
+  const regenerate = async () => {
+    if (!confirm('Generate a new webhook secret? Any integration partner using the old one will start failing immediately. The new value is shown ONCE.')) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const resp = await apiService.post(`/tenants/${tenantId}/webhook/regenerate-secret`, {});
+      const value = resp?.data?.webhook_secret || '';
+      setGenerated(value);
+      toast.success('New webhook secret generated. Save it now.');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to rotate secret');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async (value: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success(`${label} copied`);
+    } catch {
+      toast.error('Copy failed — select and copy manually');
+    }
+  };
+
+  const pythonExample = `import hashlib, hmac, json, time, urllib.request
+
+TENANT_ID = "${tenantId}"
+SECRET = "<your-webhook-secret>"
+URL = "${webhookUrl}"
+
+body = json.dumps({"first_name": "Jane", "last_name": "Doe", "npi": "1234567890"}).encode()
+ts = str(int(time.time()))
+msg = f"{TENANT_ID}.{ts}.{hashlib.sha256(body).hexdigest()}".encode()
+sig = hmac.new(SECRET.encode(), msg, hashlib.sha256).hexdigest()
+
+req = urllib.request.Request(URL, data=body, method="POST", headers={
+    "Content-Type": "application/json",
+    "X-Tenant-ID": TENANT_ID,
+    "X-Webhook-Timestamp": ts,
+    "X-Webhook-Signature": sig,
+})
+print(urllib.request.urlopen(req).read())`;
+
+  return (
+    <div className="card" style={{ padding: 'var(--space-5)', marginBottom: 'var(--space-4)' }}>
+      <h2 style={{ fontSize: 'var(--font-size-base)', fontWeight: 600, marginBottom: 'var(--space-3)' }}>Webhook Endpoint</h2>
+      <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)', marginBottom: 'var(--space-4)' }}>
+        Share these details with any integration partner that needs to POST provider signups.
+        Signatures are HMAC-SHA256 over <code>&lt;tenant_id&gt;.&lt;unix_timestamp&gt;.&lt;sha256_hex(body)&gt;</code>.
+      </p>
+
+      <div style={{ marginBottom: 'var(--space-3)' }}>
+        <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          POST URL
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <code style={{ flex: 1, padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', fontSize: 'var(--font-size-sm)', overflowX: 'auto' }}>
+            {webhookUrl}
+          </code>
+          <button className="btn btn-ghost btn-sm" onClick={() => copy(webhookUrl, 'URL')}>Copy</button>
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 'var(--space-3)' }}>
+        <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          Required headers
+        </div>
+        <code style={{ display: 'block', padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', fontSize: 'var(--font-size-sm)' }}>
+          X-Tenant-ID: {tenantId}<br />
+          X-Webhook-Timestamp: &lt;unix-seconds&gt;<br />
+          X-Webhook-Signature: &lt;hmac-sha256-hex&gt;
+        </code>
+      </div>
+
+      <div style={{ marginBottom: 'var(--space-3)' }}>
+        <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          Webhook secret
+        </div>
+        {secretSource === 'db' ? (
+          <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+            Configured (preview: <code>{secretMask}</code>). Rotating below revokes the current secret.
+          </p>
+        ) : (
+          <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--brand-warning, #f59e0b)' }}>
+            <strong>Not configured.</strong> Webhooks will be rejected until you generate one.
+          </p>
+        )}
+        <button
+          className="btn btn-primary btn-sm"
+          onClick={regenerate}
+          disabled={busy}
+          style={{ marginTop: 'var(--space-2)' }}
+        >
+          {busy ? 'Generating…' : (secretSource === 'db' ? 'Rotate webhook secret' : 'Generate webhook secret')}
+        </button>
+        {generated && (
+          <div style={{ marginTop: 'var(--space-3)', padding: 'var(--space-3)', border: '1px solid var(--brand-warning, #f59e0b)', borderRadius: 'var(--radius-md)', background: 'rgba(245,158,11,0.1)' }}>
+            <p style={{ margin: '0 0 8px', fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>
+              New webhook secret — copy it NOW. It will not be shown again.
+            </p>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <code style={{ flex: 1, padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', fontSize: 'var(--font-size-sm)', wordBreak: 'break-all' }}>
+                {generated}
+              </code>
+              <button className="btn btn-ghost btn-sm" onClick={() => copy(generated, 'Secret')}>Copy</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <details style={{ marginTop: 'var(--space-3)' }}>
+        <summary style={{ cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>
+          Python signing example
+        </summary>
+        <pre style={{ marginTop: 'var(--space-2)', padding: 'var(--space-3)', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', fontSize: 'var(--font-size-xs)', overflowX: 'auto' }}>
+{pythonExample}
+        </pre>
+      </details>
     </div>
   );
 }
