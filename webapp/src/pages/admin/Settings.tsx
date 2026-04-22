@@ -273,6 +273,9 @@ export default function Settings() {
       {/* Webhook self-service */}
       <WebhooksSection tenantId={tenantId} settings={settings} />
 
+      {/* Self-service password change */}
+      <ChangePasswordSection />
+
       {/* System-level info */}
       <div style={{ padding: 'var(--space-4)', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)', fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
         <strong>System-level settings</strong> (DATABASE_URL, JWT config, encryption key, CORS, storage paths) are configured via environment variables or <code>docker-compose.yml</code> and require a container restart. Only per-tenant integration settings are editable above.
@@ -411,6 +414,108 @@ print(urllib.request.urlopen(req).read())`;
 {pythonExample}
         </pre>
       </details>
+    </div>
+  );
+}
+
+function ChangePasswordSection() {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [show, setShow] = useState(false);
+
+  const tooShort = next.length > 0 && next.length < 8;
+  const mismatch = confirm.length > 0 && confirm !== next;
+  const sameAsCurrent = next.length > 0 && next === current;
+  const canSubmit = current.length > 0 && next.length >= 8 && next === confirm && next !== current && !busy;
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await apiService.post('/auth/change-password', {
+        current_password: current,
+        new_password: next,
+      });
+      toast.success('Password changed');
+      setCurrent(''); setNext(''); setConfirm('');
+    } catch (err: any) {
+      // Backend returns generic 401 on wrong current_password.
+      toast.error(err?.message || 'Failed to change password');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '6px 10px', fontSize: 'var(--font-size-sm)',
+    border: '1px solid var(--border-light)', borderRadius: 'var(--radius-md)',
+    background: 'var(--surface-primary)', color: 'var(--text-primary)',
+  };
+  const labelStyle: React.CSSProperties = {
+    display: 'block', fontSize: 10, fontWeight: 600, color: 'var(--text-secondary)',
+    marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em',
+  };
+
+  return (
+    <div className="card" style={{ padding: 'var(--space-5)', marginBottom: 'var(--space-4)' }}>
+      <h2 style={{ fontSize: 'var(--font-size-base)', fontWeight: 600, marginBottom: 'var(--space-3)' }}>
+        Change My Password
+      </h2>
+      <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)', marginBottom: 'var(--space-4)' }}>
+        Update the password you use to sign in. Forgot it? Ask an admin to reset it from{' '}
+        <strong>Admin → Users</strong>.
+      </p>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 'var(--space-3)', maxWidth: 720 }}>
+        <div>
+          <label style={labelStyle}>Current password</label>
+          <input
+            type={show ? 'text' : 'password'}
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+            autoComplete="current-password"
+            style={inputStyle}
+          />
+        </div>
+        <div>
+          <label style={labelStyle}>New password (≥ 8 chars)</label>
+          <input
+            type={show ? 'text' : 'password'}
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+            autoComplete="new-password"
+            style={{ ...inputStyle, borderColor: tooShort || sameAsCurrent ? 'var(--brand-error)' : inputStyle.border as string }}
+          />
+        </div>
+        <div>
+          <label style={labelStyle}>Confirm new password</label>
+          <input
+            type={show ? 'text' : 'password'}
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            autoComplete="new-password"
+            style={{ ...inputStyle, borderColor: mismatch ? 'var(--brand-error)' : inputStyle.border as string }}
+          />
+        </div>
+      </div>
+
+      <div style={{ marginTop: 'var(--space-3)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)' }}>
+          <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
+          Show passwords
+        </label>
+        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+          {(tooShort || mismatch || sameAsCurrent) && (
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--brand-error)', alignSelf: 'center' }}>
+              {tooShort ? 'New password too short' : sameAsCurrent ? 'New must differ from current' : 'Passwords do not match'}
+            </span>
+          )}
+          <button className="btn btn-primary btn-sm" disabled={!canSubmit} onClick={submit}>
+            {busy ? 'Changing…' : 'Change password'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

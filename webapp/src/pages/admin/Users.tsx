@@ -362,15 +362,63 @@ function UserForm({ title, selectableRoles, roleCatalog, initial, submitLabel, s
 
 function PasswordResetModal({ userEmail, submitting, onCancel, onSubmit }: { userEmail: string; submitting: boolean; onCancel: () => void; onSubmit: (pw: string) => void }) {
   const [pw, setPw] = useState('');
+  const [show, setShow] = useState(false);
+
+  // Crypto-strong alphanumeric password (24 chars). We deliberately stick to
+  // the [A-Za-z0-9] alphabet so the value survives clipboard / browser
+  // autofill mangling (the original bootstrap password ran into that with
+  // shell special chars).
+  const generate = () => {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    const len = 24;
+    const buf = new Uint32Array(len);
+    crypto.getRandomValues(buf);
+    let out = '';
+    for (let i = 0; i < len; i++) out += alphabet[buf[i] % alphabet.length];
+    setPw(out);
+    setShow(true);
+  };
+
+  const copy = async () => {
+    if (!pw) return;
+    try {
+      await navigator.clipboard.writeText(pw);
+      toast.success('Password copied');
+    } catch {
+      toast.error('Copy failed — select and copy manually');
+    }
+  };
+
   return (
     <Modal onClose={onCancel}>
       <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 700, marginBottom: 'var(--space-3)' }}>Reset password</h2>
       <p style={{ marginBottom: 'var(--space-3)', color: 'var(--text-secondary)', fontSize: 'var(--font-size-sm)' }}>
-        Set a new password for <strong>{userEmail}</strong>. Share it via a secure channel.
+        Set a new password for <strong>{userEmail}</strong>. Share it via a secure channel — the
+        user can change it themselves from <strong>Settings → Change My Password</strong> after
+        signing in.
       </p>
       <Field label="New password (≥ 8 chars)">
-        <input type="password" className="input" value={pw} onChange={(e) => setPw(e.target.value)} />
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input
+            type={show ? 'text' : 'password'}
+            className="input"
+            value={pw}
+            onChange={(e) => setPw(e.target.value)}
+            autoComplete="new-password"
+            style={{ flex: 1, fontFamily: pw && show ? 'monospace' : undefined }}
+          />
+          <button type="button" className="btn btn-ghost btn-sm" onClick={generate} title="Generate a 24-char alphanumeric password">
+            Generate
+          </button>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={!pw} onClick={copy}>
+            Copy
+          </button>
+        </div>
       </Field>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', marginTop: -8 }}>
+        <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
+        Show password
+      </label>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-3)', marginTop: 'var(--space-4)' }}>
         <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
         <button className="btn btn-primary" disabled={pw.length < 8 || submitting} onClick={() => onSubmit(pw)}>

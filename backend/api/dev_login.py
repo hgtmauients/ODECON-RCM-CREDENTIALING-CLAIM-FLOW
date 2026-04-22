@@ -19,14 +19,16 @@ Bootstrapping:
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import JWT_SECRET, JWT_ALGORITHM
+from api.auth import JWT_SECRET, JWT_ALGORITHM, get_current_user, Principal
+from core.audit import log_audit_event
 from core.database import get_db
 from core.password import verify_password, hash_password, needs_rehash
 from models.user import User
@@ -113,9 +115,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/me")
-async def me(
-    current_user=Depends(__import__("api.auth", fromlist=["get_current_user"]).get_current_user),
-):
+async def me(current_user: Principal = Depends(get_current_user)):
     """Return the JWT-derived principal (handy for FE rehydration)."""
     return {
         "user_id": current_user.user_id,
@@ -123,3 +123,59 @@ async def me(
         "email": current_user.email,
         "roles": current_user.roles,
     }
+
+
+class ChangePasswordRequest(BaseModel):
+    """Self-service password change body."""
+    model_config = ConfigDict(extra="ignore")
+    current_password: str = Field(..., min_length=1, max_length=256)
+    new_password: str = Field(..., min_length=8, max_length=256)
+
+
+@router.post("/change-password")
+async def change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Change the signed-in user's password.
+
+    Generic 401 on any failure (wrong current password, missing user, OIDC
+    user with no password hash) so an attacker who steals an access token
+    cannot enumerate the password-vs-OIDC distinction.
+    """
+    try:
+        user_uuid = UUID(current_user.user_id)
+    except (TypeError, ValueError):
+        # Tokens minted via OIDC may carry a non-UUID `sub` (e.g. an
+        # external IdP user identifier). Those users don\'t have a row in
+        # the users table — they cannot change their password here.
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    res = await db.execute(select(User).where(User.id == user_uuid))
+    user = res.scalar_one_or_none()
+    if not user or not user.is_active or not user.password_hash:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not verify_password(payload.current_password, user.password_hash):
+        # Audit the failure so brute-force attempts via leaked tokens are
+        # visible in the security log.
+        await log_audit_event(
+            db, current_user, action="password_change_failed", resource_type="user",
+            resource_id=str(user.id), request=request,
+            success=False, error_message="current_password mismatch",
+        )
+        await db.commit()
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=422, detail="New password must differ from current")
+
+    user.password_hash = hash_password(payload.new_password)
+    await log_audit_event(
+        db, current_user, action="password_changed_self", resource_type="user",
+        resource_id=str(user.id), request=request,
+    )
+    await db.commit()
+    return {"success": True, "message": "Password changed"}
