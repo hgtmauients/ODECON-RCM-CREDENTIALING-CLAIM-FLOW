@@ -63,6 +63,10 @@ async def list_edi_files(
     }
 
 
+MAX_EDI_UPLOAD_BYTES = int(os.getenv("MAX_EDI_UPLOAD_BYTES", str(10 * 1024 * 1024)))  # 10 MB default
+ALLOWED_EDI_TYPES = {"835", "277CA", "277", "271", "999", "unknown"}
+
+
 @router.post("/upload")
 async def upload_edi_file(
     file: UploadFile = File(...),
@@ -74,7 +78,24 @@ async def upload_edi_file(
     Upload an EDI file (835, 277, etc.) for processing.
     Ingests inbound files manually when clearinghouse polling is not configured.
     """
-    content = await file.read()
+    # Read with a hard cap to prevent OOM from oversized uploads.
+    content = await file.read(MAX_EDI_UPLOAD_BYTES + 1)
+    if len(content) > MAX_EDI_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"EDI file exceeds maximum size of {MAX_EDI_UPLOAD_BYTES // (1024 * 1024)} MB",
+        )
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    # Lightweight content sniff: EDI files always start with ISA*
+    if not content[:3] == b"ISA":
+        raise HTTPException(
+            status_code=400,
+            detail="File does not look like a valid X12 EDI file (must start with ISA segment)",
+        )
+
     content_str = content.decode("utf-8", errors="replace")
 
     # Auto-detect file type if not provided
@@ -87,6 +108,9 @@ async def upload_edi_file(
             file_type = "271"
         else:
             file_type = "unknown"
+
+    if file_type not in ALLOWED_EDI_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported file_type: {file_type}")
 
     # Persist file (non-blocking)
     import asyncio
@@ -166,7 +190,7 @@ async def get_edi_file(
             "file_type": edi_file.file_type,
             "direction": edi_file.direction,
             "filename": edi_file.filename,
-            "file_path": edi_file.file_path,
+            # file_path intentionally omitted to avoid disclosing server filesystem layout.
             "file_size": edi_file.file_size,
             "interchange_control_number": edi_file.interchange_control_number,
             "transaction_count": edi_file.transaction_count,

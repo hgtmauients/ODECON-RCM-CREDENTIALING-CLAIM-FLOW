@@ -28,13 +28,16 @@ export default function EDIFileManager() {
     },
     {
       onSuccess: (response) => {
-        const result = response.data;
-        toast.success(`${fileType} file uploaded and processed!`);
-        if (result.payments_posted) {
-          toast.success(`Posted ${result.payments_posted} payments`);
+        // Backend returns { success, message, data: { id, file_type, filename, status, parse_result: { payments, denials, claims_posted, total_paid } } }
+        const data = response?.data || {};
+        const parseResult = data.parse_result || {};
+        toast.success(`${fileType} uploaded${data.status === 'processed' ? ' and processed' : ''}`);
+        if (parseResult.claims_posted) {
+          toast.success(`Posted ${parseResult.claims_posted} payment(s)${parseResult.total_paid ? ` ($${parseResult.total_paid.toFixed(2)})` : ''}`);
         }
-        if (result.denials_created) {
-          toast.success(`Created ${result.denials_created} denial cases`);
+        const denialCount = (parseResult.denials || []).length;
+        if (denialCount) {
+          toast.success(`${denialCount} denial(s) extracted`);
         }
         setSelectedFile(null);
         queryClient.invalidateQueries(['edi-files']);
@@ -275,24 +278,18 @@ export default function EDIFileManager() {
                         onClick={async (e) => {
                           e.stopPropagation();
                           try {
-                            const response = await fetch(`/api/rcm/edi/files/${file.id}/download`, {
-                              headers: {
-                                'Authorization': `Bearer ${localStorage.getItem('claimflow_token')}`,
-                                'X-Tenant-ID': JSON.parse(localStorage.getItem('claimflow_user') || '{}').tenant_id || '',
-                              },
-                            });
-                            if (response.ok) {
-                              const blob = await response.blob();
-                              const url = URL.createObjectURL(blob);
-                              const a = document.createElement('a');
-                              a.href = url;
-                              a.download = file.filename as string || 'edi_file';
-                              a.click();
-                              URL.revokeObjectURL(url);
-                            } else {
-                              toast.error('Download failed');
-                            }
-                          } catch { toast.error('Download failed'); }
+                            // Use the apiService helper so we get the correct base URL
+                            // and current auth/tenant headers (no localStorage scraping).
+                            const blob: Blob = await apiService.downloadBlob(`/rcm/edi/files/${file.id}/download`);
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = (file.filename as string) || 'edi_file';
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          } catch {
+                            toast.error('Download failed');
+                          }
                         }}
                       >
                         Download

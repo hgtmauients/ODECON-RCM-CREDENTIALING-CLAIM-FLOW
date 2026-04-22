@@ -162,11 +162,19 @@ async def get_current_user(
 
     payload = _decode_token(credentials.credentials)
 
-    token_tenant_id = (
-        payload.get("tenant_id")
-        or payload.get("https://claimflow.io/tenant_id")
-        or ""
-    )
+    # Tenant resolution: support both a top-level claim and a namespaced claim
+    # (some IdPs add custom claims under a URL prefix). If both are present
+    # they MUST agree — otherwise reject the token to avoid silent ambiguity.
+    primary_tid = payload.get("tenant_id") or ""
+    namespaced_tid = payload.get("https://claimflow.io/tenant_id") or ""
+
+    if primary_tid and namespaced_tid and primary_tid != namespaced_tid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token contains conflicting tenant_id claims",
+        )
+
+    token_tenant_id = primary_tid or namespaced_tid
     if not token_tenant_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

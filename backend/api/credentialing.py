@@ -39,11 +39,10 @@ def _spawn_background(coro, name: str) -> None:
     task.add_done_callback(_on_done)
 
 WEBHOOK_REPLAY_WINDOW = 300  # 5 minutes
-_seen_nonces: dict = {}
 
 
-def _verify_webhook_signature(payload: bytes, signature: str, secret: str, timestamp: str = "") -> bool:
-    """Verify HMAC-SHA256 webhook signature with replay protection."""
+async def _verify_webhook_signature(payload: bytes, signature: str, secret: str, timestamp: str = "") -> bool:
+    """Verify HMAC-SHA256 webhook signature with replay protection (Redis-backed when configured)."""
     if not secret:
         if os.getenv("ENV", "development") == "development":
             logger.warning("WEBHOOK_SECRET not set; allowing in dev mode only")
@@ -61,21 +60,17 @@ def _verify_webhook_signature(payload: bytes, signature: str, secret: str, times
         except ValueError:
             pass
 
-    if signature in _seen_nonces:
+    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        return False
+
+    # Signature valid — now check for replay (multi-worker safe via Redis).
+    from core.nonce_store import is_replay
+    if await is_replay(signature):
         logger.warning("Webhook signature replay detected")
         return False
 
-    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
-    valid = hmac.compare_digest(expected, signature)
-
-    if valid:
-        _seen_nonces[signature] = True
-        if len(_seen_nonces) > 10000:
-            keys = list(_seen_nonces.keys())[:5000]
-            for k in keys:
-                del _seen_nonces[k]
-
-    return valid
+    return True
 
 
 @router.post("/webhook/provider-signup")
@@ -95,7 +90,7 @@ async def handle_provider_signup(
 
     from core.tenant_config import get_tenant_setting
     webhook_secret = await get_tenant_setting(db, tenant_id, "webhook_secret", default=os.getenv("WEBHOOK_SECRET", ""))
-    if not _verify_webhook_signature(body, signature, webhook_secret, timestamp):
+    if not await _verify_webhook_signature(body, signature, webhook_secret, timestamp):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     try:

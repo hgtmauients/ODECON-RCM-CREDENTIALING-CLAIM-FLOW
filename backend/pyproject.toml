@@ -4,3 +4,30 @@ asyncio_mode = "auto"
 python_files = "test_*.py"
 python_functions = "test_*"
 addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = [
+    "alembic/versions",  # auto-generated
+    ".venv",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # FastAPI Depends() in defaults is intentional
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["F401", "F811"]  # test fixture imports may look unused
+"scripts/**/*.py" = ["E402"]  # late imports after asyncio setup are fine

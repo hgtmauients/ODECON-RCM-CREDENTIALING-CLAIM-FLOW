@@ -118,6 +118,20 @@ async function upload<T = any>(path: string, formData: FormData): Promise<T> {
   return handleResponse<T>(resp);
 }
 
+async function downloadBlob(path: string): Promise<Blob> {
+  const resp = await fetch(`${BASE_URL}${path}`, {
+    method: 'GET',
+    headers: authHeaders(),
+  });
+  if (!resp.ok) {
+    const errorBody = await resp.json().catch(() => ({ detail: resp.statusText }));
+    const error: any = new Error(errorBody.detail || `HTTP ${resp.status}`);
+    error.status = resp.status;
+    throw error;
+  }
+  return resp.blob();
+}
+
 export const apiService = {
   get,
   post,
@@ -125,6 +139,7 @@ export const apiService = {
   patch,
   delete: del,
   upload,
+  downloadBlob,
   setAuthToken,
   setTenantId,
 };

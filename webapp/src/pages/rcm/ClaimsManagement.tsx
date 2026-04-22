@@ -58,14 +58,18 @@ export default function ClaimsManagement() {
   const validateMutation = useMutation(
     (claimId: number) => apiService.post(`/rcm/claims/${claimId}/validate`),
     {
-      onSuccess: (response) => {
-        const result = response.data?.data;
+      onSuccess: (response, claimId) => {
+        // Backend returns { success, data: { passed, errors, rules_matched, ... } }
+        const result = response?.data;
         if (result?.passed) {
           toast.success(`Claim validated! ${result.rules_matched || 0} rules applied`);
         } else {
-          toast.error(`Validation failed: ${result?.errors?.join(', ')}`);
+          const errs = (result?.errors || []).join(', ') || 'Unknown error';
+          toast.error(`Validation failed: ${errs}`);
         }
         queryClient.invalidateQueries(['claims']);
+        queryClient.invalidateQueries(['claim', claimId]);
+        queryClient.invalidateQueries(['claim-events', claimId]);
       },
       onError: () => {
         toast.error('Failed to validate claim');
@@ -78,11 +82,19 @@ export default function ClaimsManagement() {
     (data: { claim_ids: number[]; payer_id: number }) =>
       apiService.post('/rcm/claims/batch/submit', data),
     {
-      onSuccess: (response) => {
-        const result = response.data?.data;
-        toast.success(`Batch submitted! ${result.claim_count} claims in file ${result.filename}`);
+      onSuccess: (response, vars) => {
+        // Backend returns { success, message, data: { filename, claim_count, ... } }
+        const result = response?.data || {};
+        const claimCount = result.claim_count ?? vars.claim_ids.length;
+        const filename = result.filename ?? '';
+        toast.success(`Batch submitted: ${claimCount} claims${filename ? ` in ${filename}` : ''}`);
         setSelectedClaims([]);
         queryClient.invalidateQueries(['claims']);
+        // Invalidate detail caches for each submitted claim so open detail views refresh
+        vars.claim_ids.forEach((id) => {
+          queryClient.invalidateQueries(['claim', id]);
+          queryClient.invalidateQueries(['claim-events', id]);
+        });
       },
       onError: () => {
         toast.error('Failed to submit batch');
@@ -93,13 +105,15 @@ export default function ClaimsManagement() {
   const deleteMutation = useMutation(
     (ids: number[]) => apiService.post('/rcm/claims/batch/delete', { claim_ids: ids }),
     {
-      onSuccess: (response: any) => {
-        toast.success(`${response.data?.deleted || 0} claim(s) deleted`);
-        if (response.data?.errors?.length) {
-          response.data.errors.forEach((e: string) => toast.error(e));
+      onSuccess: (response: any, ids) => {
+        const data = response?.data || {};
+        toast.success(`${data.deleted || 0} claim(s) deleted`);
+        if (data.errors?.length) {
+          data.errors.forEach((e: string) => toast.error(e));
         }
         setSelectedClaims([]);
         queryClient.invalidateQueries(['claims']);
+        ids.forEach((id) => queryClient.invalidateQueries(['claim', id]));
       },
       onError: () => { toast.error('Failed to delete claims'); },
     }
@@ -108,9 +122,11 @@ export default function ClaimsManagement() {
   const voidMutation = useMutation(
     (claimId: number) => apiService.post(`/rcm/claims/${claimId}/void`),
     {
-      onSuccess: () => {
+      onSuccess: (_resp, claimId) => {
         toast.success('Claim voided');
         queryClient.invalidateQueries(['claims']);
+        queryClient.invalidateQueries(['claim', claimId]);
+        queryClient.invalidateQueries(['claim-events', claimId]);
       },
       onError: () => { toast.error('Failed to void claim'); },
     }

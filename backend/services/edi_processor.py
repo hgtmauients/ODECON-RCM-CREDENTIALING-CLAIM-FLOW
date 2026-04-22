@@ -770,10 +770,7 @@ class EDIProcessor:
 
     async def parse_277_with_record(self, file_path: str, edi_file) -> Dict[str, Any]:
         """Parse 277CA using an existing EDIFile record (avoids duplicate creation)."""
-        content = ""
-        if os.path.exists(file_path):
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
+        content = await self._read_file_async(file_path)
 
         claims_updated = 0
         tenant_id = str(edi_file.tenant_id) if edi_file.tenant_id else None

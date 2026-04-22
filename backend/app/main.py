@@ -16,6 +16,32 @@ import uvicorn
 logger = logging.getLogger("claimflow")
 
 
+def _init_sentry() -> None:
+    """Initialize Sentry if SENTRY_DSN is set. Safe to call when SDK is missing."""
+    dsn = os.getenv("SENTRY_DSN")
+    if not dsn:
+        return
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.starlette import StarletteIntegration
+
+        sentry_sdk.init(
+            dsn=dsn,
+            environment=os.getenv("ENV", "development"),
+            release=os.getenv("RELEASE_VERSION"),
+            traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.05")),
+            send_default_pii=False,  # PHI safety: do not auto-attach request bodies / headers
+            integrations=[FastApiIntegration(), StarletteIntegration()],
+        )
+        logger.info("Sentry initialized for environment=%s", os.getenv("ENV"))
+    except Exception as e:
+        logger.warning("Failed to initialize Sentry: %s", e)
+
+
+_init_sentry()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle hooks."""
