@@ -3,5 +3,8 @@
     "env": {
       "VITE_API_BASE_URL": "https://api.noodledoc.com/api"
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/((?!assets/).*)", "destination": "/index.html" }
+  ]
 }

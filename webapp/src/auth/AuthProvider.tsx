@@ -43,17 +43,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
-    const response = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({ detail: 'Login failed' }));
-      throw new Error(err.detail || 'Login failed');
-    }
-    const data = await response.json();
-    const { access_token, user: userData } = data;
+    const response = await apiService.post('/auth/login', { email, password });
+    const { access_token, user: userData } = response;
     localStorage.setItem('claimflow_token', access_token);
     localStorage.setItem('claimflow_user', JSON.stringify(userData));
     apiService.setAuthToken(access_token);
