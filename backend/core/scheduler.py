@@ -26,6 +26,8 @@ SCHEDULER_ENABLED = os.getenv("CLAIMFLOW_SCHEDULER_ENABLED", "false").lower() ==
 # Stable lock IDs (any 64-bit signed int). Different jobs use different IDs.
 _LOCK_ID_835_POLL = 0x1F00_835A_AAAA_0001
 _LOCK_ID_EXPIRATION = 0x1F00_835A_AAAA_0002
+_LOCK_ID_277_POLL = 0x1F00_835A_AAAA_0003
+_LOCK_ID_CREDENTIALING_QUEUE = 0x1F00_835A_AAAA_0004
 
 
 @asynccontextmanager
@@ -61,7 +63,17 @@ def register_jobs():
         _run_835_poll,
         CronTrigger(minute=0),  # Every hour at :00
         id="poll_835_files",
-        name="Poll clearinghouse for 835/277CA",
+        name="Poll clearinghouse for 835",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    scheduler.add_job(
+        _run_277_poll,
+        CronTrigger(minute=10),  # Every hour at :10
+        id="poll_277_files",
+        name="Poll clearinghouse for 277/277CA",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -72,6 +84,16 @@ def register_jobs():
         CronTrigger(hour=6, minute=0),
         id="check_expirations",
         name="Check credential expirations",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    scheduler.add_job(
+        _run_credentialing_queue,
+        CronTrigger(minute="*/5"),  # Every 5 minutes
+        id="process_credentialing_queue",
+        name="Process credentialing queue",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -91,6 +113,32 @@ async def _run_835_poll():
             await poll_and_process_835_files()
         except Exception as e:
             logger.error(f"835 poll job failed: {e}")
+
+
+async def _run_277_poll():
+    """Wrapper to call the 277 polling job under an advisory lock."""
+    async with _try_advisory_lock(_LOCK_ID_277_POLL) as acquired:
+        if not acquired:
+            logger.debug("277 poll skipped on this worker (another worker holds the lock)")
+            return
+        try:
+            from jobs.poll_835_files import poll_277_files
+            await poll_277_files()
+        except Exception as e:
+            logger.error(f"277 poll job failed: {e}")
+
+
+async def _run_credentialing_queue():
+    """Drain pending credentialing jobs under an advisory lock."""
+    async with _try_advisory_lock(_LOCK_ID_CREDENTIALING_QUEUE) as acquired:
+        if not acquired:
+            logger.debug("Credentialing queue skipped on this worker (another worker holds the lock)")
+            return
+        try:
+            from jobs.credentialing_queue import process_credentialing_queue
+            await process_credentialing_queue()
+        except Exception as e:
+            logger.error(f"Credentialing queue job failed: {e}")
 
 
 async def _run_expiration_check():

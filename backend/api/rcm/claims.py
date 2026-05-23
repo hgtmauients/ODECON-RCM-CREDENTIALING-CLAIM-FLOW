@@ -20,6 +20,8 @@ from core.audit import log_audit_event
 from core.csv_export import csv_response
 from models.claims import Claim, ClaimLine, ClaimDiagnosis, ClaimEvent, EDIFile, ClaimQueue
 from models.rcm import PayerProfile
+from models.patient import Patient
+from models.credentialing import ProviderCredentialing
 from api.auth import get_current_user, Principal
 from services.rules_engine import RulesEngine
 from services.edi_processor import EDIProcessor
@@ -265,6 +267,32 @@ async def create_claim(
         short_id = uuid.uuid4().hex[:8].upper()
         claim_number = f"CLM-{datetime.now().strftime('%Y%m%d')}-{short_id}"
 
+        async def _require_tenant_fk(entity_name: str, model, raw_id: Any):
+            """Reject cross-tenant or malformed FK references before claim insert."""
+            if raw_id is None:
+                return
+            try:
+                entity_id = int(raw_id)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail=f"{entity_name}_id must be an integer")
+            if entity_id <= 0:
+                raise HTTPException(status_code=422, detail=f"{entity_name}_id must be positive")
+
+            exists = await db.execute(
+                select(model.id).where(and_(
+                    model.id == entity_id,
+                    model.tenant_id == current_user.tenant_id,
+                ))
+            )
+            if not exists.scalar_one_or_none():
+                raise HTTPException(status_code=422, detail=f"{entity_name}_id {entity_id} not in tenant")
+
+        # Tenant ownership enforcement for referenced entities. This closes the
+        # gap where claims could reference foreign tenant records by raw IDs.
+        await _require_tenant_fk("patient", Patient, claim_data.get("patient_id"))
+        await _require_tenant_fk("payer", PayerProfile, claim_data.get("payer_id"))
+        await _require_tenant_fk("provider", ProviderCredentialing, claim_data.get("provider_id"))
+
         # Parse date fields from strings
         safe_data = {}
         date_fields = {'service_date_from', 'service_date_to', 'filing_deadline', 'appeal_due_date'}
@@ -419,7 +447,7 @@ async def batch_validate_claims_alias(
                 failed += 1
                 continue
 
-            r = await rules_engine.validate_claim(cid)
+            r = await rules_engine.validate_claim(cid, tenant_id=current_user.tenant_id)
             ok = bool(r.get("passed"))
             if ok:
                 claim.state = "validated"
@@ -469,7 +497,7 @@ async def validate_claim(
             raise HTTPException(status_code=404, detail="Claim not found")
 
         rules_engine = RulesEngine(db)
-        results = await rules_engine.validate_claim(claim_id)
+        results = await rules_engine.validate_claim(claim_id, tenant_id=current_user.tenant_id)
 
         if results["passed"]:
             claim.state = "validated"
@@ -494,18 +522,41 @@ async def submit_claim_batch(
 ):
     """Submit batch of claims - scoped to tenant; submission audited."""
     current_user.require_role("billing")
-    claim_ids: List[int] = batch.get("claim_ids", [])
+    claim_ids: List[int] = list(dict.fromkeys(batch.get("claim_ids", [])))
     payer_id: int = batch.get("payer_id", 0)
     if not claim_ids or not payer_id:
         raise HTTPException(status_code=422, detail="claim_ids and payer_id are required")
     try:
-        # Verify all claims belong to this tenant
-        for cid in claim_ids:
-            check = await db.execute(
-                select(Claim.id).where(and_(Claim.id == cid, Claim.tenant_id == current_user.tenant_id))
-            )
-            if not check.scalar_one_or_none():
-                raise HTTPException(status_code=404, detail=f"Claim {cid} not found")
+        # Load and validate all claims in one query.
+        claims_result = await db.execute(
+            select(Claim).where(and_(
+                Claim.id.in_(claim_ids),
+                Claim.tenant_id == current_user.tenant_id,
+            ))
+        )
+        claims = claims_result.scalars().all()
+        found_ids = {c.id for c in claims}
+        missing_ids = [cid for cid in claim_ids if cid not in found_ids]
+        if missing_ids:
+            raise HTTPException(status_code=404, detail=f"Claim(s) not found: {missing_ids}")
+
+        for claim in claims:
+            # Prevent duplicate submissions for already-submitted lifecycle states.
+            if claim.state in ("submitted", "accepted", "adjudicated", "paid", "partially_paid", "denied", "appealed", "appeal_won", "appeal_lost"):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Claim {claim.id} is already in state '{claim.state}' and cannot be re-submitted",
+                )
+            if claim.state not in ("validated", "ready_to_submit"):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Claim {claim.id} must be validated before submission (current state: {claim.state})",
+                )
+            if claim.payer_id and claim.payer_id != payer_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Claim {claim.id} belongs to payer {claim.payer_id}, but batch payer is {payer_id}",
+                )
 
         # Verify payer belongs to this tenant
         from models.rcm import PayerProfile
@@ -515,18 +566,89 @@ async def submit_claim_batch(
         if not payer_check.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Payer not found")
 
-        edi_processor = EDIProcessor(db)
-        result = await edi_processor.generate_837(claim_ids, payer_id, tenant_id=current_user.tenant_id)
-
-        try:
+        async def _transmit_edi_file(edi_file: EDIFile) -> Dict[str, Any]:
             from services.clearinghouse_transport import ClearinghouseService
-
             transport = ClearinghouseService(db)
             send_result = await transport.submit_837_file(
-                local_file_path=result["file_path"],
+                local_file_path=edi_file.file_path,
                 payer_id=payer_id,
             )
+            if send_result["success"]:
+                edi_file.status = "transmitted"
+                edi_file.processed_at = datetime.utcnow()
 
+                for claim in claims:
+                    from_state = claim.state
+                    claim.state = "submitted"
+                    claim.submitted_date = datetime.utcnow()
+                    event = ClaimEvent(
+                        claim_id=claim.id,
+                        event_type="submitted_to_clearinghouse",
+                        from_state=from_state,
+                        to_state="submitted",
+                        data=send_result,
+                        message=f"Claim submitted via {send_result.get('method', 'clearinghouse')}",
+                    )
+                    db.add(event)
+
+                await log_audit_event(
+                    db, current_user, action="claim_batch_submitted", resource_type="claim",
+                    resource_id="batch", request=request,
+                    metadata={
+                        "claim_ids": claim_ids, "payer_id": payer_id,
+                        "transmission_method": send_result.get("method"),
+                        "edi_file_id": edi_file.id,
+                    },
+                )
+                await db.commit()
+                return {
+                    "success": True,
+                    "message": f"Batch submitted and transmitted: {len(claim_ids)} claims",
+                    "data": {"file_id": edi_file.id, "transmission": send_result},
+                }
+
+            edi_file.status = "transmission_failed"
+            edi_file.error_message = send_result.get("error")
+            await db.commit()
+            return {
+                "success": False,
+                "message": f"837P transmission failed: {send_result.get('error')}",
+                "data": {"file_id": edi_file.id, "transmission": send_result},
+            }
+
+        # Idempotency: if all claims already point to one existing outbound batch,
+        # reuse that file instead of generating a new 837.
+        existing_batch_ids = {c.batch_id for c in claims if c.batch_id}
+        if len(existing_batch_ids) == 1 and all(c.batch_id for c in claims):
+            existing_batch_id = next(iter(existing_batch_ids))
+            existing_file_result = await db.execute(
+                select(EDIFile).where(and_(
+                    EDIFile.tenant_id == current_user.tenant_id,
+                    EDIFile.batch_id == existing_batch_id,
+                    EDIFile.direction == "outbound",
+                    EDIFile.payer_id == payer_id,
+                )).order_by(EDIFile.id.desc()).limit(1)
+            )
+            existing_file = existing_file_result.scalar_one_or_none()
+            if existing_file:
+                if existing_file.status == "transmitted":
+                    return {
+                        "success": True,
+                        "message": "Batch already transmitted (idempotent replay)",
+                        "data": {"file_id": existing_file.id, "already_transmitted": True},
+                    }
+                if existing_file.status in ("pending", "transmission_failed"):
+                    return await _transmit_edi_file(existing_file)
+
+        edi_processor = EDIProcessor(db)
+        result = await edi_processor.generate_837(
+            claim_ids,
+            payer_id,
+            tenant_id=current_user.tenant_id,
+            auto_commit=False,
+        )
+
+        try:
             edi_file_result = await db.execute(
                 select(EDIFile).where(and_(
                     EDIFile.id == result["file_id"],
@@ -536,56 +658,11 @@ async def submit_claim_batch(
             edi_file = edi_file_result.scalar_one_or_none()
 
             if edi_file:
-                if send_result["success"]:
-                    edi_file.status = "transmitted"
-                    edi_file.processed_at = datetime.utcnow()
-
-                    for cid in claim_ids:
-                        claim_result = await db.execute(
-                            select(Claim).where(and_(
-                                Claim.id == cid,
-                                Claim.tenant_id == current_user.tenant_id,
-                            ))
-                        )
-                        claim = claim_result.scalar_one_or_none()
-                        if claim:
-                            claim.state = "submitted"
-                            claim.submitted_date = datetime.utcnow()
-                            event = ClaimEvent(
-                                claim_id=claim.id,
-                                event_type="submitted_to_clearinghouse",
-                                from_state="ready_to_submit",
-                                to_state="submitted",
-                                data=send_result,
-                                message=f"Claim submitted via {send_result.get('method', 'clearinghouse')}",
-                            )
-                            db.add(event)
-
-                    await log_audit_event(
-                        db, current_user, action="claim_batch_submitted", resource_type="claim",
-                        resource_id="batch", request=request,
-                        metadata={
-                            "claim_ids": claim_ids, "payer_id": payer_id,
-                            "transmission_method": send_result.get("method"),
-                            "edi_file_id": result.get("file_id"),
-                        },
-                    )
-                    await db.commit()
-                    return {
-                        "success": True,
-                        "message": f"Batch submitted and transmitted: {result['claim_count']} claims",
-                        "data": {**result, "transmission": send_result},
-                    }
-                else:
-                    edi_file.status = "transmission_failed"
-                    edi_file.error_message = send_result.get("error")
-                    await db.commit()
-                    return {
-                        "success": False,
-                        "message": f"837P generated but transmission failed: {send_result.get('error')}",
-                        "data": {**result, "transmission": send_result},
-                    }
+                tx_result = await _transmit_edi_file(edi_file)
+                tx_result["data"] = {**result, **tx_result.get("data", {})}
+                return tx_result
         except ImportError:
+            await db.commit()
             return {
                 "success": True,
                 "message": "837P file generated. Manual upload required.",
@@ -595,6 +672,7 @@ async def submit_claim_batch(
     except HTTPException:
         raise
     except Exception as e:
+        await db.rollback()
         logger.error(f"Error submitting batch: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 

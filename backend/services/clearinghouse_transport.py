@@ -6,6 +6,7 @@ Sends 837P files, downloads 277/835 files
 
 import logging
 import asyncio
+import os
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import paramiko
@@ -18,6 +19,7 @@ from sqlalchemy import select
 from models.rcm import TradingPartnerConnection, PayerProfile
 from models.claims import EDIFile
 from services.encryption import decrypt_credential
+from core.audit import log_credential_access
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,44 @@ class SFTPTransport:
     SFTP file transport for EDI files
     Handles connection, upload, download with error handling
     """
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    @staticmethod
+    def _build_ssh_client() -> paramiko.SSHClient:
+        """
+        Build SSH client with host-key verification enabled by default.
+        Set SFTP_ALLOW_UNKNOWN_HOST_KEYS=true only for local/dev troubleshooting.
+        """
+        ssh = paramiko.SSHClient()
+        ssh.load_system_host_keys()
+        allow_unknown = os.getenv("SFTP_ALLOW_UNKNOWN_HOST_KEYS", "false").lower() == "true"
+        if allow_unknown:
+            logger.warning("SFTP_ALLOW_UNKNOWN_HOST_KEYS=true: accepting unknown host keys")
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        else:
+            ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+        return ssh
+
+    async def _decrypt_with_audit(
+        self,
+        *,
+        encrypted_value: str,
+        connection: TradingPartnerConnection,
+        credential_type: str,
+        reason: str,
+    ) -> str:
+        plaintext = await decrypt_credential(encrypted_value)
+        await log_credential_access(
+            self.db,
+            tenant_id=connection.tenant_id,
+            payer_id=connection.payer_id,
+            credential_type=credential_type,
+            action="viewed",
+            reason=reason,
+        )
+        return plaintext
     
     async def upload_file(
         self,
@@ -49,11 +89,15 @@ class SFTPTransport:
             # Decrypt SFTP password
             password = None
             if connection.sftp_password_encrypted:
-                password = await decrypt_credential(connection.sftp_password_encrypted)
+                password = await self._decrypt_with_audit(
+                    encrypted_value=connection.sftp_password_encrypted,
+                    connection=connection,
+                    credential_type="sftp_password",
+                    reason="sftp_upload",
+                )
             
             # Create SSH client
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh = self._build_ssh_client()
             
             # Connect
             logger.info(f"Connecting to SFTP: {connection.sftp_host}:{connection.sftp_port}")
@@ -68,7 +112,12 @@ class SFTPTransport:
                 connect_kwargs["password"] = password
             elif connection.sftp_private_key_encrypted:
                 # Use SSH key authentication
-                private_key = await decrypt_credential(connection.sftp_private_key_encrypted)
+                private_key = await self._decrypt_with_audit(
+                    encrypted_value=connection.sftp_private_key_encrypted,
+                    connection=connection,
+                    credential_type="sftp_private_key",
+                    reason="sftp_upload",
+                )
                 from io import StringIO
                 key = paramiko.RSAKey.from_private_key(StringIO(private_key))
                 connect_kwargs["pkey"] = key
@@ -126,11 +175,15 @@ class SFTPTransport:
             # Decrypt password
             password = None
             if connection.sftp_password_encrypted:
-                password = await decrypt_credential(connection.sftp_password_encrypted)
+                password = await self._decrypt_with_audit(
+                    encrypted_value=connection.sftp_password_encrypted,
+                    connection=connection,
+                    credential_type="sftp_password",
+                    reason="sftp_download",
+                )
             
             # Connect
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh = self._build_ssh_client()
             
             connect_kwargs = {
                 "hostname": connection.sftp_host,
@@ -191,10 +244,14 @@ class SFTPTransport:
         try:
             password = None
             if connection.sftp_password_encrypted:
-                password = await decrypt_credential(connection.sftp_password_encrypted)
+                password = await self._decrypt_with_audit(
+                    encrypted_value=connection.sftp_password_encrypted,
+                    connection=connection,
+                    credential_type="sftp_password",
+                    reason="sftp_test_connection",
+                )
             
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh = self._build_ssh_client()
             
             ssh.connect(
                 hostname=connection.sftp_host,
@@ -231,6 +288,28 @@ class APITransport:
     """
     API-based transport for clearinghouses with REST APIs
     """
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def _decrypt_with_audit(
+        self,
+        *,
+        encrypted_value: str,
+        connection: TradingPartnerConnection,
+        credential_type: str,
+        reason: str,
+    ) -> str:
+        plaintext = await decrypt_credential(encrypted_value)
+        await log_credential_access(
+            self.db,
+            tenant_id=connection.tenant_id,
+            payer_id=connection.payer_id,
+            credential_type=credential_type,
+            action="viewed",
+            reason=reason,
+        )
+        return plaintext
     
     async def submit_837_via_api(
         self,
@@ -242,8 +321,24 @@ class APITransport:
         """
         try:
             # Decrypt API credentials
-            api_key = await decrypt_credential(connection.api_key_encrypted) if connection.api_key_encrypted else None
-            api_secret = await decrypt_credential(connection.api_secret_encrypted) if connection.api_secret_encrypted else None
+            api_key = (
+                await self._decrypt_with_audit(
+                    encrypted_value=connection.api_key_encrypted,
+                    connection=connection,
+                    credential_type="api_key",
+                    reason="api_submit_837",
+                )
+                if connection.api_key_encrypted else None
+            )
+            api_secret = (
+                await self._decrypt_with_audit(
+                    encrypted_value=connection.api_secret_encrypted,
+                    connection=connection,
+                    credential_type="api_secret",
+                    reason="api_submit_837",
+                )
+                if connection.api_secret_encrypted else None
+            )
             
             # Build request
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -292,7 +387,15 @@ class APITransport:
         Test API connection
         """
         try:
-            api_key = await decrypt_credential(connection.api_key_encrypted) if connection.api_key_encrypted else None
+            api_key = (
+                await self._decrypt_with_audit(
+                    encrypted_value=connection.api_key_encrypted,
+                    connection=connection,
+                    credential_type="api_key",
+                    reason="api_test_connection",
+                )
+                if connection.api_key_encrypted else None
+            )
             
             async with httpx.AsyncClient(timeout=10.0) as client:
                 headers = {}
@@ -331,8 +434,8 @@ class ClearinghouseService:
     
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.sftp = SFTPTransport()
-        self.api = APITransport()
+        self.sftp = SFTPTransport(db)
+        self.api = APITransport(db)
     
     async def submit_837_file(
         self,
@@ -421,5 +524,34 @@ class ClearinghouseService:
                 
         except Exception as e:
             logger.error(f"Error polling for 835 files: {e}")
+            return []
+
+    async def poll_for_277_files(self, payer_id: int) -> List[str]:
+        """
+        Poll clearinghouse for new 277/277CA acknowledgment files.
+        Run this as a scheduled job (every hour).
+        """
+        try:
+            # Get connection
+            conn_result = await self.db.execute(
+                select(TradingPartnerConnection).where(
+                    TradingPartnerConnection.payer_id == payer_id
+                ).limit(1)
+            )
+            connection = conn_result.scalar_one_or_none()
+
+            if not connection:
+                logger.warning(f"No connection for payer {payer_id}")
+                return []
+
+            if connection.connection_type == "sftp":
+                files = await self.sftp.download_files(connection, file_pattern="*.277")
+                return [f["local_path"] for f in files]
+            else:
+                logger.warning(f"277 polling not supported for connection type: {connection.connection_type}")
+                return []
+
+        except Exception as e:
+            logger.error(f"Error polling for 277 files: {e}")
             return []
 

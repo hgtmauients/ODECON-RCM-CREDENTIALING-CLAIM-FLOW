@@ -4,15 +4,13 @@ Automatically downloads 835 remittance files from clearinghouse SFTP
 Runs every hour as scheduled task - processes per-tenant
 """
 
-import asyncio
 import logging
-from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
 from core.database import get_async_session
 from models.tenant import Tenant
-from models.rcm import PayerProfile, TradingPartnerConnection
+from models.rcm import PayerProfile
 from services.clearinghouse_transport import ClearinghouseService
 from services.edi_processor import EDIProcessor
 from services.denial_manager import DenialManager, AutoPostingEngine
@@ -143,7 +141,7 @@ async def poll_277_files():
 
                 for payer in payers:
                     try:
-                        files = await transport.poll_for_files(payer.id, file_pattern="*.277")
+                        files = await transport.poll_for_277_files(payer.id)
                         for file_path in files:
                             await edi_processor.parse_277(file_path, tenant_id=str(tenant.id))
                     except Exception as e:
@@ -154,4 +152,5 @@ async def poll_277_files():
 
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(poll_and_process_835_files())

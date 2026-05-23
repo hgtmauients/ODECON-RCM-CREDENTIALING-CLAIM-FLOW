@@ -62,7 +62,14 @@ class EDIProcessor:
 
     # ==================== OUTBOUND: 837P PROFESSIONAL CLAIM GENERATION ====================
 
-    async def generate_837(self, claim_ids: List[int], payer_id: int, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+    async def generate_837(
+        self,
+        claim_ids: List[int],
+        payer_id: int,
+        tenant_id: Optional[str] = None,
+        *,
+        auto_commit: bool = True,
+    ) -> Dict[str, Any]:
         """
         Generate 837P (professional) file for claim submission.
         Persists the file to EDI_STORAGE_PATH and returns metadata.
@@ -126,7 +133,10 @@ class EDIProcessor:
                 if claim.patient_id:
                     from models.patient import Patient
                     pat_result = await self.db.execute(
-                        select(Patient).where(Patient.id == claim.patient_id)
+                        select(Patient).where(and_(
+                            Patient.id == claim.patient_id,
+                            Patient.tenant_id == tenant_id,
+                        ))
                     )
                     patient = pat_result.scalar_one_or_none()
 
@@ -185,8 +195,12 @@ class EDIProcessor:
                 self.db.add(event)
                 claim.state = "ready_to_submit"
                 claim.interchange_control_number = icn
+                claim.batch_id = edi_file.batch_id
 
-            await self.db.commit()
+            if auto_commit:
+                await self.db.commit()
+            else:
+                await self.db.flush()
 
             logger.info(f"Generated 837 file: {filename} ({len(claims)} claims)")
 
@@ -834,9 +848,46 @@ class EDIProcessor:
 
         content = await self._read_file_async(file_path)
 
-        # Backfill the file hash so later re-uploads via parse_835() still dedupe.
-        if content and not getattr(edi_file, "file_hash", None):
-            edi_file.file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest() if content else ""
+        if file_hash:
+            # Backfill hash on the pre-created upload record.
+            edi_file.file_hash = file_hash
+
+            # Mirror parse_835() idempotency behavior for manual uploads.
+            # Without this guard, re-uploads can re-post payments/denials.
+            existing = await self.db.execute(
+                select(EDIFile)
+                .where(and_(
+                    EDIFile.id != edi_file.id,
+                    EDIFile.tenant_id == edi_file.tenant_id,
+                    EDIFile.file_hash == file_hash,
+                    EDIFile.file_type == "835",
+                    EDIFile.status == "processed",
+                ))
+                .order_by(EDIFile.id.asc())
+                .limit(1)
+            )
+            dup = existing.scalars().first()
+            if dup:
+                logger.info(
+                    "835 upload duplicate detected (upload_id=%s existing_id=%s), skipping",
+                    edi_file.id,
+                    dup.id,
+                )
+                edi_file.status = "duplicate"
+                edi_file.processed_at = datetime.utcnow()
+                edi_file.transaction_count = 0
+                await self.db.commit()
+                return {
+                    "success": True,
+                    "is_duplicate": True,
+                    "edi_file_id": dup.id,
+                    "duplicate_upload_id": edi_file.id,
+                    "claims_posted": 0,
+                    "total_paid": 0.0,
+                    "payments": [],
+                    "denials": [],
+                }
 
         parsed = self._parse_835_content(content)
         payments = parsed["payments"]

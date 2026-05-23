@@ -20,6 +20,7 @@ from core.storage import safe_filename, sanitize_component, StoragePathError
 from api.auth import get_current_user, Principal
 from models.claims import EDIFile
 from services.edi_processor import EDIProcessor, EDI_STORAGE_PATH
+from services.denial_manager import DenialManager, AutoPostingEngine
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,32 @@ async def upload_edi_file(
     try:
         if file_type == "835":
             parse_result = await processor.parse_835_with_record(dest_path, edi_file)
+            tenant_id_str = str(current_user.tenant_id)
+            auto_posting = {"claims_posted": 0, "total_paid": 0.0, "errors": []}
+            denials = {"denials_processed": 0, "cases_created": 0, "errors": []}
+
+            if parse_result.get("payments"):
+                auto_poster = AutoPostingEngine(db)
+                auto_posting = await auto_poster.auto_post_835(
+                    edi_file_id=edi_file.id,
+                    payments_data=parse_result["payments"],
+                    tenant_id=tenant_id_str,
+                )
+
+            if parse_result.get("denials"):
+                denial_manager = DenialManager(db)
+                denials = await denial_manager.process_835_denials(
+                    edi_file_id=edi_file.id,
+                    denials_data=parse_result["denials"],
+                    tenant_id=tenant_id_str,
+                )
+
+            # Keep backward-compatible summary fields while exposing downstream
+            # post/denial results that were previously only run in polling jobs.
+            parse_result["claims_extracted"] = parse_result.get("claims_posted", 0)
+            parse_result["claims_posted"] = auto_posting.get("claims_posted", 0)
+            parse_result["auto_posting"] = auto_posting
+            parse_result["denial_processing"] = denials
         elif file_type in ("277CA", "277"):
             parse_result = await processor.parse_277_with_record(dest_path, edi_file)
         else:
