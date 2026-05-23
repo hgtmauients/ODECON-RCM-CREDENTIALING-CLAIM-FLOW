@@ -5,7 +5,7 @@ Auto-routes denials from 835 files, assigns playbooks, generates appeals
 
 import logging
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 
@@ -14,6 +14,10 @@ from models.claims import Claim, ClaimLine, ClaimEvent
 from models.rcm import PayerProfile
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class DenialManager:
@@ -551,7 +555,7 @@ class AutoPostingEngine:
                     
                     # Update claim status
                     claim.state = "paid"
-                    claim.paid_date = datetime.utcnow()
+                    claim.paid_date = _utcnow_naive()
                     
                     # Check for under-payment
                     if payment.get("allowed_amount") and payment.get("paid_amount"):

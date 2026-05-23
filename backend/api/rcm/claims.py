@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, desc
 from typing import List, Optional, Dict, Any
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 import logging
 
 from core.database import get_db
@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/rcm/claims", tags=["RCM - Claims"])
 
 MAX_CLAIMS_CSV_BYTES = int(os.getenv("MAX_CLAIMS_CSV_BYTES", str(20 * 1024 * 1024)))  # 20 MB
+
+
+def _utcnow() -> datetime:
+    # Keep naive-UTC for TIMESTAMP WITHOUT TIME ZONE columns.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 _CREATABLE_CLAIM_FIELDS = frozenset({
     "patient_id",
     "provider_id",
@@ -471,7 +476,7 @@ async def batch_validate_claims_alias(
             ok = bool(r.get("passed"))
             if ok:
                 claim.state = "validated"
-                claim.validated_date = datetime.utcnow()
+                claim.validated_date = _utcnow()
                 claim.current_queue = "ready_to_submit"
                 passed += 1
             else:
@@ -521,7 +526,7 @@ async def validate_claim(
 
         if results["passed"]:
             claim.state = "validated"
-            claim.validated_date = datetime.utcnow()
+            claim.validated_date = _utcnow()
             claim.current_queue = "ready_to_submit"
             await db.commit()
 
@@ -598,12 +603,12 @@ async def submit_claim_batch(
             )
             if send_result["success"]:
                 edi_file.status = "transmitted"
-                edi_file.processed_at = datetime.utcnow()
+                edi_file.processed_at = _utcnow()
 
                 for claim in claims:
                     from_state = claim.state
                     claim.state = "submitted"
-                    claim.submitted_date = datetime.utcnow()
+                    claim.submitted_date = _utcnow()
                     event = ClaimEvent(
                         claim_id=claim.id,
                         event_type="submitted_to_clearinghouse",
@@ -846,7 +851,7 @@ async def import_claims_csv(
                 patient_id=patient_id,
                 provider_id=int(row.get("provider_id", 0)) if row.get("provider_id") else None,
                 payer_id=payer_id,
-                service_date_from=datetime.strptime(row["service_date_from"], "%Y-%m-%d").date() if row.get("service_date_from") else datetime.utcnow().date(),
+                service_date_from=datetime.strptime(row["service_date_from"], "%Y-%m-%d").date() if row.get("service_date_from") else _utcnow().date(),
                 total_charges=float(row.get("total_charges", 0)),
                 claim_type=row.get("claim_type", "professional"),
                 billing_provider_npi=row.get("billing_provider_npi"),

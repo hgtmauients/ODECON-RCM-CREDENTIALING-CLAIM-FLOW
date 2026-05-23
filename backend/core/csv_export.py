@@ -18,6 +18,7 @@ Usage:
 import csv
 import io
 import re
+from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any, Callable, Iterable, List, Optional, Sequence
 
@@ -65,7 +66,7 @@ def csv_response(
     """
     safe_name = _safe_filename(filename)
 
-    def _generate() -> Iterable[bytes]:
+    async def _generate() -> AsyncGenerator[bytes, None]:
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=list(fieldnames), extrasaction="ignore")
         writer.writeheader()

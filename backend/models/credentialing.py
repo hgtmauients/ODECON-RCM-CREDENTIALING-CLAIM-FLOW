@@ -4,8 +4,12 @@ Provider Credentialing Models
 from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 from models.base import Base
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 class ProviderCredentialing(Base):
     __tablename__ = "provider_credentialing"
@@ -20,7 +24,7 @@ class ProviderCredentialing(Base):
     # Signup Info
     signup_data = Column(JSON, nullable=False)
     license_url = Column(String(255))
-    signup_date = Column(DateTime, default=datetime.utcnow)
+    signup_date = Column(DateTime, default=_utcnow_naive)
 
     # Multi-state licenses: [{"state": "HI", "license_number": "MD-21277", "expiration": "2026-12-31", "status": "active"}]
     licenses = Column(JSON, default=list)
@@ -44,7 +48,7 @@ class ProviderCredentialing(Base):
     overall_score = Column(Integer)  # 0-100
     
     # Dates
-    started_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, default=_utcnow_naive)
     completed_at = Column(DateTime)
     verified_by = Column(String(100))
     verified_at = Column(DateTime)
@@ -53,8 +57,8 @@ class ProviderCredentialing(Base):
     admin_notes = Column(Text)
     rejection_reason = Column(Text)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow_naive)
+    updated_at = Column(DateTime, default=_utcnow_naive, onupdate=_utcnow_naive)
 
 
 class CredentialingVerificationLog(Base):
@@ -68,5 +72,5 @@ class CredentialingVerificationLog(Base):
     result = Column(JSON)
     api_response = Column(JSON)
     error_message = Column(Text)
-    verified_at = Column(DateTime, default=datetime.utcnow)
+    verified_at = Column(DateTime, default=_utcnow_naive)
 

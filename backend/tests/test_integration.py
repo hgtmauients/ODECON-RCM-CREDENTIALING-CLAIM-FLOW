@@ -38,6 +38,7 @@ class TestClaimLifecycle:
         mock_db.flush = AsyncMock()
         mock_db.commit = AsyncMock()
         mock_db.refresh = AsyncMock()
+        mock_db.add = MagicMock()
 
         principal = make_principal()
 
@@ -282,9 +283,19 @@ class TestEDIProcessor:
         claims_result = MagicMock()
         claims_result.scalars.return_value.all.return_value = [claim_mock]
 
-        mock_db.execute = AsyncMock(side_effect=[payer_result, claims_result])
+        lines_result = MagicMock()
+        lines_result.scalars.return_value.all.return_value = []
+        dx_result = MagicMock()
+        dx_result.scalars.return_value.all.return_value = []
+        patient_result = MagicMock()
+        patient_result.scalar_one_or_none.return_value = None
+        tenant_result = MagicMock()
+        tenant_result.scalar_one_or_none.return_value = None
+
+        mock_db.execute = AsyncMock(side_effect=[payer_result, claims_result, lines_result, dx_result, patient_result, tenant_result])
         mock_db.flush = AsyncMock()
         mock_db.commit = AsyncMock()
+        mock_db.add = MagicMock()
 
         processor = EDIProcessor(mock_db)
         result = await processor.generate_837([1], payer_id=1, tenant_id=TENANT_ID)
@@ -339,9 +350,12 @@ class TestEDIProcessor:
         dx_result = MagicMock()
         dx_result.scalars.return_value.all.return_value = []
 
-        mock_db.execute = AsyncMock(side_effect=[payer_result, claims_result, lines_result, dx_result, tenant_result])
+        empty_originals_result = MagicMock()
+        empty_originals_result.all.return_value = []
+        mock_db.execute = AsyncMock(side_effect=[payer_result, claims_result, empty_originals_result, lines_result, dx_result, tenant_result])
         mock_db.flush = AsyncMock()
         mock_db.commit = AsyncMock()
+        mock_db.add = MagicMock()
 
         processor = EDIProcessor(mock_db)
         result = await processor.generate_837([1], payer_id=1, tenant_id=TENANT_ID, auto_commit=False)

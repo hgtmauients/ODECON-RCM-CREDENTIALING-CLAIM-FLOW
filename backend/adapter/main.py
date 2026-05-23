@@ -14,12 +14,18 @@ Modes:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import hmac
+import json
 import os
+import time
 from datetime import datetime, UTC
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 app = FastAPI(title="ClaimFlow Provider Verification Adapter", version="0.1.0")
@@ -28,6 +34,16 @@ app = FastAPI(title="ClaimFlow Provider Verification Adapter", version="0.1.0")
 LICENSE_UPSTREAM_URL = os.getenv("LICENSE_UPSTREAM_URL", "").strip()
 BACKGROUND_UPSTREAM_URL = os.getenv("BACKGROUND_UPSTREAM_URL", "").strip()
 HTTP_TIMEOUT_SECONDS = float(os.getenv("ADAPTER_HTTP_TIMEOUT_SECONDS", "10"))
+MAX_RETRIES = max(0, int(os.getenv("ADAPTER_MAX_RETRIES", "2")))
+RETRY_BACKOFF_SECONDS = float(os.getenv("ADAPTER_RETRY_BACKOFF_SECONDS", "0.2"))
+REQUIRE_AUTH = os.getenv("ADAPTER_REQUIRE_AUTH", "false").strip().lower() in {"1", "true", "yes", "y"}
+ADAPTER_API_KEY = os.getenv("ADAPTER_API_KEY", "").strip()
+ADAPTER_SHARED_SECRET = os.getenv("ADAPTER_SHARED_SECRET", "").strip()
+AUTH_WINDOW_SECONDS = max(30, int(os.getenv("ADAPTER_AUTH_WINDOW_SECONDS", "300")))
+RATE_LIMIT_REQUESTS = max(1, int(os.getenv("ADAPTER_RATE_LIMIT_REQUESTS", "120")))
+RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("ADAPTER_RATE_LIMIT_WINDOW_SECONDS", "60")))
+_RATE_LIMIT_BUCKETS: dict[str, list[float]] = {}
+_RATE_LIMIT_LOCK = asyncio.Lock()
 
 
 class BackgroundCheckRequest(BaseModel):
@@ -47,6 +63,101 @@ def _to_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _requires_auth() -> bool:
+    return REQUIRE_AUTH or bool(ADAPTER_API_KEY) or bool(ADAPTER_SHARED_SECRET)
+
+
+def _signature_payload(*, timestamp: str, method: str, path: str, body: bytes) -> str:
+    body_hash = hashlib.sha256(body).hexdigest()
+    return f"{timestamp}.{method.upper()}.{path}.{body_hash}"
+
+
+async def _enforce_adapter_auth(request: Request, body: bytes) -> None:
+    if not _requires_auth():
+        return
+
+    if ADAPTER_API_KEY:
+        presented_key = request.headers.get("X-Adapter-Key", "")
+        if not hmac.compare_digest(presented_key, ADAPTER_API_KEY):
+            raise HTTPException(status_code=401, detail="adapter_auth_failed")
+
+    if ADAPTER_SHARED_SECRET:
+        timestamp = request.headers.get("X-Adapter-Timestamp", "").strip()
+        signature = request.headers.get("X-Adapter-Signature", "").strip()
+        if not timestamp or not signature:
+            raise HTTPException(status_code=401, detail="adapter_signature_missing")
+        try:
+            ts = int(timestamp)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail="adapter_signature_invalid_timestamp") from exc
+        if abs(int(time.time()) - ts) > AUTH_WINDOW_SECONDS:
+            raise HTTPException(status_code=401, detail="adapter_signature_expired")
+
+        expected = hmac.new(
+            ADAPTER_SHARED_SECRET.encode(),
+            _signature_payload(
+                timestamp=timestamp,
+                method=request.method,
+                path=request.url.path,
+                body=body,
+            ).encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise HTTPException(status_code=401, detail="adapter_signature_invalid")
+
+
+def _client_bucket_key(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "").strip()
+    if fwd:
+        return fwd.split(",")[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+async def _enforce_rate_limit(request: Request) -> None:
+    now = time.monotonic()
+    cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+    key = _client_bucket_key(request)
+    async with _RATE_LIMIT_LOCK:
+        bucket = _RATE_LIMIT_BUCKETS.setdefault(key, [])
+        while bucket and bucket[0] < cutoff:
+            bucket.pop(0)
+        if len(bucket) >= RATE_LIMIT_REQUESTS:
+            raise HTTPException(status_code=429, detail="adapter_rate_limit_exceeded")
+        bucket.append(now)
+
+
+async def _upstream_request_with_retry(
+    *,
+    method: str,
+    url: str,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+) -> httpx.Response:
+    attempt = 0
+    last_exc: Exception | None = None
+    while attempt <= MAX_RETRIES:
+        try:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
+                response = await client.request(method, url, params=params, json=json_body)
+            if response.status_code >= 500 and attempt < MAX_RETRIES:
+                await asyncio.sleep(RETRY_BACKOFF_SECONDS * (2**attempt))
+                attempt += 1
+                continue
+            return response
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_exc = exc
+            if attempt >= MAX_RETRIES:
+                raise
+            await asyncio.sleep(RETRY_BACKOFF_SECONDS * (2**attempt))
+            attempt += 1
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("unreachable retry state")
 
 
 def _normalize_license_response(raw: dict[str, Any], *, state: str, license_number: str) -> dict[str, Any]:
@@ -120,16 +231,21 @@ async def health() -> dict[str, Any]:
         "service": "provider-verification-adapter",
         "license_mode": "upstream" if LICENSE_UPSTREAM_URL else "starter",
         "background_mode": "upstream" if BACKGROUND_UPSTREAM_URL else "starter",
+        "auth_enabled": _requires_auth(),
+        "rate_limit": {"requests": RATE_LIMIT_REQUESTS, "window_seconds": RATE_LIMIT_WINDOW_SECONDS},
     }
 
 
 @app.get("/license/verify")
 async def verify_license(
+    request: Request,
     state: str,
     license_number: str,
     name: str = "",
     dob: str = "",
 ) -> dict[str, Any]:
+    await _enforce_rate_limit(request)
+    await _enforce_adapter_auth(request, b"")
     if not state or not license_number:
         raise HTTPException(status_code=422, detail="state and license_number are required")
 
@@ -137,16 +253,16 @@ async def verify_license(
         return _starter_license_decision(state=state, license_number=license_number)
 
     try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
-            resp = await client.get(
-                LICENSE_UPSTREAM_URL,
-                params={
-                    "state": state,
-                    "license_number": license_number,
-                    "name": name,
-                    "dob": dob,
-                },
-            )
+        resp = await _upstream_request_with_retry(
+            method="GET",
+            url=LICENSE_UPSTREAM_URL,
+            params={
+                "state": state,
+                "license_number": license_number,
+                "name": name,
+                "dob": dob,
+            },
+        )
         if resp.status_code != 200:
             return {
                 "verified": False,
@@ -174,13 +290,19 @@ async def verify_license(
 
 
 @app.post("/background/check")
-async def run_background_check(body: BackgroundCheckRequest) -> dict[str, Any]:
+async def run_background_check(request: Request, body: BackgroundCheckRequest) -> dict[str, Any]:
+    raw_body = await request.body()
+    await _enforce_rate_limit(request)
+    await _enforce_adapter_auth(request, raw_body)
     if not BACKGROUND_UPSTREAM_URL:
         return _starter_background_decision(first_name=body.first_name, last_name=body.last_name)
 
     try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
-            resp = await client.post(BACKGROUND_UPSTREAM_URL, json=body.model_dump())
+        resp = await _upstream_request_with_retry(
+            method="POST",
+            url=BACKGROUND_UPSTREAM_URL,
+            json_body=body.model_dump(),
+        )
         if resp.status_code != 200:
             return {
                 "verified": False,

@@ -78,7 +78,7 @@ def test_parse_835_multiple_claims_segregates_payments_and_denials():
     out = EDIProcessor._parse_835_content(content)
     assert len(out["payments"]) == 2
     assert len(out["denials"]) == 1
-    assert out["total_paid"] == 150.00 + 200.00 + 75.50  # CLP04 = billed
+    assert out["total_paid"] == 150.00 + 0.00 + 75.50  # CLP04 = paid amount
     assert {p["claim_number"] for p in out["payments"]} == {"PAID-1", "PAID-2"}
     assert out["denials"][0]["claim_number"] == "DENIED-1"
 

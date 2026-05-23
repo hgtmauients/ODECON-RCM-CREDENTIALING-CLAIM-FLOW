@@ -140,12 +140,14 @@ describe('CredentialingQueue', () => {
     });
 
     it('displays error state when API call fails', async () => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       vi.mocked(apiService.get).mockRejectedValue(new Error('API Error'));
       renderComponent();
 
       await waitFor(() => {
         expect(screen.getByText('Error loading credentialing queue')).toBeInTheDocument();
       });
+      consoleSpy.mockRestore();
     });
 
     it('displays empty state when no records exist', async () => {

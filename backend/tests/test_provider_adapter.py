@@ -11,6 +11,20 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def reset_adapter_globals(monkeypatch):
+    monkeypatch.setattr(adapter, "REQUIRE_AUTH", False)
+    monkeypatch.setattr(adapter, "ADAPTER_API_KEY", "")
+    monkeypatch.setattr(adapter, "ADAPTER_SHARED_SECRET", "")
+    monkeypatch.setattr(adapter, "LICENSE_UPSTREAM_URL", "")
+    monkeypatch.setattr(adapter, "BACKGROUND_UPSTREAM_URL", "")
+    monkeypatch.setattr(adapter, "MAX_RETRIES", 2)
+    monkeypatch.setattr(adapter, "RETRY_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(adapter, "RATE_LIMIT_REQUESTS", 120)
+    monkeypatch.setattr(adapter, "RATE_LIMIT_WINDOW_SECONDS", 60)
+    adapter._RATE_LIMIT_BUCKETS.clear()
+
+
 @pytest.mark.asyncio
 async def test_health_endpoint_exposes_modes():
     transport = ASGITransport(app=app)
@@ -94,7 +108,9 @@ async def test_background_check_normalizes_upstream_clear_false(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def post(self, _url, json):
+        async def request(self, method, _url, params=None, json=None):
+            assert method == "POST"
+            _ = params
             assert json["first_name"] == "Jane"
             return _FakeResp()
 
@@ -112,3 +128,99 @@ async def test_background_check_normalizes_upstream_clear_false(monkeypatch):
     assert data["verified"] is True
     assert data["clear"] is False
     assert data["recommendation"] == "requires_review"
+
+
+@pytest.mark.asyncio
+async def test_adapter_auth_rejects_missing_signature(monkeypatch):
+    monkeypatch.setattr(adapter, "REQUIRE_AUTH", True)
+    monkeypatch.setattr(adapter, "ADAPTER_API_KEY", "k_test")
+    monkeypatch.setattr(adapter, "ADAPTER_SHARED_SECRET", "s_test")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/license/verify", params={"state": "HI", "license_number": "HI-12345"})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] in {"adapter_auth_failed", "adapter_signature_missing"}
+
+
+@pytest.mark.asyncio
+async def test_adapter_auth_accepts_valid_hmac(monkeypatch):
+    monkeypatch.setattr(adapter, "REQUIRE_AUTH", True)
+    monkeypatch.setattr(adapter, "ADAPTER_API_KEY", "k_test")
+    monkeypatch.setattr(adapter, "ADAPTER_SHARED_SECRET", "s_test")
+
+    timestamp = "1700000000"
+    monkeypatch.setattr(adapter.time, "time", lambda: int(timestamp))
+    message = adapter._signature_payload(
+        timestamp=timestamp,
+        method="GET",
+        path="/license/verify",
+        body=b"",
+    )
+    signature = adapter.hmac.new(b"s_test", message.encode(), adapter.hashlib.sha256).hexdigest()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get(
+            "/license/verify",
+            params={"state": "HI", "license_number": "HI-12345"},
+            headers={
+                "X-Adapter-Key": "k_test",
+                "X-Adapter-Timestamp": timestamp,
+                "X-Adapter-Signature": signature,
+            },
+        )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_adapter_rate_limit_blocks_excess_requests(monkeypatch):
+    monkeypatch.setattr(adapter, "RATE_LIMIT_REQUESTS", 1)
+    monkeypatch.setattr(adapter, "RATE_LIMIT_WINDOW_SECONDS", 60)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        first = await ac.get("/license/verify", params={"state": "HI", "license_number": "HI-1"})
+        second = await ac.get("/license/verify", params={"state": "HI", "license_number": "HI-2"})
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.json()["detail"] == "adapter_rate_limit_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_license_upstream_retries_on_timeout_then_succeeds(monkeypatch):
+    class _FakeResp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"status": "ACTIVE", "verified": True}
+
+    class _FakeClient:
+        calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def request(self, method, url, params=None, json=None):
+            assert method == "GET"
+            _ = url, params, json
+            self.calls += 1
+            if self.calls < 3:
+                raise adapter.httpx.TimeoutException("timeout")
+            return _FakeResp()
+
+    fake = _FakeClient()
+    monkeypatch.setattr(adapter, "LICENSE_UPSTREAM_URL", "https://upstream.example/license")
+    monkeypatch.setattr(adapter.httpx, "AsyncClient", lambda timeout: fake)
+    monkeypatch.setattr(adapter, "MAX_RETRIES", 2)
+    monkeypatch.setattr(adapter, "RETRY_BACKOFF_SECONDS", 0)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/license/verify", params={"state": "HI", "license_number": "HI-12345"})
+    assert resp.status_code == 200
+    assert fake.calls == 3

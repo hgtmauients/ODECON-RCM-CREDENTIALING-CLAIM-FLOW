@@ -146,3 +146,39 @@ jobs:
       - name: Build
         working-directory: webapp
         run: npm run build
+
+  next10-test-subset:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install backend test dependencies
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run backend next-10 subset
+        working-directory: backend
+        env:
+          ENV: test
+        run: pytest -v tests/test_provider_adapter.py tests/test_credentialing_service_integrations.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: webapp
+        run: npm ci || npm install
+
+      - name: Run frontend next-10 subset
+        working-directory: webapp
+        run: npm run test -- --run src/auth/__tests__/AuthProvider.test.tsx

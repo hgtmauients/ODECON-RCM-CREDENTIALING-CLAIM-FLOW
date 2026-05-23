@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFil
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, desc
 from typing import List, Optional, Dict, Any
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 import logging
 import csv
 import io
@@ -29,6 +29,10 @@ from services.encryption import encrypt_credential
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rcm/payers", tags=["RCM - Payer Profiles"])
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # Fields that callers must never be allowed to overwrite via the bulk-update path.
 # tenant_id absence here is the v9-NEW-H1 reaffirmed bug — once excluded, the
@@ -418,7 +422,7 @@ async def publish_payer(
             raise HTTPException(status_code=404, detail="Payer not found")
 
         payer.is_draft = False
-        payer.published_at = datetime.utcnow()
+        payer.published_at = _utcnow_naive()
 
         version_result = await db.execute(
             select(PayerProfileVersion)
@@ -429,7 +433,7 @@ async def publish_payer(
         latest_version = version_result.scalar_one_or_none()
         if latest_version:
             latest_version.is_published = True
-            latest_version.published_at = datetime.utcnow()
+            latest_version.published_at = _utcnow_naive()
             latest_version.published_by = current_user.email
 
         await log_audit_event(
@@ -879,7 +883,7 @@ async def upload_fee_schedule(
 
         csv_file = io.StringIO(contents.decode("utf-8", errors="replace"))
         reader = csv.DictReader(csv_file)
-        batch_id = f"upload_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        batch_id = f"upload_{_utcnow_naive().strftime('%Y%m%d_%H%M%S')}"
         uploaded_count = 0
         errors: List[Dict[str, Any]] = []
 
@@ -894,7 +898,7 @@ async def upload_fee_schedule(
                     allowable_amount=float(row["allowable_amount"]),
                     facility_rate=float(row["facility_rate"]) if row.get("facility_rate") else None,
                     non_facility_rate=float(row["non_facility_rate"]) if row.get("non_facility_rate") else None,
-                    effective_date=effective_date or datetime.utcnow().date(),
+                    effective_date=effective_date or _utcnow_naive().date(),
                     uploaded_by=current_user.email,
                     upload_batch_id=batch_id,
                 )
@@ -1010,7 +1014,7 @@ async def test_payer_connection(
             }
         
         # Update connection record
-        connection.last_tested = datetime.utcnow()
+        connection.last_tested = _utcnow_naive()
         connection.last_test_status = "success" if test_result["success"] else "failed"
         connection.last_test_message = test_result["message"]
         await db.commit()

@@ -8,7 +8,7 @@ import os
 import asyncio
 import logging
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
@@ -21,6 +21,11 @@ from models.denials import DenialCase
 logger = logging.getLogger(__name__)
 
 EDI_STORAGE_PATH = os.getenv("EDI_STORAGE_PATH", "/data/edi")
+
+
+def _utcnow() -> datetime:
+    # Keep naive-UTC for TIMESTAMP WITHOUT TIME ZONE columns.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # X12 277CA STC01 status code → claim state mapping.
@@ -568,7 +573,7 @@ class EDIProcessor:
                                 claims_updated += 1
 
             edi_file.status = "processed"
-            edi_file.processed_at = datetime.utcnow()
+            edi_file.processed_at = _utcnow()
             edi_file.transaction_count = claims_updated
             await self.db.commit()
 
@@ -646,21 +651,23 @@ class EDIProcessor:
             elif segment.startswith("CAS") and current_claim is not None:
                 parts = segment.split("*")
                 group_code = parts[1] if len(parts) > 1 else ""
-                # CAS supports up to 6 adjustment triplets per segment
-                for offset in (2, 5, 8, 11, 14, 17):
-                    if len(parts) > offset + 1:
-                        reason_code = parts[offset] or ""
-                        amount_str = parts[offset + 1] or "0"
-                        if reason_code:
-                            try:
-                                amount = float(amount_str)
-                            except ValueError:
-                                amount = 0.0
-                            current_claim["carc_codes"].append({
-                                "group": group_code,
-                                "code": reason_code,
-                                "amount": amount,
-                            })
+                idx = 2
+                # Normalize CAS as repeating reason + amount pairs. This matches
+                # how downstream denial workflows consume CARC adjustments.
+                while idx + 1 < len(parts):
+                    reason_code = parts[idx] or ""
+                    amount_str = parts[idx + 1] or "0"
+                    if reason_code:
+                        try:
+                            amount = float(amount_str)
+                        except ValueError:
+                            amount = 0.0
+                        current_claim["carc_codes"].append({
+                            "group": group_code,
+                            "code": reason_code,
+                            "amount": amount,
+                        })
+                    idx += 2
             elif segment.startswith("LQ") and current_claim is not None:
                 parts = segment.split("*")
                 if len(parts) > 2 and parts[1] == "HE":
@@ -778,7 +785,7 @@ class EDIProcessor:
             total_paid = parsed["total_paid"]
 
             edi_file.status = "processed"
-            edi_file.processed_at = datetime.utcnow()
+            edi_file.processed_at = _utcnow()
             edi_file.transaction_count = len(payments) + len(denials)
             await self.db.commit()
 
@@ -847,7 +854,7 @@ class EDIProcessor:
                 filename=os.path.basename(file_path),
                 file_path=file_path,
                 status="processed",
-                processed_at=datetime.utcnow(),
+                processed_at=_utcnow(),
             )
             self.db.add(edi_file)
             await self.db.commit()
@@ -936,7 +943,7 @@ class EDIProcessor:
                     dup.id,
                 )
                 edi_file.status = "duplicate"
-                edi_file.processed_at = datetime.utcnow()
+                edi_file.processed_at = _utcnow()
                 edi_file.transaction_count = 0
                 await self.db.commit()
                 return {
@@ -956,7 +963,7 @@ class EDIProcessor:
         total_paid = parsed["total_paid"]
 
         edi_file.status = "processed"
-        edi_file.processed_at = datetime.utcnow()
+        edi_file.processed_at = _utcnow()
         edi_file.transaction_count = len(payments) + len(denials)
         try:
             await self.db.commit()
@@ -1040,7 +1047,7 @@ class EDIProcessor:
                             claims_updated += 1
 
         edi_file.status = "processed"
-        edi_file.processed_at = datetime.utcnow()
+        edi_file.processed_at = _utcnow()
         edi_file.transaction_count = claims_updated
         await self.db.commit()
 

@@ -8,6 +8,7 @@
 - [Database migrations](#database-migrations)
 - [Rollback](#rollback)
 - [Secret rotation](#secret-rotation)
+- [Provider verification checklist](#provider-verification-checklist)
 - [Monitoring & alerting](#monitoring--alerting)
 - [Incident response](#incident-response)
 
@@ -214,6 +215,40 @@ The current setup has a single uvicorn process per container, so a `docker compo
 5. Stop the old container
 
 For now, accept ~10s downtime and deploy during a low-traffic window.
+
+---
+
+## Provider verification checklist
+
+Use this checklist whenever deploying credentialing changes or rotating integration secrets.
+
+### Required adapter routing variables (backend)
+
+- [ ] `STATE_LICENSE_PROVIDER_URL` is set to the adapter `GET /license/verify` endpoint.
+- [ ] `BACKGROUND_CHECK_PROVIDER_URL` is set to the adapter `POST /background/check` endpoint.
+- [ ] Both URLs are reachable from the backend container network (curl from container succeeds).
+
+### Optional adapter upstream passthrough variables (adapter service)
+
+- [ ] `LICENSE_UPSTREAM_URL` is set only when you want passthrough to a live vendor.
+- [ ] `BACKGROUND_UPSTREAM_URL` is set only when you want passthrough to a live vendor.
+- [ ] If either upstream URL is unset, adapter is intentionally in deterministic starter mode.
+
+### Recommended production hardening variables
+
+- [ ] `ADAPTER_REQUIRE_AUTH=true`
+- [ ] `ADAPTER_API_KEY` and `ADAPTER_SHARED_SECRET` are both set and rotated together.
+- [ ] `ADAPTER_RATE_LIMIT_REQUESTS` and `ADAPTER_RATE_LIMIT_WINDOW_SECONDS` are set for expected traffic.
+- [ ] `ADAPTER_HTTP_TIMEOUT_SECONDS`, `ADAPTER_MAX_RETRIES`, and `ADAPTER_RETRY_BACKOFF_SECONDS` are tuned for vendor SLAs.
+- [ ] Backend outbound adapter client policy (`ADAPTER_CLIENT_TIMEOUT_SECONDS`, `ADAPTER_CLIENT_MAX_RETRIES`, `ADAPTER_CLIENT_RETRY_BACKOFF_SECONDS`) is set.
+
+### Smoke checks
+
+- [ ] `GET /health` returns `auth_enabled: true` in production.
+- [ ] License check with valid auth headers returns `200`.
+- [ ] License check without auth headers returns `401`.
+- [ ] Burst of requests beyond configured limit returns `429`.
+- [ ] Backend credentialing flow fails closed (`requires_manual_review` / `requires_review`) on adapter 5xx.
 
 ---
 

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import asyncio
 
@@ -23,6 +23,10 @@ from services.credentialing_service import credentialing_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/credentialing", tags=["Credentialing"])
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _spawn_background(coro, name: str) -> None:
@@ -176,7 +180,7 @@ async def handle_provider_signup(
                     "idempotent_reuse": True,
                 }
 
-        provider_id = f"PROV_{signup.npi}_{int(datetime.utcnow().timestamp())}"
+        provider_id = f"PROV_{signup.npi}_{int(_utcnow_naive().timestamp())}"
 
         credentialing = ProviderCredentialing(
             tenant_id=tenant_id,
@@ -532,7 +536,7 @@ async def approve_provider(
 
         credentialing.credentialing_status = "passed"
         credentialing.verified_by = current_user.user_id
-        credentialing.verified_at = datetime.utcnow()
+        credentialing.verified_at = _utcnow_naive()
         # Only overwrite admin_notes when the caller actually supplied notes;
         # passing None/null must NOT wipe pre-existing notes (closes v9-H1).
         if notes is not None:
@@ -609,7 +613,7 @@ async def reject_provider(
 
         credentialing.credentialing_status = "failed"
         credentialing.verified_by = current_user.user_id
-        credentialing.verified_at = datetime.utcnow()
+        credentialing.verified_at = _utcnow_naive()
         credentialing.rejection_reason = reason
 
         await log_audit_event(
@@ -652,7 +656,7 @@ async def run_credentialing_checks(
             if not credentialing:
                 return
 
-            now = datetime.utcnow()
+            now = _utcnow_naive()
             if not preclaimed:
                 if credentialing.credentialing_status in ("passed", "failed"):
                     return
@@ -796,7 +800,7 @@ async def run_credentialing_checks(
 
             credentialing.overall_score = score
             credentialing.credentialing_status = status
-            credentialing.completed_at = datetime.utcnow()
+            credentialing.completed_at = _utcnow_naive()
             await db.commit()
 
             logger.info(f"Credentialing completed for {provider_id}: {status} (score: {score})")

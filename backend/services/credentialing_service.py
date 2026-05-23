@@ -1,11 +1,16 @@
 """
 Automated Provider Credentialing Service
 """
+import asyncio
+import hashlib
+import hmac
 import httpx
+import json
 import os
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +27,78 @@ class CredentialingService:
         self.sam_api_url = "https://api.sam.gov/api/entity-information/"
         self.state_license_provider_url = os.getenv("STATE_LICENSE_PROVIDER_URL", "").strip()
         self.background_check_provider_url = os.getenv("BACKGROUND_CHECK_PROVIDER_URL", "").strip()
+        self.adapter_api_key = os.getenv("ADAPTER_API_KEY", "").strip()
+        self.adapter_shared_secret = os.getenv("ADAPTER_SHARED_SECRET", "").strip()
+        self.adapter_timeout_seconds = float(os.getenv("ADAPTER_CLIENT_TIMEOUT_SECONDS", "30"))
+        self.adapter_max_retries = max(0, int(os.getenv("ADAPTER_CLIENT_MAX_RETRIES", "2")))
+        self.adapter_retry_backoff_seconds = float(os.getenv("ADAPTER_CLIENT_RETRY_BACKOFF_SECONDS", "0.2"))
+
+    @staticmethod
+    def _canonical_body_bytes(payload: Optional[Dict[str, Any]]) -> bytes:
+        if not payload:
+            return b""
+        return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+
+    def _adapter_headers(
+        self,
+        *,
+        method: str,
+        url: str,
+        body_bytes: bytes = b"",
+    ) -> Dict[str, str]:
+        headers: Dict[str, str] = {}
+        if self.adapter_api_key:
+            headers["X-Adapter-Key"] = self.adapter_api_key
+        if self.adapter_shared_secret:
+            timestamp = str(int(datetime.now(timezone.utc).timestamp()))
+            path = urlparse(url).path or "/"
+            body_hash = hashlib.sha256(body_bytes).hexdigest()
+            message = f"{timestamp}.{method.upper()}.{path}.{body_hash}"
+            signature = hmac.new(
+                self.adapter_shared_secret.encode(),
+                message.encode(),
+                hashlib.sha256,
+            ).hexdigest()
+            headers["X-Adapter-Timestamp"] = timestamp
+            headers["X-Adapter-Signature"] = signature
+        return headers
+
+    async def _request_adapter_with_retry(
+        self,
+        *,
+        method: str,
+        url: str,
+        params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+    ) -> httpx.Response:
+        body_bytes = self._canonical_body_bytes(json_body)
+        headers = self._adapter_headers(method=method, url=url, body_bytes=body_bytes)
+        attempt = 0
+        last_exception: Optional[Exception] = None
+        while attempt <= self.adapter_max_retries:
+            try:
+                async with httpx.AsyncClient(timeout=self.adapter_timeout_seconds) as client:
+                    response = await client.request(
+                        method=method,
+                        url=url,
+                        params=params,
+                        json=json_body,
+                        headers=headers or None,
+                    )
+                if response.status_code >= 500 and attempt < self.adapter_max_retries:
+                    await asyncio.sleep(self.adapter_retry_backoff_seconds * (2**attempt))
+                    attempt += 1
+                    continue
+                return response
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_exception = exc
+                if attempt >= self.adapter_max_retries:
+                    raise
+                await asyncio.sleep(self.adapter_retry_backoff_seconds * (2**attempt))
+                attempt += 1
+        if last_exception:
+            raise last_exception
+        raise RuntimeError("unreachable retry state")
     
     async def verify_npi(self, npi: str) -> Dict[str, Any]:
         """
@@ -91,37 +168,37 @@ class CredentialingService:
                     "checked_at": _utc_iso(),
                 }
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    self.state_license_provider_url,
-                    params={
-                        "state": state_code,
-                        "license_number": license_number,
-                        "name": provider_name,
-                        "dob": dob,
-                    }
-                )
+            response = await self._request_adapter_with_retry(
+                method="GET",
+                url=self.state_license_provider_url,
+                params={
+                    "state": state_code,
+                    "license_number": license_number,
+                    "name": provider_name,
+                    "dob": dob,
+                },
+            )
 
-                if response.status_code == 200:
-                    data = response.json()
-                    status = str(data.get("status", "")).upper()
-                    verified = bool(data.get("verified", False))
-                    # If provider doesn't return explicit verified flag, infer from active-ish statuses.
-                    if not verified and status in {"ACTIVE", "CURRENT", "VALID"}:
-                        verified = True
+            if response.status_code == 200:
+                data = response.json()
+                status = str(data.get("status", "")).upper()
+                verified = bool(data.get("verified", False))
+                # If provider doesn't return explicit verified flag, infer from active-ish statuses.
+                if not verified and status in {"ACTIVE", "CURRENT", "VALID"}:
+                    verified = True
 
-                    return {
-                        "verified": verified,
-                        "state": state_code,
-                        "license_number": license_number,
-                        "status": status or "UNKNOWN",
-                        "issue_date": data.get("issue_date"),
-                        "expiration_date": data.get("expiration_date"),
-                        "discipline_history": data.get("discipline_history", []),
-                        "requires_manual_review": not verified,
-                        "source": "state_license_provider",
-                        "verified_at": _utc_iso(),
-                    }
+                return {
+                    "verified": verified,
+                    "state": state_code,
+                    "license_number": license_number,
+                    "status": status or "UNKNOWN",
+                    "issue_date": data.get("issue_date"),
+                    "expiration_date": data.get("expiration_date"),
+                    "discipline_history": data.get("discipline_history", []),
+                    "requires_manual_review": not verified,
+                    "source": "state_license_provider",
+                    "verified_at": _utc_iso(),
+                }
 
             return {
                 "verified": False,
@@ -142,6 +219,7 @@ class CredentialingService:
                 "error": str(e),
                 "requires_manual_review": True,
                 "source": "state_license_provider",
+                "checked_at": _utc_iso(),
             }
     
     async def check_oig_exclusion(
@@ -254,37 +332,37 @@ class CredentialingService:
             }
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    self.background_check_provider_url,
-                    json={
-                        "first_name": first_name,
-                        "last_name": last_name,
-                        "dob": dob,
-                        "ssn": ssn,
-                    },
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    clear = bool(data.get("clear", False))
-                    return {
-                        "verified": bool(data.get("verified", True)),
-                        "clear": clear,
-                        "findings": data.get("findings", []),
-                        "recommendation": data.get("recommendation", "clear" if clear else "requires_review"),
-                        "checked_at": _utc_iso(),
-                        "source": "background_check_provider",
-                    }
-
+            response = await self._request_adapter_with_retry(
+                method="POST",
+                url=self.background_check_provider_url,
+                json_body={
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "dob": dob,
+                    "ssn": ssn,
+                },
+            )
+            if response.status_code == 200:
+                data = response.json()
+                clear = bool(data.get("clear", False))
                 return {
-                    "verified": False,
-                    "clear": False,
-                    "findings": [],
-                    "recommendation": "requires_review",
+                    "verified": bool(data.get("verified", True)),
+                    "clear": clear,
+                    "findings": data.get("findings", []),
+                    "recommendation": data.get("recommendation", "clear" if clear else "requires_review"),
                     "checked_at": _utc_iso(),
                     "source": "background_check_provider",
-                    "error": f"background_check_lookup_failed_{response.status_code}",
                 }
+
+            return {
+                "verified": False,
+                "clear": False,
+                "findings": [],
+                "recommendation": "requires_review",
+                "checked_at": _utc_iso(),
+                "source": "background_check_provider",
+                "error": f"background_check_lookup_failed_{response.status_code}",
+            }
         except Exception as e:
             logger.error(f"Error running background check: {e}")
             return {

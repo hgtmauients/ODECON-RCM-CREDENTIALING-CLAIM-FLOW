@@ -4,6 +4,8 @@ Tests for the CSV streaming helper.
 
 from datetime import datetime, timezone
 
+import pytest
+
 from core.csv_export import (
     csv_response,
     _safe_filename,
@@ -28,24 +30,23 @@ def test_serialize_value_handles_common_types():
     assert _serialize_value(dt) == "2026-04-22T00:00:00+00:00"
 
 
-def _consume(response) -> str:
+async def _consume(response) -> str:
     """Drain a StreamingResponse to a string for assertions."""
     chunks = []
     body_iterator = response.body_iterator
-    # Treat the iterator as sync for the test (StreamingResponse stores the
-    # generator passed in; ours is sync).
-    for chunk in body_iterator:
+    async for chunk in body_iterator:
         chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
     return b"".join(chunks).decode("utf-8")
 
 
-def test_csv_response_writes_header_and_rows():
+@pytest.mark.asyncio
+async def test_csv_response_writes_header_and_rows():
     rows = [
         {"id": 1, "name": "Alpha", "amount": 10.5, "active": True},
         {"id": 2, "name": "Beta", "amount": None, "active": False},
     ]
     resp = csv_response(filename="test.csv", rows=rows, fieldnames=["id", "name", "amount", "active"])
-    body = _consume(resp)
+    body = await _consume(resp)
     lines = [l for l in body.splitlines() if l]
     assert lines[0] == "id,name,amount,active"
     assert lines[1] == "1,Alpha,10.5,true"
@@ -54,7 +55,8 @@ def test_csv_response_writes_header_and_rows():
     assert "no-store" in resp.headers["Cache-Control"]
 
 
-def test_csv_response_with_row_to_dict():
+@pytest.mark.asyncio
+async def test_csv_response_with_row_to_dict():
     class _Row:
         def __init__(self, x: int, y: str) -> None:
             self.x, self.y = x, y
@@ -66,12 +68,13 @@ def test_csv_response_with_row_to_dict():
         fieldnames=["x", "y"],
         row_to_dict=lambda r: {"x": r.x, "y": r.y},
     )
-    body = _consume(resp)
+    body = await _consume(resp)
     assert "x,y\r\n1,a\r\n2,b\r\n" in body or "x,y\n1,a\n2,b\n" in body
 
 
-def test_csv_response_extra_keys_ignored():
+@pytest.mark.asyncio
+async def test_csv_response_extra_keys_ignored():
     rows = [{"a": 1, "b": 2, "extra": "drop"}]
     resp = csv_response(filename="t.csv", rows=rows, fieldnames=["a", "b"])
-    body = _consume(resp)
+    body = await _consume(resp)
     assert "extra" not in body

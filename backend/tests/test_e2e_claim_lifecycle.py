@@ -22,17 +22,21 @@ from datetime import date, datetime
 from uuid import UUID, uuid4
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy import select, and_
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 os.environ["ENV"] = "development"
 os.environ["JWT_SECRET"] = os.getenv("JWT_SECRET", "dev-secret-for-local-only-min32ch")
 os.environ["JWT_AUDIENCE"] = os.getenv("JWT_AUDIENCE", "claimflow")
 os.environ["DATABASE_URL"] = os.getenv(
     "DATABASE_URL",
-    "postgresql+asyncpg://claimflow:claimflow@localhost:5432/claimflow",
+    os.getenv(
+        "E2E_DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres",
+    ),
 )
 
 from app.main import app
-from core.database import engine, async_session_factory
+import core.database as dbcore
 from core.password import hash_password
 from models.base import Base
 from models.tenant import Tenant
@@ -41,6 +45,7 @@ from models.user import User
 TEST_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 TEST_ADMIN_EMAIL = "admin@claimflow.io"
 TEST_ADMIN_PASSWORD = "admin"
+E2E_DB_URL = os.environ["DATABASE_URL"]
 
 
 @pytest.fixture(scope="module")
@@ -51,9 +56,24 @@ def anyio_backend():
 @pytest.fixture(scope="module")
 async def setup_db():
     """Create all tables for the test run."""
-    async with engine.begin() as conn:
+    # Rebind DB engine/session for full-suite runs where core.database was
+    # imported earlier with a different DATABASE_URL.
+    dbcore.engine = create_async_engine(
+        E2E_DB_URL,
+        echo=False,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
+    )
+    dbcore.async_session_factory = async_sessionmaker(
+        dbcore.engine,
+        class_=dbcore.AsyncSession,
+        expire_on_commit=False,
+    )
+
+    async with dbcore.engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    async with async_session_factory() as db:
+    async with dbcore.async_session_factory() as db:
         tenant_uuid = UUID(TEST_TENANT_ID)
         tenant_res = await db.execute(select(Tenant).where(Tenant.id == tenant_uuid))
         tenant = tenant_res.scalar_one_or_none()
@@ -87,6 +107,7 @@ async def setup_db():
             user.is_active = True
         await db.commit()
     yield
+    await dbcore.engine.dispose()
     # Teardown: skip drop to avoid FK cascade issues in shared DB
 
 
