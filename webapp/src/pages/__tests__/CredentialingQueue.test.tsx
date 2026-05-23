@@ -121,9 +121,9 @@ describe('CredentialingQueue', () => {
 
     it('displays loading state while fetching data', () => {
       vi.mocked(apiService.get).mockImplementation(() => new Promise(() => {}));
-      renderComponent();
+      const { container } = renderComponent();
 
-      expect(screen.getByRole('status', { hidden: true })).toBeInTheDocument();
+      expect(container.querySelector('.loading-spinner')).toBeInTheDocument();
     });
 
     it('displays error state when API call fails', async () => {
@@ -260,7 +260,7 @@ describe('CredentialingQueue', () => {
       const providerCard = screen.getByText('John Doe').closest('div[style*="cursor"]');
       await user.click(providerCard!);
 
-      const approveButton = screen.getByText('Approve');
+      const approveButton = screen.getByText('Approve Provider');
       await user.click(approveButton);
 
       await waitFor(() => {
@@ -281,7 +281,10 @@ describe('CredentialingQueue', () => {
       const providerCard = screen.getByText('John Doe').closest('div[style*="cursor"]');
       await user.click(providerCard!);
 
-      const rejectButton = screen.getByText('Reject');
+      const textareas = screen.getAllByRole('textbox');
+      await user.type(textareas[1], 'Missing required documentation');
+
+      const rejectButton = screen.getByText('Reject Provider');
       await user.click(rejectButton);
 
       // Should prompt for reason (depends on UI implementation)
