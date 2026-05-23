@@ -107,7 +107,7 @@ class CredentialingService:
                         "verified": True,
                         "state": state_code,
                         "license_number": license_number,
-                        "status": data.get("status", "unknown"),
+                        "status": str(data.get("status", "unknown")).upper(),
                         "issue_date": data.get("issue_date"),
                         "expiration_date": data.get("expiration_date"),
                         "discipline_history": data.get("discipline_history", []),
@@ -153,6 +153,7 @@ class CredentialingService:
                     data = response.json()
                     
                     return {
+                        "verified": True,
                         "excluded": data.get("excluded", False),
                         "exclusion_date": data.get("exclusion_date"),
                         "exclusion_type": data.get("exclusion_type"),
@@ -160,14 +161,17 @@ class CredentialingService:
                     }
             
             return {
-                "excluded": False,
+                "verified": False,
+                "excluded": None,
+                "error": f"OIG lookup failed with status {response.status_code}",
                 "checked_at": datetime.utcnow().isoformat()
             }
         
         except Exception as e:
             logger.error(f"Error checking OIG exclusion: {e}")
             return {
-                "excluded": False,
+                "verified": False,
+                "excluded": None,
                 "error": str(e)
             }
     
@@ -192,20 +196,24 @@ class CredentialingService:
                     data = response.json()
                     
                     return {
+                        "verified": True,
                         "excluded": data.get("excluded", False),
                         "exclusion_date": data.get("exclusion_date"),
                         "checked_at": datetime.utcnow().isoformat()
                     }
             
             return {
-                "excluded": False,
+                "verified": False,
+                "excluded": None,
+                "error": f"SAM lookup failed with status {response.status_code}",
                 "checked_at": datetime.utcnow().isoformat()
             }
         
         except Exception as e:
             logger.error(f"Error checking SAM exclusion: {e}")
             return {
-                "excluded": False,
+                "verified": False,
+                "excluded": None,
                 "error": str(e)
             }
     
@@ -220,11 +228,12 @@ class CredentialingService:
         Run background check (placeholder - requires integration with background check service)
         """
         # This would integrate with services like VerifiedFirst, Certn, etc.
-        # For now, return a placeholder
+        # For now, fail-safe to review instead of auto-clearing.
         return {
-            "clear": True,
+            "verified": False,
+            "clear": False,
             "findings": [],
-            "recommendation": "approve",
+            "recommendation": "requires_review",
             "checked_at": datetime.utcnow().isoformat(),
             "note": "Background check service not yet integrated"
         }
@@ -241,19 +250,19 @@ class CredentialingService:
         
         # State license verification (30 points)
         state_license = results.get("state_license_verification", {})
-        if state_license.get("verified") and state_license.get("status") == "active":
+        if state_license.get("verified") and str(state_license.get("status", "")).upper() in {"ACTIVE", "CURRENT", "VALID"}:
             score += 30
         
         # Background check (20 points)
-        if results.get("background_check", {}).get("clear"):
+        if results.get("background_check", {}).get("verified") and results.get("background_check", {}).get("clear"):
             score += 20
         
         # OIG check (15 points)
-        if not results.get("oig_check", {}).get("excluded"):
+        if results.get("oig_check", {}).get("verified") and not results.get("oig_check", {}).get("excluded"):
             score += 15
         
         # SAM check (10 points)
-        if not results.get("sam_check", {}).get("excluded"):
+        if results.get("sam_check", {}).get("verified") and not results.get("sam_check", {}).get("excluded"):
             score += 10
         
         # Specialty board (5 points) - optional

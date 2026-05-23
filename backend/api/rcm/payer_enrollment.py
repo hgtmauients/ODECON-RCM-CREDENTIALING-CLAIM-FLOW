@@ -14,6 +14,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, date, timedelta
 import logging
 import os
+import base64
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -35,6 +36,16 @@ _VALID_CASE_STATUSES = frozenset({
     "draft", "in_progress", "ready_to_submit", "submitted",
     "in_review", "approved", "rejected", "renewal_due",
 })
+_VALID_CASE_TRANSITIONS = {
+    "draft": {"in_progress", "rejected"},
+    "in_progress": {"ready_to_submit", "submitted", "rejected"},
+    "ready_to_submit": {"submitted", "rejected"},
+    "submitted": {"in_review", "approved", "rejected", "renewal_due"},
+    "in_review": {"approved", "rejected", "renewal_due"},
+    "approved": {"renewal_due"},
+    "rejected": {"in_progress"},
+    "renewal_due": {"in_progress", "submitted"},
+}
 
 
 class EnrollmentCaseUpdate(BaseModel):
@@ -256,6 +267,14 @@ async def update_payer_credentialing_case(
                 status_code=422,
                 detail=f"status must be one of {sorted(_VALID_CASE_STATUSES)}",
             )
+        if "status" in applied:
+            next_status = applied["status"]
+            current_status = case.status
+            if next_status != current_status and next_status not in _VALID_CASE_TRANSITIONS.get(current_status, set()):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Invalid enrollment status transition: {current_status} -> {next_status}",
+                )
 
         for key, value in applied.items():
             if hasattr(case, key):
@@ -371,7 +390,7 @@ async def update_case_checklist(
         completed = sum(1 for item in checklist_updates if item.get('completed'))
         case.completed_items = completed
         case.completion_percentage = int((completed / len(checklist_updates)) * 100) if checklist_updates else 0
-        if case.completion_percentage == 100:
+        if case.completion_percentage == 100 and case.status in {"draft", "in_progress"}:
             case.status = "ready_to_submit"
         case.updated_by = current_user.email
 
@@ -549,7 +568,11 @@ async def upload_provider_document(
         raise HTTPException(status_code=400, detail="Invalid provider_id")
 
     try:
-        stored_path = await storage.write(relative_path, content, tenant_id=str(current_user.tenant_id))
+        # Encrypt provider docs at rest before writing to tenant storage.
+        encoded = base64.b64encode(content).decode("ascii")
+        encrypted_blob = await encrypt_credential(encoded)
+        encrypted_bytes = encrypted_blob.encode("utf-8")
+        stored_path = await storage.write(relative_path, encrypted_bytes, tenant_id=str(current_user.tenant_id))
     except StoragePathError:
         raise HTTPException(status_code=400, detail="Invalid storage path")
     except Exception:
@@ -569,7 +592,8 @@ async def upload_provider_document(
             expiration_date=expiration_date,
             state_code=state_code,
             uploaded_by=current_user.email,
-            is_encrypted=False,
+            is_encrypted=True,
+            encryption_key_id="app-default",
         )
         db.add(new_doc)
         await db.flush()

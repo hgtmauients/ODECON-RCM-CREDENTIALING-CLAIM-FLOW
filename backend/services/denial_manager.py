@@ -46,6 +46,7 @@ class DenialManager:
             results = {
                 "denials_processed": 0,
                 "cases_created": 0,
+                "duplicates_skipped": 0,
                 "errors": []
             }
             
@@ -107,6 +108,27 @@ class DenialManager:
                     appeal_due_date = datetime.now().date() + timedelta(days=appeal_window_days)
 
                     denied_amount = denial.get("denied_amount") or 0
+
+                    # Idempotency guard: avoid creating duplicate open denial
+                    # cases when the same 835 is reprocessed/reuploaded.
+                    existing_case_result = await self.db.execute(
+                        select(DenialCase.id).where(and_(
+                            DenialCase.tenant_id == (tenant_id or str(claim.tenant_id)),
+                            DenialCase.claim_id == claim.id,
+                            DenialCase.claim_line_id == denial.get("line_id"),
+                            DenialCase.carc_code == carc_code_only,
+                            DenialCase.rarc_code == denial.get("rarc"),
+                            DenialCase.status.in_(["new", "in_review", "appeal_drafted", "appeal_submitted"]),
+                        )).limit(1)
+                    )
+                    if existing_case_result.scalar_one_or_none():
+                        results["duplicates_skipped"] += 1
+                        logger.info(
+                            "Skipping duplicate denial case for claim=%s carc=%s rarc=%s",
+                            claim.claim_number, carc_code_only, denial.get("rarc"),
+                        )
+                        continue
+
                     # Create denial case
                     denial_case = DenialCase(
                         tenant_id=tenant_id or str(claim.tenant_id),

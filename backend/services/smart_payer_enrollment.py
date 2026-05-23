@@ -240,7 +240,7 @@ def _build_intelligent_checklist(payer: Any, provider_cred: Any, licensed_states
     # Background Check - auto-mark if passed
     background_passed = (
         provider_cred.background_check and 
-        provider_cred.background_check.get('verified', False)
+        provider_cred.background_check.get('clear', False)
     )
     
     if background_passed:
@@ -257,7 +257,7 @@ def _build_intelligent_checklist(payer: Any, provider_cred: Any, licensed_states
     oig_passed = (
         provider_cred.oig_check and 
         provider_cred.oig_check.get('verified', False) and
-        not provider_cred.oig_check.get('excluded', False)
+        provider_cred.oig_check.get('excluded') is False
     )
     
     if oig_passed:
@@ -273,7 +273,8 @@ def _build_intelligent_checklist(payer: Any, provider_cred: Any, licensed_states
     # SAM.gov Check - auto-mark if passed
     sam_passed = (
         provider_cred.sam_check and 
-        provider_cred.sam_check.get('verified', False)
+        provider_cred.sam_check.get('verified', False) and
+        provider_cred.sam_check.get('excluded') is False
     )
     
     if sam_passed:
@@ -382,9 +383,10 @@ async def get_provider_eligible_payers(provider_id: str, db: AsyncSession, tenan
         from models.rcm import PayerProfile
         
         # Get provider credentials
-        cred_result = await db.execute(
-            select(ProviderCredentialing).where(ProviderCredentialing.provider_id == provider_id)
-        )
+        cred_query = select(ProviderCredentialing).where(ProviderCredentialing.provider_id == provider_id)
+        if tenant_id:
+            cred_query = cred_query.where(ProviderCredentialing.tenant_id == tenant_id)
+        cred_result = await db.execute(cred_query)
         provider_cred = cred_result.scalar_one_or_none()
         
         if not provider_cred:
@@ -396,7 +398,9 @@ async def get_provider_eligible_payers(provider_id: str, db: AsyncSession, tenan
         # From state_license_verification
         state_license = provider_cred.state_license_verification or {}
         if state_license.get('verified') and state_license.get('status', '').upper() in ['ACTIVE', 'CURRENT', 'VALID']:
-            licensed_states.append(state_license.get('state'))
+            state_from_verification = state_license.get('state')
+            if state_from_verification:
+                licensed_states.append(state_from_verification)
         
         # From signup data
         signup_data = provider_cred.signup_data or {}
@@ -486,7 +490,10 @@ async def auto_complete_checklist_from_verification(
         
         # Get provider verification
         cred_result = await db.execute(
-            select(ProviderCredentialing).where(ProviderCredentialing.provider_id == provider_id)
+            select(ProviderCredentialing).where(and_(
+                ProviderCredentialing.provider_id == provider_id,
+                ProviderCredentialing.tenant_id == case.tenant_id,
+            ))
         )
         provider_cred = cred_result.scalar_one_or_none()
         
@@ -520,7 +527,7 @@ async def auto_complete_checklist_from_verification(
                 
                 # Background Check
                 elif 'Background Check' in item.get('item', '') and provider_cred.background_check:
-                    if provider_cred.background_check.get('verified'):
+                    if provider_cred.background_check.get('clear'):
                         item['completed'] = True
                         item['auto_completed'] = True
                         item['completed_date'] = datetime.now().isoformat()

@@ -10,7 +10,7 @@ is audit-logged.
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, desc
-from typing import Optional
+from typing import Optional, Dict, Any
 import logging
 
 from core.database import get_db
@@ -25,6 +25,16 @@ from services.denial_manager import DenialManager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rcm/denials", tags=["RCM - Denials"])
+
+_DENIAL_TRANSITIONS: Dict[str, set[str]] = {
+    "new": {"in_review", "appeal_drafted", "closed"},
+    "in_review": {"appeal_drafted", "closed"},
+    "appeal_drafted": {"appeal_submitted", "closed"},
+    "appeal_submitted": {"won", "lost", "closed"},
+    "won": {"closed"},
+    "lost": {"closed"},
+    "closed": set(),
+}
 
 
 @router.get("/cases")
@@ -270,3 +280,120 @@ async def generate_appeal_letter(
     except Exception:
         logger.exception("Error generating appeal")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.patch("/cases/{denial_id}")
+async def update_denial_case(
+    denial_id: int,
+    updates: Dict[str, Any],
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Update denial workflow fields and enforce lifecycle transitions."""
+    current_user.require_role("billing")
+    allowed_fields = {
+        "status",
+        "assigned_to",
+        "priority",
+        "root_cause",
+        "preventable",
+        "suggested_rule_update",
+        "appeal_submission_method",
+        "appeal_tracking_number",
+        "appeal_submitted_date",
+        "appeal_response_date",
+        "appeal_won",
+        "appeal_recovery_amount",
+        "closed_at",
+    }
+    patch = {k: v for k, v in (updates or {}).items() if k in allowed_fields}
+    if not patch:
+        raise HTTPException(status_code=422, detail="No updatable fields supplied")
+
+    result = await db.execute(
+        select(DenialCase).where(and_(
+            DenialCase.id == denial_id,
+            DenialCase.tenant_id == current_user.tenant_id,
+        ))
+    )
+    denial = result.scalar_one_or_none()
+    if not denial:
+        raise HTTPException(status_code=404, detail="Denial case not found")
+
+    if "status" in patch:
+        next_status = patch["status"]
+        if next_status not in _DENIAL_TRANSITIONS:
+            raise HTTPException(status_code=422, detail=f"Invalid status '{next_status}'")
+        if next_status != denial.status and next_status not in _DENIAL_TRANSITIONS.get(denial.status, set()):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Invalid denial status transition: {denial.status} -> {next_status}",
+            )
+
+    # Parse date fields from ISO strings when needed.
+    for date_field in ("appeal_submitted_date", "appeal_response_date"):
+        if date_field in patch and isinstance(patch[date_field], str):
+            patch[date_field] = datetime.fromisoformat(patch[date_field]).date()
+
+    for key, value in patch.items():
+        setattr(denial, key, value)
+
+    # Workflow side effects on related claim state.
+    claim_result = await db.execute(
+        select(Claim).where(and_(
+            Claim.id == denial.claim_id,
+            Claim.tenant_id == current_user.tenant_id,
+        ))
+    )
+    claim = claim_result.scalar_one_or_none()
+    status_after = patch.get("status", denial.status)
+    if claim:
+        if status_after == "appeal_submitted":
+            claim.state = "appealed"
+            if not denial.appeal_submitted_date:
+                denial.appeal_submitted_date = datetime.utcnow().date()
+        elif status_after == "won":
+            claim.state = "appeal_won"
+            denial.appeal_won = True
+            if not denial.appeal_response_date:
+                denial.appeal_response_date = datetime.utcnow().date()
+        elif status_after == "lost":
+            claim.state = "appeal_lost"
+            denial.appeal_won = False
+            if not denial.appeal_response_date:
+                denial.appeal_response_date = datetime.utcnow().date()
+        elif status_after == "closed" and not denial.closed_at:
+            denial.closed_at = datetime.utcnow()
+
+    await log_audit_event(
+        db, current_user, action="denial_case_updated", resource_type="denial",
+        resource_id=str(denial_id), request=request,
+        changes={"updated_fields": sorted(patch.keys())},
+    )
+    await db.commit()
+    return {"success": True, "message": "Denial case updated"}
+
+
+@router.post("/cases/{denial_id}/submit-appeal")
+async def submit_appeal(
+    denial_id: int,
+    body: Dict[str, Any],
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: Principal = Depends(get_current_user),
+):
+    """Mark an appeal as submitted and capture tracking metadata."""
+    payload = {
+        "status": "appeal_submitted",
+        "appeal_submission_method": body.get("appeal_submission_method"),
+        "appeal_tracking_number": body.get("appeal_tracking_number"),
+        "appeal_submitted_date": body.get("appeal_submitted_date") or datetime.utcnow().date().isoformat(),
+    }
+    return await update_denial_case(
+        denial_id=denial_id,
+        updates=payload,
+        request=request,
+        db=db,
+        current_user=current_user,
+    )
