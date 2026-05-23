@@ -1,5 +1,5 @@
 """
-Unified production deploy orchestrator for ClaimFlow.
+Canonical production release orchestrator for ClaimFlow.
 
 Runs, in order:
   1) (optional) git push to origin/main
@@ -18,7 +18,6 @@ import json
 import re
 import shutil
 import subprocess
-import sys
 import tarfile
 import tempfile
 from datetime import datetime, timezone
@@ -129,12 +128,12 @@ def _run_canary(*, server: str, tenant: str) -> Dict[str, Any]:
 
 
 def _repo_root_from_script() -> Path:
-    # backend/scripts/deploy_unified.py -> repo root is two levels up
+    # backend/scripts/release_production.py -> repo root is two levels up
     return Path(__file__).resolve().parents[2]
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Unified ClaimFlow production deploy")
+    parser = argparse.ArgumentParser(description="Canonical ClaimFlow production release")
     parser.add_argument("--tenant", default=DEFAULT_TENANT, help="Tenant UUID for post-deploy canary")
     parser.add_argument("--server", default=DEFAULT_SERVER, help="Hetzner SSH target")
     parser.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR, help="Remote deploy directory")

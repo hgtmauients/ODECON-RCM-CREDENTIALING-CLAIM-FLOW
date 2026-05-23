@@ -171,7 +171,7 @@ From your laptop, run one command to orchestrate:
 
 ```bash
 cd "C:\Users\natha\OneDrive - ohanadoc.com\Documents\Desktop\ODECON-RCM-CREDENTIALING"
-py backend/scripts/deploy_unified.py --tenant 00000000-0000-0000-0000-000000000001
+py backend/scripts/release_production.py --tenant 00000000-0000-0000-0000-000000000001
 ```
 
 Notes:
