@@ -160,6 +160,26 @@ cd webapp
 vercel deploy --prod --yes
 ```
 
+### Unified one-command deploy (Git + Vercel + Hetzner + Canary)
+
+From your laptop, run one command to orchestrate:
+- git push `main`
+- Vercel production frontend deploy
+- Hetzner backend sync + rebuild
+- Alembic migrations
+- Production canary GO/NO-GO verification
+
+```bash
+cd "C:\Users\natha\OneDrive - ohanadoc.com\Documents\Desktop\ODECON-RCM-CREDENTIALING"
+py backend/scripts/deploy_unified.py --tenant 00000000-0000-0000-0000-000000000001
+```
+
+Notes:
+- Exit code `0` = GO, exit code `10` = NO-GO.
+- Script prints a final JSON summary including Vercel URL and canary JSON.
+- Use `--skip-vercel`, `--skip-hetzner`, `--skip-canary`, or `--skip-git-push` for partial runs.
+- If you intentionally have local uncommitted changes (not recommended), pass `--allow-dirty`.
+
 ### One-command production canary verification (ClaimFlow)
 
 Run this inside the backend container to execute a safe synthetic lifecycle
