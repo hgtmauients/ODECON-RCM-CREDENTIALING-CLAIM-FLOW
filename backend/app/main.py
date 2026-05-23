@@ -150,6 +150,7 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health():
         from core.database import engine
+        from core.scheduler import SCHEDULER_ENABLED
         try:
             async with engine.connect() as conn:
                 await conn.execute(sa_text("SELECT 1"))
@@ -157,10 +158,22 @@ def create_app() -> FastAPI:
         except Exception:
             db_ok = False
 
+        redis_ok = True
+        redis_url = os.getenv("REDIS_URL")
+        if redis_url:
+            try:
+                import redis
+                client = redis.Redis.from_url(redis_url, socket_connect_timeout=1, socket_timeout=1)
+                redis_ok = bool(client.ping())
+            except Exception:
+                redis_ok = False
+
         body = {
             "status": "ok" if db_ok else "degraded",
             "service": "ClaimFlow",
             "database": db_ok,
+            "redis": redis_ok,
+            "scheduler_enabled": SCHEDULER_ENABLED,
         }
         return JSONResponse(status_code=200 if db_ok else 503, content=body)
 

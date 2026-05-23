@@ -40,6 +40,21 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function RoleRoute({
+  children,
+  requiresAnyRole,
+}: {
+  children: React.ReactNode;
+  requiresAnyRole: string[];
+}) {
+  const { isAuthenticated, user } = useAuth();
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  const roles = user?.roles || [];
+  const allowed = requiresAnyRole.some((role) => roles.includes(role));
+  if (!allowed) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
 function PageLoader() {
   return (
     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh' }}>
@@ -76,14 +91,38 @@ export default function App() {
                         <Route path="/edi/:fileId" element={<EdiFileDebug />} />
                         <Route path="/patients" element={<PatientManagement />} />
                         <Route path="/credentialing" element={<CredentialingQueue />} />
-                        <Route path="/admin/payers" element={<PayerProfiles />} />
-                        <Route path="/admin/payers/wizard" element={<PayerWizard />} />
-                        <Route path="/admin/payers/:payerId" element={<PayerProfileEditor />} />
-                        <Route path="/admin/payers/:payerId/rules" element={<RuleBuilder />} />
-                        <Route path="/admin/payers/:payerId/rules/:ruleId" element={<RuleBuilder />} />
-                        <Route path="/admin/settings" element={<Settings />} />
-                        <Route path="/admin/users" element={<Users />} />
-                        <Route path="/admin/audit-log" element={<AuditLog />} />
+                        <Route
+                          path="/admin/payers"
+                          element={<RoleRoute requiresAnyRole={['admin', 'super_admin']}><PayerProfiles /></RoleRoute>}
+                        />
+                        <Route
+                          path="/admin/payers/wizard"
+                          element={<RoleRoute requiresAnyRole={['admin', 'super_admin']}><PayerWizard /></RoleRoute>}
+                        />
+                        <Route
+                          path="/admin/payers/:payerId"
+                          element={<RoleRoute requiresAnyRole={['admin', 'super_admin']}><PayerProfileEditor /></RoleRoute>}
+                        />
+                        <Route
+                          path="/admin/payers/:payerId/rules"
+                          element={<RoleRoute requiresAnyRole={['admin', 'super_admin']}><RuleBuilder /></RoleRoute>}
+                        />
+                        <Route
+                          path="/admin/payers/:payerId/rules/:ruleId"
+                          element={<RoleRoute requiresAnyRole={['admin', 'super_admin']}><RuleBuilder /></RoleRoute>}
+                        />
+                        <Route
+                          path="/admin/settings"
+                          element={<RoleRoute requiresAnyRole={['admin', 'super_admin']}><Settings /></RoleRoute>}
+                        />
+                        <Route
+                          path="/admin/users"
+                          element={<RoleRoute requiresAnyRole={['admin', 'super_admin']}><Users /></RoleRoute>}
+                        />
+                        <Route
+                          path="/admin/audit-log"
+                          element={<RoleRoute requiresAnyRole={['admin', 'super_admin']}><AuditLog /></RoleRoute>}
+                        />
                       </Routes>
                     </Suspense>
                   </Layout>

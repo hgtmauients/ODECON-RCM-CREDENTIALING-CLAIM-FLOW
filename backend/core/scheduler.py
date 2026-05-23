@@ -21,7 +21,9 @@ from apscheduler.triggers.cron import CronTrigger
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
-SCHEDULER_ENABLED = os.getenv("CLAIMFLOW_SCHEDULER_ENABLED", "false").lower() == "true"
+ENV = os.getenv("ENV", "development").lower()
+_default_scheduler_enabled = "true" if ENV == "production" else "false"
+SCHEDULER_ENABLED = os.getenv("CLAIMFLOW_SCHEDULER_ENABLED", _default_scheduler_enabled).lower() == "true"
 
 # Stable lock IDs (any 64-bit signed int). Different jobs use different IDs.
 _LOCK_ID_835_POLL = 0x1F00_835A_AAAA_0001
