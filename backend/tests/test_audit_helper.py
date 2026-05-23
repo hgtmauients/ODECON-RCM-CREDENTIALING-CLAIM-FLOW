@@ -8,6 +8,7 @@ context-manager mode logs success vs. failure correctly.
 
 import pytest
 from unittest.mock import MagicMock
+from contextlib import asynccontextmanager
 
 from api.auth import Principal
 
@@ -127,3 +128,66 @@ async def test_log_credential_access_adds_row():
     assert row.credential_type == "sftp_password"
     assert row.action == "viewed"
     assert row.payer_id == 123
+
+
+@pytest.mark.asyncio
+async def test_audit_failure_fallback_preserves_impersonation_metadata(fake_request, monkeypatch):
+    """
+    Failure-path control:
+    when an impersonated super_admin action raises, fallback audit logging must
+    preserve token/effective tenant context on the error row.
+    """
+    from core import audit
+    from core import database as core_database
+    from models.audit import SecurityAuditLog
+
+    acting_principal = Principal(
+        user_id="sa1",
+        tenant_id="22222222-2222-2222-2222-222222222222",
+        email="sa@example.com",
+        roles=["super_admin"],
+        token_tenant_id="11111111-1111-1111-1111-111111111111",
+    )
+
+    class _FallbackSession:
+        def __init__(self):
+            self.rows = []
+            self.committed = False
+
+        def add(self, row):
+            self.rows.append(row)
+
+        async def commit(self):
+            self.committed = True
+
+    fallback = _FallbackSession()
+
+    @asynccontextmanager
+    async def _fake_async_session_factory():
+        yield fallback
+
+    monkeypatch.setattr(core_database, "async_session_factory", _fake_async_session_factory)
+
+    # Simulate a business transaction failure inside the audit context.
+    db = MagicMock()
+    db.add = MagicMock()
+    with pytest.raises(RuntimeError, match="forced failure"):
+        async with audit.audit(
+            db,
+            acting_principal,
+            action="claim_submit",
+            resource_type="claim",
+            resource_id="999",
+            request=fake_request,
+        ):
+            raise RuntimeError("forced failure")
+
+    assert fallback.committed is True
+    assert len(fallback.rows) == 1
+    row = fallback.rows[0]
+    assert isinstance(row, SecurityAuditLog)
+    assert row.success is False
+    assert row.error_message == "forced failure"
+    assert row.extra_data["is_impersonating"] is True
+    assert row.extra_data["token_tenant_id"] == "11111111-1111-1111-1111-111111111111"
+    assert row.extra_data["effective_tenant_id"] == "22222222-2222-2222-2222-222222222222"
