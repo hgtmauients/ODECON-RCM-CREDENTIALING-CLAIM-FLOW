@@ -47,3 +47,19 @@ async def test_pruning_removes_expired_entries(monkeypatch):
     await store.seen("anything")
     # The transient nonce should be gone
     assert "transient" not in store._seen
+
+
+def test_production_requires_redis_url(monkeypatch):
+    monkeypatch.setattr(nonce_store, "_store", None)
+    monkeypatch.setattr(nonce_store, "ENV", "production")
+    monkeypatch.setattr(nonce_store, "REDIS_URL", "")
+    with pytest.raises(RuntimeError):
+        nonce_store._get_store()
+
+
+def test_dev_without_redis_uses_memory_store(monkeypatch):
+    monkeypatch.setattr(nonce_store, "_store", None)
+    monkeypatch.setattr(nonce_store, "ENV", "development")
+    monkeypatch.setattr(nonce_store, "REDIS_URL", "")
+    store = nonce_store._get_store()
+    assert isinstance(store, nonce_store._MemoryNonceStore)

@@ -354,14 +354,30 @@ async def test_step7_receive_835(client: AsyncClient, claim_data: dict):
         data = resp.json()
         assert data["success"] is True
         parse = data["data"].get("parse_result", {})
+        edi_file_id = data["data"]["id"]
         print(f"  [Step 7] 835 processed:")
+        print(f"           Claims extracted: {parse.get('claims_extracted', parse.get('claims_posted', 0))}")
         print(f"           Claims posted: {parse.get('claims_posted', 0)}")
         print(f"           Total paid: ${parse.get('total_paid', 0):.2f}")
         print(f"           Payments: {len(parse.get('payments', []))}")
         print(f"           Denials: {len(parse.get('denials', []))}")
 
-        # Verify payment was extracted
+        # Verify payment extraction + downstream posting workflow.
         assert parse.get("claims_posted", 0) >= 1 or parse.get("total_paid", 0) > 0, "No payment extracted from 835"
+        assert "auto_posting" in parse, "Expected auto_posting summary in 835 parse result"
+        assert "denial_processing" in parse, "Expected denial_processing summary in 835 parse result"
+
+        events_resp = await client.get(f"/api/rcm/claims/{claim_data['id']}/events")
+        assert events_resp.status_code == 200
+        events = events_resp.json()["data"]
+        payment_events = [e for e in events if e["event_type"] == "payment_posted" and e.get("edi_file_id") == edi_file_id]
+        assert payment_events, "No payment_posted event tied to uploaded 835 file"
+
+        if parse.get("denials"):
+            denials_resp = await client.get("/api/rcm/denials/cases")
+            assert denials_resp.status_code == 200
+            denial_cases = denials_resp.json()["data"]
+            assert any(d["claim_id"] == claim_data["id"] for d in denial_cases), "Expected denial case for uploaded 835"
     finally:
         os.unlink(temp_path)
 

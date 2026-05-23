@@ -63,6 +63,37 @@ async def test_log_audit_event_adds_row(principal, fake_request):
 
 
 @pytest.mark.asyncio
+async def test_log_audit_event_records_impersonation_context(fake_request):
+    """When super-admin acts on another tenant, audit metadata records both tenants."""
+    from core import audit
+    from models.audit import SecurityAuditLog
+
+    acting_principal = Principal(
+        user_id="sa1",
+        tenant_id="22222222-2222-2222-2222-222222222222",
+        email="sa@example.com",
+        roles=["super_admin"],
+        token_tenant_id="11111111-1111-1111-1111-111111111111",
+    )
+
+    db = MagicMock()
+    db.add = MagicMock()
+    await audit.log_audit_event(
+        db,
+        acting_principal,
+        action="tenant_support_action",
+        resource_type="claim",
+        resource_id="99",
+        request=fake_request,
+    )
+    row = db.add.call_args.args[0]
+    assert isinstance(row, SecurityAuditLog)
+    assert row.extra_data["is_impersonating"] is True
+    assert row.extra_data["token_tenant_id"] == "11111111-1111-1111-1111-111111111111"
+    assert row.extra_data["effective_tenant_id"] == "22222222-2222-2222-2222-222222222222"
+
+
+@pytest.mark.asyncio
 async def test_audit_context_logs_success(principal, fake_request):
     from core import audit
 
@@ -72,3 +103,27 @@ async def test_audit_context_logs_success(principal, fake_request):
         pass
     assert db.add.called
     assert db.add.call_args.args[0].success is True
+
+
+@pytest.mark.asyncio
+async def test_log_credential_access_adds_row():
+    from core import audit
+    from models.audit import CredentialAccessLog
+
+    db = MagicMock()
+    db.add = MagicMock()
+    await audit.log_credential_access(
+        db,
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        payer_id=123,
+        credential_type="sftp_password",
+        action="viewed",
+        reason="unit-test",
+    )
+
+    assert db.add.called
+    row = db.add.call_args.args[0]
+    assert isinstance(row, CredentialAccessLog)
+    assert row.credential_type == "sftp_password"
+    assert row.action == "viewed"
+    assert row.payer_id == 123

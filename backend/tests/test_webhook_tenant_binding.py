@@ -9,6 +9,7 @@ swapping the X-Tenant-ID header.
 import hashlib
 import hmac
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -82,5 +83,21 @@ async def test_body_tamper_rejects(cred_module):
     sig = _sign(secret, body, ts, "tenant-A")
     ok = await cred_module._verify_webhook_signature(
         payload=b'{"npi": "9999999999"}', signature=sig, secret=secret, timestamp=ts, tenant_id="tenant-A",
+    )
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_replay_backend_failure_rejects_closed(cred_module, monkeypatch):
+    body = b'{"npi": "1234567890"}'
+    ts = str(int(time.time()))
+    secret = "tenant-A-secret"
+    sig = _sign(secret, body, ts, "tenant-A")
+
+    import core.nonce_store as nonce_store
+    monkeypatch.setattr(nonce_store, "is_replay", AsyncMock(side_effect=RuntimeError("redis unavailable")))
+
+    ok = await cred_module._verify_webhook_signature(
+        payload=body, signature=sig, secret=secret, timestamp=ts, tenant_id="tenant-A",
     )
     assert ok is False

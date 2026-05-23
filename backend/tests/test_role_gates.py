@@ -7,6 +7,7 @@ set of routes that previously had no role enforcement (NEW-C4).
 
 import pytest
 from fastapi import HTTPException
+from unittest.mock import AsyncMock
 
 from api.auth import Principal
 
@@ -71,3 +72,30 @@ def test_credentialing_cannot_act_as_billing_or_admin():
     with pytest.raises(HTTPException):
         p.require_role("admin")
     p.require_role("credentialing")  # self
+
+
+@pytest.mark.asyncio
+async def test_readonly_blocked_from_global_search_endpoint():
+    from api.search import global_search
+
+    with pytest.raises(HTTPException) as ei:
+        await global_search(q="abc", db=AsyncMock(), current_user=_readonly_principal())
+    assert ei.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_readonly_blocked_from_dashboard_summary_endpoint():
+    from api.dashboard import dashboard_summary
+
+    with pytest.raises(HTTPException) as ei:
+        await dashboard_summary(db=AsyncMock(), current_user=_readonly_principal())
+    assert ei.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_billing_blocked_from_caqh_admin_endpoint():
+    from api.rcm.caqh import search_caqh_by_npi
+
+    with pytest.raises(HTTPException) as ei:
+        await search_caqh_by_npi(npi="1234567890", db=AsyncMock(), current_user=_billing_principal())
+    assert ei.value.status_code == 403
