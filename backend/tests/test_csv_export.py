@@ -30,6 +30,16 @@ def test_serialize_value_handles_common_types():
     assert _serialize_value(dt) == "2026-04-22T00:00:00+00:00"
 
 
+def test_serialize_value_neutralizes_spreadsheet_formula_cells():
+    assert _serialize_value("=2+2") == "'=2+2"
+    assert _serialize_value("+SUM(A1:A2)") == "'+SUM(A1:A2)"
+    assert _serialize_value("-10+20") == "'-10+20"
+    assert _serialize_value("@evil") == "'@evil"
+    # Leading spaces are preserved while still neutralizing formula execution.
+    assert _serialize_value("   =cmd|' /C calc'!A0") == "'   =cmd|' /C calc'!A0"
+    assert _serialize_value("safe-text") == "safe-text"
+
+
 async def _consume(response) -> str:
     """Drain a StreamingResponse to a string for assertions."""
     chunks = []

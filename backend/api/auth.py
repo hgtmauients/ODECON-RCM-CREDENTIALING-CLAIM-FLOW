@@ -128,7 +128,8 @@ def _decode_token(token: str) -> Dict[str, Any]:
         except jwt.ExpiredSignatureError:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
         except jwt.InvalidTokenError as exc:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}")
+            logger.info("RS256 token validation failed: %s", exc)
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
     # HS256 path - audience and issuer are always verified when configured.
     options: Dict[str, Any] = {
@@ -149,7 +150,8 @@ def _decode_token(token: str) -> Dict[str, Any]:
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
     except jwt.InvalidTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}")
+        logger.info("JWT validation failed: %s", exc)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
 async def get_current_user(

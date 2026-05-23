@@ -1,5 +1,6 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
+from starlette.requests import Request
 
 import adapter.main as adapter
 
@@ -16,6 +17,8 @@ def reset_adapter_globals(monkeypatch):
     monkeypatch.setattr(adapter, "REQUIRE_AUTH", False)
     monkeypatch.setattr(adapter, "ADAPTER_API_KEY", "")
     monkeypatch.setattr(adapter, "ADAPTER_SHARED_SECRET", "")
+    monkeypatch.setattr(adapter, "TRUSTED_PROXY_CIDRS", "")
+    monkeypatch.setattr(adapter, "_TRUSTED_PROXY_NETWORKS", [])
     monkeypatch.setattr(adapter, "LICENSE_UPSTREAM_URL", "")
     monkeypatch.setattr(adapter, "BACKGROUND_UPSTREAM_URL", "")
     monkeypatch.setattr(adapter, "MAX_RETRIES", 2)
@@ -185,6 +188,46 @@ async def test_adapter_rate_limit_blocks_excess_requests(monkeypatch):
     assert first.status_code == 200
     assert second.status_code == 429
     assert second.json()["detail"] == "adapter_rate_limit_exceeded"
+
+
+def test_client_bucket_key_ignores_xff_without_trusted_proxy():
+    req = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/license/verify",
+            "headers": [(b"x-forwarded-for", b"203.0.113.9, 10.0.0.5")],
+            "client": ("10.0.0.5", 1234),
+        }
+    )
+    assert adapter._client_bucket_key(req) == "10.0.0.5"
+
+
+def test_client_bucket_key_uses_xff_with_trusted_proxy(monkeypatch):
+    monkeypatch.setattr(adapter, "_TRUSTED_PROXY_NETWORKS", adapter._parse_trusted_proxy_cidrs("10.0.0.0/8"))
+    req = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/license/verify",
+            "headers": [(b"x-forwarded-for", b"203.0.113.9, 10.0.0.5")],
+            "client": ("10.0.0.5", 1234),
+        }
+    )
+    assert adapter._client_bucket_key(req) == "203.0.113.9"
+
+
+@pytest.mark.asyncio
+async def test_adapter_requires_configured_auth_when_enforced(monkeypatch):
+    monkeypatch.setattr(adapter, "REQUIRE_AUTH", True)
+    monkeypatch.setattr(adapter, "ADAPTER_API_KEY", "")
+    monkeypatch.setattr(adapter, "ADAPTER_SHARED_SECRET", "")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/license/verify", params={"state": "HI", "license_number": "HI-12345"})
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "adapter_auth_not_configured"
 
 
 @pytest.mark.asyncio

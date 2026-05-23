@@ -24,6 +24,8 @@ from typing import Any, Callable, Iterable, List, Optional, Sequence
 
 from fastapi.responses import StreamingResponse
 
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
 
 def _safe_filename(name: str) -> str:
     """Strip any character not in the conservative filename allowlist."""
@@ -43,12 +45,20 @@ def _serialize_value(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (dict, list)):
-        return repr(value)
-    return str(value)
+        text = value.isoformat()
+    elif isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, (dict, list)):
+        text = repr(value)
+    else:
+        text = str(value)
+
+    # Spreadsheet apps may evaluate cells that begin with formula sigils.
+    # Neutralize values that are likely to be interpreted as formulas.
+    candidate = text.lstrip(" ")
+    if candidate and candidate[0] in _CSV_FORMULA_PREFIXES:
+        return "'" + text
+    return text
 
 
 def csv_response(

@@ -17,11 +17,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import time
 from datetime import datetime, UTC
-from typing import Any
+from typing import Any, Union
 from urllib.parse import urlparse
 
 import httpx
@@ -36,14 +37,16 @@ BACKGROUND_UPSTREAM_URL = os.getenv("BACKGROUND_UPSTREAM_URL", "").strip()
 HTTP_TIMEOUT_SECONDS = float(os.getenv("ADAPTER_HTTP_TIMEOUT_SECONDS", "10"))
 MAX_RETRIES = max(0, int(os.getenv("ADAPTER_MAX_RETRIES", "2")))
 RETRY_BACKOFF_SECONDS = float(os.getenv("ADAPTER_RETRY_BACKOFF_SECONDS", "0.2"))
-REQUIRE_AUTH = os.getenv("ADAPTER_REQUIRE_AUTH", "false").strip().lower() in {"1", "true", "yes", "y"}
+REQUIRE_AUTH = os.getenv("ADAPTER_REQUIRE_AUTH", "true").strip().lower() in {"1", "true", "yes", "y"}
 ADAPTER_API_KEY = os.getenv("ADAPTER_API_KEY", "").strip()
 ADAPTER_SHARED_SECRET = os.getenv("ADAPTER_SHARED_SECRET", "").strip()
 AUTH_WINDOW_SECONDS = max(30, int(os.getenv("ADAPTER_AUTH_WINDOW_SECONDS", "300")))
 RATE_LIMIT_REQUESTS = max(1, int(os.getenv("ADAPTER_RATE_LIMIT_REQUESTS", "120")))
 RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("ADAPTER_RATE_LIMIT_WINDOW_SECONDS", "60")))
+TRUSTED_PROXY_CIDRS = os.getenv("ADAPTER_TRUSTED_PROXY_CIDRS", "").strip()
 _RATE_LIMIT_BUCKETS: dict[str, list[float]] = {}
 _RATE_LIMIT_LOCK = asyncio.Lock()
+IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 
 
 class BackgroundCheckRequest(BaseModel):
@@ -69,6 +72,32 @@ def _requires_auth() -> bool:
     return REQUIRE_AUTH or bool(ADAPTER_API_KEY) or bool(ADAPTER_SHARED_SECRET)
 
 
+def _parse_trusted_proxy_cidrs(raw: str) -> list[IPNetwork]:
+    trusted: list[IPNetwork] = []
+    for part in (raw or "").split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            trusted.append(ipaddress.ip_network(token, strict=False))
+        except ValueError:
+            continue
+    return trusted
+
+
+_TRUSTED_PROXY_NETWORKS = _parse_trusted_proxy_cidrs(TRUSTED_PROXY_CIDRS)
+
+
+def _is_trusted_proxy(peer_ip: str) -> bool:
+    if not _TRUSTED_PROXY_NETWORKS:
+        return False
+    try:
+        addr = ipaddress.ip_address(peer_ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in _TRUSTED_PROXY_NETWORKS)
+
+
 def _signature_payload(*, timestamp: str, method: str, path: str, body: bytes) -> str:
     body_hash = hashlib.sha256(body).hexdigest()
     return f"{timestamp}.{method.upper()}.{path}.{body_hash}"
@@ -77,6 +106,10 @@ def _signature_payload(*, timestamp: str, method: str, path: str, body: bytes) -
 async def _enforce_adapter_auth(request: Request, body: bytes) -> None:
     if not _requires_auth():
         return
+    if not ADAPTER_API_KEY and not ADAPTER_SHARED_SECRET:
+        # Fail closed: if auth is required but no mechanism is configured,
+        # deny requests rather than silently running open.
+        raise HTTPException(status_code=503, detail="adapter_auth_not_configured")
 
     if ADAPTER_API_KEY:
         presented_key = request.headers.get("X-Adapter-Key", "")
@@ -110,11 +143,15 @@ async def _enforce_adapter_auth(request: Request, body: bytes) -> None:
 
 
 def _client_bucket_key(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "").strip()
-    if fwd:
-        return fwd.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
+    peer_ip = request.client.host if request.client and request.client.host else "unknown"
+    if _is_trusted_proxy(peer_ip):
+        fwd = request.headers.get("x-forwarded-for", "").strip()
+        if fwd:
+            first_hop = fwd.split(",")[0].strip()
+            if first_hop:
+                return first_hop
+    if peer_ip:
+        return peer_ip
     return "unknown"
 
 
