@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
@@ -106,6 +106,18 @@ describe('CredentialingQueue', () => {
     );
   };
 
+  async function click(user: ReturnType<typeof userEvent.setup>, element: Element) {
+    await act(async () => {
+      await user.click(element as HTMLElement);
+    });
+  }
+
+  async function typeText(user: ReturnType<typeof userEvent.setup>, element: Element, text: string) {
+    await act(async () => {
+      await user.type(element as HTMLElement, text);
+    });
+  }
+
   function mockListSuccess(data = mockCredentialingRecords) {
     vi.mocked(apiService.get).mockResolvedValue({ success: true, data });
   }
@@ -114,6 +126,7 @@ describe('CredentialingQueue', () => {
     it('renders page header correctly', async () => {
       mockListSuccess([]);
       renderComponent();
+      await waitFor(() => expect(apiService.get).toHaveBeenCalled());
 
       expect(screen.getByText('Provider Credentialing Queue')).toBeInTheDocument();
       expect(screen.getByText('Review and approve provider credentialing applications')).toBeInTheDocument();
@@ -178,7 +191,7 @@ describe('CredentialingQueue', () => {
       await waitFor(() => screen.getByText('John Doe'));
 
       const reviewButton = screen.getByText(/Review \(1\)/);
-      await user.click(reviewButton);
+      await click(user, reviewButton);
 
       await waitFor(() => {
         expect(apiService.get).toHaveBeenCalledWith(
@@ -194,8 +207,8 @@ describe('CredentialingQueue', () => {
 
       await waitFor(() => screen.getByText('John Doe'));
 
-      await user.click(screen.getByText(/Pending/));
-      await user.click(screen.getByText(/All/));
+      await click(user, screen.getByText(/Pending/));
+      await click(user, screen.getByText(/All/));
 
       await waitFor(() => {
         expect(apiService.get).toHaveBeenLastCalledWith(
@@ -258,10 +271,10 @@ describe('CredentialingQueue', () => {
       await waitFor(() => screen.getByText('John Doe'));
 
       const providerCard = screen.getByText('John Doe').closest('div[style*="cursor"]');
-      await user.click(providerCard!);
+      await click(user, providerCard!);
 
       const approveButton = screen.getByText('Approve Provider');
-      await user.click(approveButton);
+      await click(user, approveButton);
 
       await waitFor(() => {
         expect(apiService.post).toHaveBeenCalledWith(
@@ -279,13 +292,13 @@ describe('CredentialingQueue', () => {
       await waitFor(() => screen.getByText('John Doe'));
 
       const providerCard = screen.getByText('John Doe').closest('div[style*="cursor"]');
-      await user.click(providerCard!);
+      await click(user, providerCard!);
 
       const textareas = screen.getAllByRole('textbox');
-      await user.type(textareas[1], 'Missing required documentation');
+      await typeText(user, textareas[1], 'Missing required documentation');
 
       const rejectButton = screen.getByText('Reject Provider');
-      await user.click(rejectButton);
+      await click(user, rejectButton);
 
       // Should prompt for reason (depends on UI implementation)
       // After providing reason, it should call:
@@ -310,7 +323,7 @@ describe('CredentialingQueue', () => {
       await waitFor(() => screen.getByText('John Doe'));
 
       const providerCard = screen.getByText('John Doe').closest('div[style*="cursor"]');
-      await user.click(providerCard!);
+      await click(user, providerCard!);
 
       expect(screen.getByText('Provider Credentialing Details')).toBeInTheDocument();
     });
@@ -320,7 +333,7 @@ describe('CredentialingQueue', () => {
       renderComponent();
 
       await waitFor(() => screen.getByText('John Doe'));
-      await user.click(screen.getByText('John Doe').closest('div[style*="cursor"]')!);
+      await click(user, screen.getByText('John Doe').closest('div[style*="cursor"]')!);
 
       const modal = screen.getByText('Provider Credentialing Details').closest('div');
       expect(within(modal!).getByText(/john.doe@example.com/)).toBeInTheDocument();
@@ -333,11 +346,11 @@ describe('CredentialingQueue', () => {
       renderComponent();
 
       await waitFor(() => screen.getByText('John Doe'));
-      await user.click(screen.getByText('John Doe').closest('div[style*="cursor"]')!);
+      await click(user, screen.getByText('John Doe').closest('div[style*="cursor"]')!);
 
       expect(screen.getByText('Provider Credentialing Details')).toBeInTheDocument();
 
-      await user.click(screen.getByText('Close'));
+      await click(user, screen.getByText('Close'));
 
       await waitFor(() => {
         expect(screen.queryByText('Provider Credentialing Details')).not.toBeInTheDocument();

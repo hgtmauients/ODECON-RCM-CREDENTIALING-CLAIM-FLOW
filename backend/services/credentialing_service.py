@@ -5,9 +5,13 @@ import httpx
 import os
 import logging
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 class CredentialingService:
     """Service for automated provider credentialing checks"""
@@ -46,7 +50,7 @@ class CredentialingService:
                             "provider_type": provider.get("enumeration_type", ""),
                             "taxonomy": [t.get("desc") for t in provider.get("taxonomies", [])],
                             "address": provider.get("addresses", [{}])[0] if provider.get("addresses") else {},
-                            "verified_at": datetime.utcnow().isoformat()
+                            "verified_at": _utc_iso()
                         }
                 
                 return {
@@ -84,7 +88,7 @@ class CredentialingService:
                     "error": "state_license_provider_not_configured",
                     "requires_manual_review": True,
                     "source": "manual_policy",
-                    "checked_at": datetime.utcnow().isoformat(),
+                    "checked_at": _utc_iso(),
                 }
 
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -116,7 +120,7 @@ class CredentialingService:
                         "discipline_history": data.get("discipline_history", []),
                         "requires_manual_review": not verified,
                         "source": "state_license_provider",
-                        "verified_at": datetime.utcnow().isoformat(),
+                        "verified_at": _utc_iso(),
                     }
 
             return {
@@ -126,7 +130,7 @@ class CredentialingService:
                 "error": f"state_license_lookup_failed_{response.status_code}",
                 "requires_manual_review": True,
                 "source": "state_license_provider",
-                "checked_at": datetime.utcnow().isoformat(),
+                "checked_at": _utc_iso(),
             }
 
         except Exception as e:
@@ -167,14 +171,14 @@ class CredentialingService:
                         "excluded": data.get("excluded", False),
                         "exclusion_date": data.get("exclusion_date"),
                         "exclusion_type": data.get("exclusion_type"),
-                        "checked_at": datetime.utcnow().isoformat()
+                        "checked_at": _utc_iso()
                     }
             
             return {
                 "verified": False,
                 "excluded": None,
                 "error": f"OIG lookup failed with status {response.status_code}",
-                "checked_at": datetime.utcnow().isoformat()
+                "checked_at": _utc_iso()
             }
         
         except Exception as e:
@@ -209,14 +213,14 @@ class CredentialingService:
                         "verified": True,
                         "excluded": data.get("excluded", False),
                         "exclusion_date": data.get("exclusion_date"),
-                        "checked_at": datetime.utcnow().isoformat()
+                        "checked_at": _utc_iso()
                     }
             
             return {
                 "verified": False,
                 "excluded": None,
                 "error": f"SAM lookup failed with status {response.status_code}",
-                "checked_at": datetime.utcnow().isoformat()
+                "checked_at": _utc_iso()
             }
         
         except Exception as e:
@@ -244,7 +248,7 @@ class CredentialingService:
                 "clear": False,
                 "findings": [],
                 "recommendation": "requires_review",
-                "checked_at": datetime.utcnow().isoformat(),
+                "checked_at": _utc_iso(),
                 "source": "manual_policy",
                 "error": "background_check_provider_not_configured",
             }
@@ -268,7 +272,7 @@ class CredentialingService:
                         "clear": clear,
                         "findings": data.get("findings", []),
                         "recommendation": data.get("recommendation", "clear" if clear else "requires_review"),
-                        "checked_at": datetime.utcnow().isoformat(),
+                        "checked_at": _utc_iso(),
                         "source": "background_check_provider",
                     }
 
@@ -277,7 +281,7 @@ class CredentialingService:
                     "clear": False,
                     "findings": [],
                     "recommendation": "requires_review",
-                    "checked_at": datetime.utcnow().isoformat(),
+                    "checked_at": _utc_iso(),
                     "source": "background_check_provider",
                     "error": f"background_check_lookup_failed_{response.status_code}",
                 }
@@ -288,7 +292,7 @@ class CredentialingService:
                 "clear": False,
                 "findings": [],
                 "recommendation": "requires_review",
-                "checked_at": datetime.utcnow().isoformat(),
+                "checked_at": _utc_iso(),
                 "source": "background_check_provider",
                 "error": str(e),
             }
@@ -299,7 +303,7 @@ class CredentialingService:
             "clear": False,
             "findings": [],
             "recommendation": "requires_review",
-            "checked_at": datetime.utcnow().isoformat(),
+            "checked_at": _utc_iso(),
             "source": "manual_policy",
         }
     
