@@ -8,7 +8,7 @@ JWT_ALGORITHM=RS256 + JWT_JWKS_URL is configured).
 Roles are stored as a JSONB array of strings drawn from the ROLES hierarchy
 in api/auth.py: super_admin / admin / billing / credentialing / readonly.
 
-Passwords are stored as Argon2 hashes via passlib. We never store plaintext.
+Passwords are stored as Argon2 hashes. We never store plaintext.
 """
 
 import uuid

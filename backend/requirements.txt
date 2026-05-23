@@ -15,7 +15,7 @@ redis>=5.0.0
 email-validator>=2.0.0
 sentry-sdk[fastapi]>=2.0.0
 # Argon2 password hashing for the User table (api/admin/users + dev_login)
-passlib[argon2]>=1.7.4
+argon2-cffi>=23.1.0
 
 # Dev/test
 pytest>=8.0.0

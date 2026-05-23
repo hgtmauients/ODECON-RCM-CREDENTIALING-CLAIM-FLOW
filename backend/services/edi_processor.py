@@ -602,22 +602,29 @@ class EDIProcessor:
                 return
             cas_list = claim_record.get("carc_codes", [])
             primary_cas = cas_list[0] if cas_list else None
+            paid_amount = float(claim_record.get("paid_amount") or 0.0)
+            denied_amount = float(sum(c.get("amount", 0) for c in cas_list))
             flat = {
                 "claim_number": claim_record["claim_number"],
                 "status_code": claim_record["status_code"],
-                "paid_amount": claim_record["paid_amount"],
+                "paid_amount": paid_amount,
                 "carc_codes": cas_list,
                 "carc": f"{primary_cas['group']}-{primary_cas['code']}" if primary_cas else None,
                 "rarc": claim_record.get("rarc"),
-                "denied_amount": sum(c.get("amount", 0) for c in cas_list),
+                "denied_amount": denied_amount,
                 "denial_description": claim_record.get("denial_description", ""),
                 "line_number": claim_record.get("line_number"),
             }
-            if claim_record["paid_amount"] > 0 and not cas_list:
+
+            # 835 remittances can include both a paid amount and CAS adjustments
+            # for the same claim (partial payment + denial/adjustment). In that
+            # case we need BOTH downstream flows: payment auto-posting and denial
+            # case processing.
+            if paid_amount > 0:
                 payments.append(flat)
-            elif cas_list:
+            if cas_list:
                 denials.append(flat)
-            else:
+            elif paid_amount <= 0:
                 payments.append(flat)
 
         current_claim = None

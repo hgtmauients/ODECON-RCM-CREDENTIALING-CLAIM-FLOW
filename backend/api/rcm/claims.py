@@ -729,6 +729,7 @@ async def get_claim_events(
             "to_state": e.to_state,
             "message": e.message,
             "data": e.data,
+            "edi_file_id": e.edi_file_id,
         } for e in events],
     }
 
