@@ -32,6 +32,8 @@ services:
       ENV: ${ENV:-development}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       EDI_STORAGE_PATH: ${EDI_STORAGE_PATH:-/data/edi}
+      STATE_LICENSE_PROVIDER_URL: ${STATE_LICENSE_PROVIDER_URL:-http://provider-adapter:8010/license/verify}
+      BACKGROUND_CHECK_PROVIDER_URL: ${BACKGROUND_CHECK_PROVIDER_URL:-http://provider-adapter:8010/background/check}
       # API_CERT_KEY intentionally omitted; set in backend/.env if you want
       # to test the API-Cert integration locally.
     volumes:
@@ -40,7 +42,26 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      provider-adapter:
+        condition: service_started
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  provider-adapter:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8010:8010"
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      ADAPTER_HTTP_TIMEOUT_SECONDS: ${ADAPTER_HTTP_TIMEOUT_SECONDS:-10}
+      LICENSE_UPSTREAM_URL: ${LICENSE_UPSTREAM_URL:-}
+      BACKGROUND_UPSTREAM_URL: ${BACKGROUND_UPSTREAM_URL:-}
+    volumes:
+      - ./backend:/app
+    command: uvicorn adapter.main:app --host 0.0.0.0 --port 8010 --reload
 
   frontend:
     build:

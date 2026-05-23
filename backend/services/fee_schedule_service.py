@@ -4,14 +4,18 @@ Manages CPT code pricing by payer, state, and date
 Ensures accurate billing rates with audit trail
 """
 
+import os
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_, case, func
 from typing import List, Dict, Any, Optional
 from datetime import date, datetime
-from decimal import Decimal
-import logging
+from decimal import Decimal, InvalidOperation
+
+from models.rcm import FeeSchedule, PayerProfile
 
 logger = logging.getLogger(__name__)
+ENV = os.getenv("ENV", "development")
 
 
 class FeeScheduleNotFoundError(Exception):
@@ -27,6 +31,26 @@ class FeeScheduleService:
     
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    _DEFAULT_MEDICARE_RATES = {
+        "99441": Decimal("55.00"),    # Phone E/M 5-10 min
+        "99442": Decimal("85.00"),    # Phone E/M 11-20 min
+        "99443": Decimal("125.00"),   # Phone E/M 21-30 min
+        "99213": Decimal("135.00"),   # Office visit established low
+        "99214": Decimal("195.00"),   # Office visit established moderate
+        "99215": Decimal("260.00"),   # Office visit established high
+        "99203": Decimal("180.00"),   # Office visit new low
+        "99204": Decimal("265.00"),   # Office visit new moderate
+        "99205": Decimal("310.00"),   # Office visit new high
+    }
+
+    _MODIFIER_MULTIPLIERS = {
+        "50": Decimal("1.50"),  # Bilateral procedure
+        "51": Decimal("0.50"),  # Multiple procedures
+        "52": Decimal("0.50"),  # Reduced services
+        "62": Decimal("0.625"),  # Co-surgeons
+        "80": Decimal("0.16"),  # Assistant surgeon
+    }
     
     async def calculate_charges(
         self,
@@ -98,10 +122,64 @@ class FeeScheduleService:
             }
         }
     
+    async def get_fee_for_cpt(
+        self,
+        cpt_code: str,
+        payer: Optional[str | int] = None,
+        state: Optional[str] = None,
+        service_date: Optional[date] = None,
+    ) -> Decimal:
+        """
+        Public lookup helper used by tests and billing flows.
+        """
+        if not cpt_code:
+            raise ValueError("cpt_code is required")
+        if service_date is None:
+            service_date = date.today()
+        return await self._get_fee(
+            cpt_code=cpt_code,
+            payer_id=payer,
+            state_code=state,
+            service_date=service_date,
+        )
+
+    async def calculate_charge_with_modifiers(
+        self,
+        cpt_code: str,
+        modifiers: List[str],
+        payer: Optional[str | int] = None,
+        state: Optional[str] = None,
+        service_date: Optional[date] = None,
+    ) -> Decimal:
+        """
+        Public helper for computing a single CPT charge.
+        """
+        base_fee = await self.get_fee_for_cpt(cpt_code=cpt_code, payer=payer, state=state, service_date=service_date)
+        return self._apply_modifier_adjustments(base_fee, modifiers)
+
+    @staticmethod
+    def _extract_fee_amount(record: Any) -> Optional[Decimal]:
+        for field in ("allowable_amount", "fee", "non_facility_rate", "facility_rate"):
+            value = getattr(record, field, None)
+            if value is not None:
+                if isinstance(value, Decimal):
+                    return value
+                if isinstance(value, (int, float)):
+                    return Decimal(str(value))
+                if isinstance(value, str):
+                    try:
+                        return Decimal(value)
+                    except InvalidOperation:
+                        continue
+        return None
+
+    def _default_rate(self, cpt_code: str) -> Decimal:
+        return self._DEFAULT_MEDICARE_RATES.get(cpt_code, Decimal("100.00"))
+
     async def _get_fee(
         self,
         cpt_code: str,
-        payer_id: Optional[int],
+        payer_id: Optional[str | int],
         state_code: Optional[str],
         service_date: date
     ) -> Decimal:
@@ -115,44 +193,70 @@ class FeeScheduleService:
         4. National average rate (fallback)
         """
         
-        # TODO: Implement actual database lookup once fee_schedules table exists
-        # For now, use Medicare-based defaults
-        
-        # This would be the real implementation:
-        # query = select(FeeSchedule).where(
-        #     and_(
-        #         FeeSchedule.cpt_code == cpt_code,
-        #         FeeSchedule.effective_date <= service_date,
-        #         FeeSchedule.expiration_date >= service_date
-        #     )
-        # )
-        # if payer_id:
-        #     query = query.where(FeeSchedule.payer_id == payer_id)
-        # if state_code:
-        #     query = query.where(FeeSchedule.state_code == state_code)
-        # result = await self.db.execute(query)
-        # fee_record = result.scalar_one_or_none()
-        # if fee_record:
-        #     return Decimal(str(fee_record.fee_amount))
-        
-        # Medicare-based defaults (2025 rates) until database is populated
-        medicare_rates = {
-            "99441": Decimal("55.00"),    # Phone E/M 5-10 min
-            "99442": Decimal("85.00"),    # Phone E/M 11-20 min
-            "99443": Decimal("125.00"),   # Phone E/M 21-30 min
-            "99213": Decimal("135.00"),   # Office visit established low
-            "99214": Decimal("195.00"),   # Office visit established moderate
-            "99215": Decimal("260.00"),   # Office visit established high
-            "99203": Decimal("180.00"),   # Office visit new low
-            "99204": Decimal("265.00"),   # Office visit new moderate
-            "99205": Decimal("310.00"),   # Office visit new high
-        }
-        
-        fee = medicare_rates.get(cpt_code, Decimal("100.00"))  # Default fallback
-        
-        logger.info(f"Fee lookup: CPT {cpt_code} = ${fee} (source: Medicare default)")
-        
-        return fee
+        query = (
+            select(FeeSchedule)
+            .join(PayerProfile, PayerProfile.id == FeeSchedule.payer_id)
+            .where(and_(
+                FeeSchedule.cpt_code == cpt_code,
+                FeeSchedule.effective_date <= service_date,
+                or_(FeeSchedule.end_date.is_(None), FeeSchedule.end_date >= service_date),
+            ))
+        )
+
+        if payer_id is not None:
+            if isinstance(payer_id, int):
+                query = query.where(FeeSchedule.payer_id == payer_id)
+            else:
+                payer_text = str(payer_id).strip()
+                if payer_text.isdigit():
+                    query = query.where(FeeSchedule.payer_id == int(payer_text))
+                else:
+                    query = query.where(
+                        or_(
+                            PayerProfile.name == payer_text,
+                            PayerProfile.display_name == payer_text,
+                            PayerProfile.payer_id == payer_text,
+                        )
+                    )
+
+        if state_code:
+            query = query.where(or_(FeeSchedule.state_code == state_code, FeeSchedule.state_code.is_(None)))
+            state_rank = case(
+                (FeeSchedule.state_code == state_code, 0),
+                (FeeSchedule.state_code.is_(None), 1),
+                else_=2,
+            )
+            query = query.order_by(state_rank, FeeSchedule.effective_date.desc())
+        else:
+            query = query.order_by(FeeSchedule.effective_date.desc())
+
+        result = await self.db.execute(query.limit(1))
+        fee_record = result.scalar_one_or_none()
+        if fee_record is not None:
+            amount = self._extract_fee_amount(fee_record)
+            if amount is not None:
+                logger.info(
+                    "Fee lookup: CPT=%s payer=%s state=%s amount=%s source=fee_schedules",
+                    cpt_code, payer_id, state_code, amount,
+                )
+                return amount
+
+        if payer_id is not None:
+            raise FeeScheduleNotFoundError(
+                f"No active fee schedule for CPT {cpt_code}, payer={payer_id}, state={state_code}, date={service_date}"
+            )
+
+        if ENV == "development":
+            fallback = self._default_rate(cpt_code)
+            logger.warning(
+                "Fee schedule miss in development: CPT=%s payer=%s state=%s using fallback=%s",
+                cpt_code, payer_id, state_code, fallback,
+            )
+            return fallback
+
+        raise FeeScheduleNotFoundError(
+            f"No active fee schedule for CPT {cpt_code}, payer={payer_id}, state={state_code}, date={service_date}"
+        )
     
     def _apply_modifier_adjustments(
         self,
@@ -174,8 +278,8 @@ class FeeScheduleService:
         for modifier in modifiers:
             if modifier == "26":  # Professional component only
                 adjusted_fee = adjusted_fee * Decimal("0.40")
-            elif modifier == "51":  # Multiple procedures
-                adjusted_fee = adjusted_fee * Decimal("0.50")
+            elif modifier in self._MODIFIER_MULTIPLIERS:
+                adjusted_fee = adjusted_fee * self._MODIFIER_MULTIPLIERS[modifier]
             # Modifier 95 (telehealth) typically doesn't change the fee
             # Other modifiers maintain 100% of base fee
         
@@ -213,12 +317,48 @@ class FeeScheduleService:
         Returns:
             Metadata dict with source, effective_date, last_updated, etc.
         """
+        filters = []
+        if payer_id is not None:
+            if isinstance(payer_id, int):
+                filters.append(FeeSchedule.payer_id == payer_id)
+            else:
+                payer_text = str(payer_id).strip()
+                if payer_text.isdigit():
+                    filters.append(FeeSchedule.payer_id == int(payer_text))
+                else:
+                    filters.append(
+                        FeeSchedule.payer_id.in_(
+                            select(PayerProfile.id).where(
+                                or_(
+                                    PayerProfile.name == payer_text,
+                                    PayerProfile.display_name == payer_text,
+                                    PayerProfile.payer_id == payer_text,
+                                )
+                            )
+                        )
+                    )
+        if state_code:
+            filters.append(or_(FeeSchedule.state_code == state_code, FeeSchedule.state_code.is_(None)))
+
+        query = select(
+            func.count(FeeSchedule.id),
+            func.min(FeeSchedule.effective_date),
+            func.max(FeeSchedule.effective_date),
+            func.max(FeeSchedule.updated_at),
+        )
+        if filters:
+            query = query.where(and_(*filters))
+        row = (await self.db.execute(query)).one()
+        count, min_effective, max_effective, last_updated = row
+
         return {
-            "source": "Medicare Fee Schedule 2025",
-            "effective_date": "2025-01-01",
-            "last_updated": datetime.now().isoformat(),
+            "source": "fee_schedules",
+            "record_count": int(count or 0),
+            "effective_date_min": min_effective.isoformat() if min_effective else None,
+            "effective_date_max": max_effective.isoformat() if max_effective else None,
+            "last_updated": (last_updated or datetime.now()).isoformat(),
             "payer_id": payer_id,
             "state_code": state_code,
-            "note": "Using Medicare-based defaults. Payer-specific rates pending."
+            "note": "No active fee schedules found for filters." if not count else None,
         }
 

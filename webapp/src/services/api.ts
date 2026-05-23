@@ -4,6 +4,8 @@
  */
 
 const BASE_URL = import.meta.env?.VITE_API_BASE_URL || '/api';
+const TOKEN_KEY = 'claimflow_token';
+const USER_KEY = 'claimflow_user';
 
 let authToken: string | null = null;
 let tenantId: string | null = null;
@@ -37,6 +39,15 @@ function authHeaders(): Record<string, string> {
   return headers;
 }
 
+function clearStoredSession(): void {
+  if (typeof window === 'undefined') return;
+  sessionStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(USER_KEY);
+  // Keep cleanup of old keys for users upgrading from localStorage-based sessions.
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+}
+
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({ detail: response.statusText }));
@@ -52,8 +63,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
       const isLoginPage = path === '/login' || path.endsWith('/login');
       const isLoginCall = response.url.endsWith('/auth/login');
       if (!isLoginPage && !isLoginCall) {
-        localStorage.removeItem('claimflow_token');
-        localStorage.removeItem('claimflow_user');
+        clearStoredSession();
         // Use replace so the broken page is not in history
         window.location.replace('/login');
       }

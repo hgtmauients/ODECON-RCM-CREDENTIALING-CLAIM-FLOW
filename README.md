@@ -55,6 +55,11 @@ All models include `tenant_id` for multi-tenant isolation.
 - `rules_engine.py` - Payer rules engine
 - `patient_billing.py` - Patient billing communications
 
+#### Provider Verification Adapter (`backend/adapter/`)
+- `adapter/main.py` - FastAPI adapter that normalizes license/background checks
+- Endpoints: `GET /license/verify`, `POST /background/check`, `GET /health`
+- Local docker service: `provider-adapter` (wired by default in `docker-compose.yml`)
+
 #### Background Jobs (`backend/jobs/`)
 - `poll_835_files.py` - Poll clearinghouse for remittances (835) and claim acknowledgments (277CA) (tenant-scoped)
 

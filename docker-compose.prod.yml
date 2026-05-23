@@ -53,6 +53,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://noodledoc:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/noodledoc
       REDIS_URL: redis://redis:6379/0
       CLAIMFLOW_SCHEDULER_ENABLED: ${CLAIMFLOW_SCHEDULER_ENABLED:-true}
+      STATE_LICENSE_PROVIDER_URL: ${STATE_LICENSE_PROVIDER_URL:-}
+      BACKGROUND_CHECK_PROVIDER_URL: ${BACKGROUND_CHECK_PROVIDER_URL:-}
     volumes:
       - edi_data:/data/edi
     depends_on:

@@ -2,6 +2,7 @@
 Automated Provider Credentialing Service
 """
 import httpx
+import os
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
@@ -15,6 +16,8 @@ class CredentialingService:
         self.npi_api_url = "https://npiregistry.cms.hhs.gov/api/"
         self.oig_api_url = "https://oig.hhs.gov/exclusions/api/search"
         self.sam_api_url = "https://api.sam.gov/api/entity-information/"
+        self.state_license_provider_url = os.getenv("STATE_LICENSE_PROVIDER_URL", "").strip()
+        self.background_check_provider_url = os.getenv("BACKGROUND_CHECK_PROVIDER_URL", "").strip()
     
     async def verify_npi(self, npi: str) -> Dict[str, Any]:
         """
@@ -68,66 +71,73 @@ class CredentialingService:
         dob: str
     ) -> Dict[str, Any]:
         """
-        Verify state medical license
-        Note: Each state has different API - this is a placeholder
+        Verify state medical license.
+        Uses a configurable integration endpoint when provided.
+        Without integration configuration, fail closed to manual review.
         """
         try:
-            # State-specific API endpoints
-            state_apis = {
-                "CA": "https://www.mbc.ca.gov/licensing-lookup-api",
-                "TX": "https://www.tmb.state.tx.us/api/license-verification",
-                "NY": "https://www.op.nysed.gov/api/profession",
-                "FL": "https://www.flhealthsource.gov/api/license"
-            }
-            
-            api_url = state_apis.get(state_code)
-            
-            if not api_url:
+            if not self.state_license_provider_url:
                 return {
                     "verified": False,
                     "state": state_code,
                     "license_number": license_number,
-                    "error": f"State API not configured for {state_code}"
+                    "error": "state_license_provider_not_configured",
+                    "requires_manual_review": True,
+                    "source": "manual_policy",
+                    "checked_at": datetime.utcnow().isoformat(),
                 }
-            
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
-                    api_url,
+                    self.state_license_provider_url,
                     params={
-                        "license_number": license_number,
-                        "name": provider_name,
-                        "dob": dob
-                    }
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    return {
-                        "verified": True,
                         "state": state_code,
                         "license_number": license_number,
-                        "status": str(data.get("status", "unknown")).upper(),
+                        "name": provider_name,
+                        "dob": dob,
+                    }
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    status = str(data.get("status", "")).upper()
+                    verified = bool(data.get("verified", False))
+                    # If provider doesn't return explicit verified flag, infer from active-ish statuses.
+                    if not verified and status in {"ACTIVE", "CURRENT", "VALID"}:
+                        verified = True
+
+                    return {
+                        "verified": verified,
+                        "state": state_code,
+                        "license_number": license_number,
+                        "status": status or "UNKNOWN",
                         "issue_date": data.get("issue_date"),
                         "expiration_date": data.get("expiration_date"),
                         "discipline_history": data.get("discipline_history", []),
-                        "verified_at": datetime.utcnow().isoformat()
+                        "requires_manual_review": not verified,
+                        "source": "state_license_provider",
+                        "verified_at": datetime.utcnow().isoformat(),
                     }
-            
+
             return {
                 "verified": False,
                 "state": state_code,
                 "license_number": license_number,
-                "error": "License not found"
+                "error": f"state_license_lookup_failed_{response.status_code}",
+                "requires_manual_review": True,
+                "source": "state_license_provider",
+                "checked_at": datetime.utcnow().isoformat(),
             }
-        
+
         except Exception as e:
             logger.error(f"Error verifying state license: {e}")
             return {
                 "verified": False,
                 "state": state_code,
                 "license_number": license_number,
-                "error": str(e)
+                "error": str(e),
+                "requires_manual_review": True,
+                "source": "state_license_provider",
             }
     
     async def check_oig_exclusion(
@@ -225,17 +235,72 @@ class CredentialingService:
         ssn: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Run background check (placeholder - requires integration with background check service)
+        Run background check via configurable integration.
+        Without integration configuration, fail closed to manual review.
         """
-        # This would integrate with services like VerifiedFirst, Certn, etc.
-        # For now, fail-safe to review instead of auto-clearing.
+        if not self.background_check_provider_url:
+            return {
+                "verified": False,
+                "clear": False,
+                "findings": [],
+                "recommendation": "requires_review",
+                "checked_at": datetime.utcnow().isoformat(),
+                "source": "manual_policy",
+                "error": "background_check_provider_not_configured",
+            }
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    self.background_check_provider_url,
+                    json={
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "dob": dob,
+                        "ssn": ssn,
+                    },
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    clear = bool(data.get("clear", False))
+                    return {
+                        "verified": bool(data.get("verified", True)),
+                        "clear": clear,
+                        "findings": data.get("findings", []),
+                        "recommendation": data.get("recommendation", "clear" if clear else "requires_review"),
+                        "checked_at": datetime.utcnow().isoformat(),
+                        "source": "background_check_provider",
+                    }
+
+                return {
+                    "verified": False,
+                    "clear": False,
+                    "findings": [],
+                    "recommendation": "requires_review",
+                    "checked_at": datetime.utcnow().isoformat(),
+                    "source": "background_check_provider",
+                    "error": f"background_check_lookup_failed_{response.status_code}",
+                }
+        except Exception as e:
+            logger.error(f"Error running background check: {e}")
+            return {
+                "verified": False,
+                "clear": False,
+                "findings": [],
+                "recommendation": "requires_review",
+                "checked_at": datetime.utcnow().isoformat(),
+                "source": "background_check_provider",
+                "error": str(e),
+            }
+
+        # Defensive fallback; should be unreachable.
         return {
             "verified": False,
             "clear": False,
             "findings": [],
             "recommendation": "requires_review",
             "checked_at": datetime.utcnow().isoformat(),
-            "note": "Background check service not yet integrated"
+            "source": "manual_policy",
         }
     
     def calculate_credentialing_score(self, results: Dict[str, Any]) -> int:

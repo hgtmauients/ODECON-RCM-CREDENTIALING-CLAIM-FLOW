@@ -23,6 +23,14 @@ const AuthContext = createContext<AuthContextType>({
   setTenant: () => {},
 });
 
+const TOKEN_KEY = 'claimflow_token';
+const USER_KEY = 'claimflow_user';
+
+function clearLegacyLocalSession() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+}
+
 export function useAuth() {
   return useContext(AuthContext);
 }
@@ -31,8 +39,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthContextType['user']>(null);
 
   useEffect(() => {
-    const token = localStorage.getItem('claimflow_token');
-    const storedUser = localStorage.getItem('claimflow_user');
+    const token = sessionStorage.getItem(TOKEN_KEY);
+    const storedUser = sessionStorage.getItem(USER_KEY);
+    // Security hardening: avoid persisting auth tokens across browser restarts.
+    clearLegacyLocalSession();
     if (token && storedUser) {
       try {
         apiService.setAuthToken(token);
@@ -42,8 +52,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           apiService.setTenantId(parsed.tenant_id);
         }
       } catch {
-        localStorage.removeItem('claimflow_token');
-        localStorage.removeItem('claimflow_user');
+        sessionStorage.removeItem(TOKEN_KEY);
+        sessionStorage.removeItem(USER_KEY);
       }
     }
   }, []);
@@ -51,16 +61,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(async (email: string, password: string) => {
     const response = await apiService.post('/auth/login', { email, password });
     const { access_token, user: userData } = response;
-    localStorage.setItem('claimflow_token', access_token);
-    localStorage.setItem('claimflow_user', JSON.stringify(userData));
+    sessionStorage.setItem(TOKEN_KEY, access_token);
+    sessionStorage.setItem(USER_KEY, JSON.stringify(userData));
     apiService.setAuthToken(access_token);
     apiService.setTenantId(userData.tenant_id);
     setUser(userData);
   }, []);
 
   const logout = useCallback(() => {
-    localStorage.removeItem('claimflow_token');
-    localStorage.removeItem('claimflow_user');
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(USER_KEY);
+    clearLegacyLocalSession();
     apiService.setAuthToken(null);
     apiService.setTenantId(null);
     setUser(null);
@@ -71,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (user) {
       const updated = { ...user, tenant_id: tenantId };
       setUser(updated);
-      localStorage.setItem('claimflow_user', JSON.stringify(updated));
+      sessionStorage.setItem(USER_KEY, JSON.stringify(updated));
     }
   }, [user]);
 

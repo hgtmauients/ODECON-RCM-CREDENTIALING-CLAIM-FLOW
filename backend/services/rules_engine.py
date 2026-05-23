@@ -11,7 +11,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
-from models.rcm import PayerRule
+from models.rcm import PayerRule, PayerProfile
 from models.claims import Claim, ClaimLine, ClaimDiagnosis, ClaimValidation
 
 logger = logging.getLogger(__name__)
@@ -43,24 +43,27 @@ class RulesEngine:
                 return {"passed": False, "errors": ["Claim not found"]}
             
             # Get all active rules for this payer, ordered by priority
-            rules_result = await self.db.execute(
+            rules_query = (
                 select(PayerRule)
+                .join(PayerProfile, PayerProfile.id == PayerRule.payer_id)
                 .where(and_(
                     PayerRule.payer_id == claim.payer_id,
-                    PayerRule.is_active == True
+                    PayerRule.is_active == True,
                 ))
-                .order_by(PayerRule.priority.desc())
             )
+            if tenant_id:
+                rules_query = rules_query.where(PayerProfile.tenant_id == tenant_id)
+            rules_result = await self.db.execute(rules_query.order_by(PayerRule.priority.desc()))
             rules = rules_result.scalars().all()
             
             # Get claim lines and diagnoses
             lines_result = await self.db.execute(
-                select(ClaimLine).where(ClaimLine.claim_id == claim_id)
+                select(ClaimLine).where(ClaimLine.claim_id == claim.id)
             )
             claim_lines = lines_result.scalars().all()
             
             diagnosis_result = await self.db.execute(
-                select(ClaimDiagnosis).where(ClaimDiagnosis.claim_id == claim_id)
+                select(ClaimDiagnosis).where(ClaimDiagnosis.claim_id == claim.id)
             )
             claim_diagnoses = diagnosis_result.scalars().all()
             
@@ -282,20 +285,23 @@ class RulesEngine:
             logger.error(f"Error executing actions: {e}")
             return results
     
-    async def get_applicable_rules_summary(self, payer_id: int) -> Dict[str, Any]:
+    async def get_applicable_rules_summary(self, payer_id: int, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Get summary of all active rules for a payer
         Useful for displaying what will happen during validation
         """
         try:
-            rules_result = await self.db.execute(
+            summary_query = (
                 select(PayerRule)
+                .join(PayerProfile, PayerProfile.id == PayerRule.payer_id)
                 .where(and_(
                     PayerRule.payer_id == payer_id,
-                    PayerRule.is_active == True
+                    PayerRule.is_active == True,
                 ))
-                .order_by(PayerRule.priority.desc())
             )
+            if tenant_id:
+                summary_query = summary_query.where(PayerProfile.tenant_id == tenant_id)
+            rules_result = await self.db.execute(summary_query.order_by(PayerRule.priority.desc()))
             rules = rules_result.scalars().all()
             
             return {

@@ -26,7 +26,6 @@ jobs:
       - name: Ruff format check
         working-directory: backend
         run: ruff format --check .
-        continue-on-error: true  # warn-only until formatting is established repo-wide
 
   backend-test:
     runs-on: ubuntu-latest
@@ -105,7 +104,6 @@ jobs:
       - name: ESLint
         working-directory: webapp
         run: npm run lint
-        continue-on-error: true  # warn-only until existing lints are resolved
 
   frontend-test:
     runs-on: ubuntu-latest
