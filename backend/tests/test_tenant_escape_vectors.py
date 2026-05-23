@@ -15,17 +15,21 @@ from uuid import UUID, uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 os.environ["ENV"] = "development"
 os.environ["JWT_SECRET"] = os.getenv("JWT_SECRET", "dev-secret-for-local-only-min32ch")
 os.environ["JWT_AUDIENCE"] = os.getenv("JWT_AUDIENCE", "claimflow")
 os.environ["DATABASE_URL"] = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://claimflow:claimflow@localhost:5432/claimflow",
+    "E2E_DATABASE_URL",
+    os.getenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres",
+    ),
 )
 
 from app.main import app
-from core.database import async_session_factory, engine
+import core.database as dbcore
 from core.password import hash_password
 from models.base import Base
 from models.audit import SecurityAuditLog
@@ -38,6 +42,7 @@ TENANT_A_EMAIL = "escape-a@claimflow.io"
 TENANT_B_EMAIL = "escape-b@claimflow.io"
 SUPER_ADMIN_EMAIL = "escape-superadmin@claimflow.io"
 TEST_PASSWORD = "admin"
+TEST_DB_URL = os.environ["DATABASE_URL"]
 
 
 @pytest.fixture(scope="module")
@@ -53,7 +58,7 @@ async def _ensure_tenant_and_user(
     roles: list[str],
 ) -> None:
     tenant_uuid = UUID(tenant_id)
-    async with async_session_factory() as db:
+    async with dbcore.async_session_factory() as db:
         tenant = (await db.execute(select(Tenant).where(Tenant.id == tenant_uuid))).scalar_one_or_none()
         if not tenant:
             tenant = Tenant(
@@ -85,11 +90,23 @@ async def _ensure_tenant_and_user(
 
 @pytest.fixture(scope="module")
 async def setup_db():
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-    except Exception as exc:
-        pytest.skip(f"Database unavailable for tenant-escape tests: {exc}")
+    # Rebind DB engine/session so this module is stable inside full-suite runs
+    # regardless of earlier imports that may have captured a different URL.
+    dbcore.engine = create_async_engine(
+        TEST_DB_URL,
+        echo=False,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
+    )
+    dbcore.async_session_factory = async_sessionmaker(
+        dbcore.engine,
+        class_=dbcore.AsyncSession,
+        expire_on_commit=False,
+    )
+
+    async with dbcore.engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
     await _ensure_tenant_and_user(
         tenant_id=TENANT_A_ID,
@@ -113,6 +130,7 @@ async def setup_db():
         roles=["super_admin", "admin", "billing", "credentialing"],
     )
     yield
+    await dbcore.engine.dispose()
 
 
 async def _auth_headers(ac: AsyncClient, email: str, tenant_id: str) -> dict[str, str]:
@@ -294,7 +312,7 @@ async def test_super_admin_impersonation_audit_keeps_original_token_tenant(setup
         assert claim_resp.status_code == 200, claim_resp.text
         claim_id = claim_resp.json()["data"]["id"]
 
-    async with async_session_factory() as db:
+    async with dbcore.async_session_factory() as db:
         row = (
             await db.execute(
                 select(SecurityAuditLog).where(

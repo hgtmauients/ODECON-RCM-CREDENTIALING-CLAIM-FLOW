@@ -11,17 +11,21 @@ from uuid import UUID, uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 os.environ["ENV"] = "development"
 os.environ["JWT_SECRET"] = os.getenv("JWT_SECRET", "dev-secret-for-local-only-min32ch")
 os.environ["JWT_AUDIENCE"] = os.getenv("JWT_AUDIENCE", "claimflow")
 os.environ["DATABASE_URL"] = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://claimflow:claimflow@localhost:5432/claimflow",
+    "E2E_DATABASE_URL",
+    os.getenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres",
+    ),
 )
 
 from app.main import app
-from core.database import async_session_factory, engine
+import core.database as dbcore
 from core.password import hash_password
 from models.base import Base
 from models.tenant import Tenant
@@ -32,6 +36,7 @@ TENANT_B_ID = "00000000-0000-0000-0000-0000000000b2"
 TENANT_A_EMAIL = "isolation-tenant-a@claimflow.io"
 TENANT_B_EMAIL = "isolation-tenant-b@claimflow.io"
 TEST_PASSWORD = "admin"
+TEST_DB_URL = os.environ["DATABASE_URL"]
 
 
 @pytest.fixture(scope="module")
@@ -41,7 +46,7 @@ def anyio_backend():
 
 async def _ensure_tenant_and_user(tenant_id: str, email: str, slug: str, name: str) -> None:
     tenant_uuid = UUID(tenant_id)
-    async with async_session_factory() as db:
+    async with dbcore.async_session_factory() as db:
         tenant = (
             await db.execute(select(Tenant).where(Tenant.id == tenant_uuid))
         ).scalar_one_or_none()
@@ -77,11 +82,23 @@ async def _ensure_tenant_and_user(tenant_id: str, email: str, slug: str, name: s
 
 @pytest.fixture(scope="module")
 async def setup_db():
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-    except Exception as exc:
-        pytest.skip(f"Database unavailable for tenant isolation HTTP test: {exc}")
+    # Rebind DB engine/session so this module is stable inside full-suite runs
+    # regardless of earlier imports that may have captured a different URL.
+    dbcore.engine = create_async_engine(
+        TEST_DB_URL,
+        echo=False,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
+    )
+    dbcore.async_session_factory = async_sessionmaker(
+        dbcore.engine,
+        class_=dbcore.AsyncSession,
+        expire_on_commit=False,
+    )
+
+    async with dbcore.engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     await _ensure_tenant_and_user(
         tenant_id=TENANT_A_ID,
         email=TENANT_A_EMAIL,
@@ -95,6 +112,7 @@ async def setup_db():
         name="Tenant Isolation B",
     )
     yield
+    await dbcore.engine.dispose()
 
 
 async def _auth_headers(ac: AsyncClient, email: str, tenant_id: str) -> dict:

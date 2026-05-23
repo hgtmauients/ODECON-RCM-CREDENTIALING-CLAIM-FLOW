@@ -259,11 +259,16 @@ async def approved_provider_id(client: AsyncClient):
 async def test_step3_provider_detail(client: AsyncClient, provider_id: str):
     """Fetch provider detail and inspect verification results."""
     import asyncio
-    await asyncio.sleep(1)
+    data = None
+    for _ in range(20):
+        resp = await client.get(f"/api/credentialing/{provider_id}")
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        if data.get("npi_verification") is not None or data.get("credentialing_status") in {"passed", "failed", "requires_review"}:
+            break
+        await asyncio.sleep(0.2)
 
-    resp = await client.get(f"/api/credentialing/{provider_id}")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
+    assert data is not None
 
     print(f"  [Step 3] Provider detail:")
     print(f"           Status: {data['credentialing_status']}")
@@ -273,7 +278,7 @@ async def test_step3_provider_detail(client: AsyncClient, provider_id: str):
     print(f"           Background: {data.get('background_check')}")
     print(f"           OIG Check: {data.get('oig_check')}")
     print(f"           SAM Check: {data.get('sam_check')}")
-    assert data.get("npi_verification") is not None
+    assert data.get("npi_verification") is not None, f"Verification still incomplete: status={data.get('credentialing_status')}"
 
 
 # ═══════════════════════════════════════════════════════════════
