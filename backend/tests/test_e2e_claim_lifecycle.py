@@ -19,7 +19,9 @@ import os
 import pytest
 import tempfile
 from datetime import date, datetime
+from uuid import UUID, uuid4
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy import select, and_
 
 os.environ["ENV"] = "development"
 os.environ["JWT_SECRET"] = os.getenv("JWT_SECRET", "dev-secret-for-local-only-min32ch")
@@ -30,8 +32,15 @@ os.environ["DATABASE_URL"] = os.getenv(
 )
 
 from app.main import app
-from core.database import engine
+from core.database import engine, async_session_factory
+from core.password import hash_password
 from models.base import Base
+from models.tenant import Tenant
+from models.user import User
+
+TEST_TENANT_ID = "00000000-0000-0000-0000-000000000001"
+TEST_ADMIN_EMAIL = "admin@claimflow.io"
+TEST_ADMIN_PASSWORD = "admin"
 
 
 @pytest.fixture(scope="module")
@@ -44,6 +53,39 @@ async def setup_db():
     """Create all tables for the test run."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    async with async_session_factory() as db:
+        tenant_uuid = UUID(TEST_TENANT_ID)
+        tenant_res = await db.execute(select(Tenant).where(Tenant.id == tenant_uuid))
+        tenant = tenant_res.scalar_one_or_none()
+        if not tenant:
+            tenant = Tenant(
+                id=tenant_uuid,
+                name="E2E Test Tenant",
+                slug=f"e2e-claims-{uuid4().hex[:8]}",
+                is_active=True,
+            )
+            db.add(tenant)
+
+        user_res = await db.execute(
+            select(User).where(and_(User.tenant_id == tenant_uuid, User.email == TEST_ADMIN_EMAIL))
+        )
+        user = user_res.scalar_one_or_none()
+        if not user:
+            user = User(
+                tenant_id=tenant_uuid,
+                email=TEST_ADMIN_EMAIL,
+                full_name="E2E Admin",
+                password_hash=hash_password(TEST_ADMIN_PASSWORD),
+                roles=["super_admin", "admin", "billing", "credentialing"],
+                is_active=True,
+                created_by="e2e-seed",
+            )
+            db.add(user)
+        else:
+            user.password_hash = hash_password(TEST_ADMIN_PASSWORD)
+            user.roles = ["super_admin", "admin", "billing", "credentialing"]
+            user.is_active = True
+        await db.commit()
     yield
     # Teardown: skip drop to avoid FK cascade issues in shared DB
 
@@ -55,13 +97,13 @@ async def client(setup_db):
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         # Login to get token
         login_resp = await ac.post("/api/auth/login", json={
-            "email": "admin@claimflow.io",
-            "password": "admin",
+            "email": TEST_ADMIN_EMAIL,
+            "password": TEST_ADMIN_PASSWORD,
         })
         assert login_resp.status_code == 200
         token = login_resp.json()["access_token"]
         ac.headers["Authorization"] = f"Bearer {token}"
-        ac.headers["X-Tenant-ID"] = "00000000-0000-0000-0000-000000000001"
+        ac.headers["X-Tenant-ID"] = TEST_TENANT_ID
         yield ac
 
 
@@ -72,7 +114,7 @@ async def client(setup_db):
 @pytest.fixture(scope="module")
 async def tenant_id(client: AsyncClient):
     """Ensure default tenant exists."""
-    return "00000000-0000-0000-0000-000000000001"
+    return TEST_TENANT_ID
 
 
 @pytest.fixture(scope="module")
@@ -199,6 +241,7 @@ async def test_step3_validate_claim(client: AsyncClient, claim_data: dict):
     data = resp.json()
     assert data["success"] is True
     result = data["data"]
+    assert result["passed"] is True
     print(f"  [Step 3] Validation: passed={result['passed']}, rules_evaluated={result.get('rules_evaluated', 0)}")
 
     # Verify claim state changed
@@ -310,7 +353,14 @@ async def test_step6_receive_277ca(client: AsyncClient, claim_data: dict, submit
         assert resp.status_code == 200, f"277CA upload failed: {resp.text}"
         data = resp.json()
         assert data["success"] is True
-        print(f"  [Step 6] 277CA uploaded and processed: {data['data'].get('parse_result', {})}")
+        parse_result = data["data"].get("parse_result", {})
+        assert parse_result.get("claims_updated", 0) >= 1
+        print(f"  [Step 6] 277CA uploaded and processed: {parse_result}")
+
+        events_resp = await client.get(f"/api/rcm/claims/{claim_data['id']}/events")
+        assert events_resp.status_code == 200
+        event_types = [e["event_type"] for e in events_resp.json()["data"]]
+        assert "277ca_received" in event_types
     finally:
         os.unlink(temp_path)
 
@@ -412,6 +462,7 @@ async def test_step9_final_claim_state(client: AsyncClient, claim_data: dict):
     claim = resp.json()["data"]
     print(f"  [Step 9] Final claim state: {claim['state']}")
     print(f"           Total charges: ${claim['total_charges']:.2f}")
+    assert claim["state"] in ("accepted", "adjudicated", "paid", "partially_paid", "denied")
 
     events_resp = await client.get(f"/api/rcm/claims/{claim_data['id']}/events")
     assert events_resp.status_code == 200

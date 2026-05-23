@@ -67,7 +67,10 @@ async def _poll_835_for_tenant(db: AsyncSession, tenant):
 
         for payer in payers:
             try:
-                files = await transport.poll_for_835_files(payer.id)
+                files = await transport.poll_for_835_files(
+                    payer.id,
+                    tenant_id=str(tenant.id),
+                )
                 if not files:
                     continue
 
@@ -141,7 +144,10 @@ async def poll_277_files():
 
                 for payer in payers:
                     try:
-                        files = await transport.poll_for_277_files(payer.id)
+                        files = await transport.poll_for_277_files(
+                            payer.id,
+                            tenant_id=str(tenant.id),
+                        )
                         for file_path in files:
                             await edi_processor.parse_277(file_path, tenant_id=str(tenant.id))
                     except Exception as e:

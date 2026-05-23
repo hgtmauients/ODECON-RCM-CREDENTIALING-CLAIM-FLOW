@@ -44,12 +44,14 @@ async def process_credentialing_queue(*, batch_size: int = 25, stale_after_minut
             await db.commit()
             logger.warning("Recovered %d stale credentialing jobs", len(stale_records))
 
-        # Pull pending work in deterministic order.
+        # Pull pending work in deterministic order and claim it in this
+        # transaction so concurrent workers cannot process the same provider.
         pending_result = await db.execute(
             select(ProviderCredentialing)
             .where(ProviderCredentialing.credentialing_status == "pending")
             .order_by(ProviderCredentialing.created_at.asc())
             .limit(batch_size)
+            .with_for_update(skip_locked=True)
         )
         pending = pending_result.scalars().all()
 
@@ -57,15 +59,28 @@ async def process_credentialing_queue(*, batch_size: int = 25, stale_after_minut
             return
 
         logger.info("Credentialing queue worker processing %d pending records", len(pending))
+        now = datetime.utcnow()
+        work_items = []
+        for rec in pending:
+            rec.credentialing_status = "in_progress"
+            rec.started_at = now
+            rec.completed_at = None
+            work_items.append({
+                "provider_id": rec.provider_id,
+                "signup_data": rec.signup_data or {},
+                "tenant_id": str(rec.tenant_id),
+            })
+        await db.commit()
 
     # Process outside the queue session; each run_credentialing_checks call
     # owns its own DB session + lifecycle.
-    for rec in pending:
+    for item in work_items:
         try:
             await run_credentialing_checks(
-                provider_id=rec.provider_id,
-                signup_data=rec.signup_data or {},
-                tenant_id=str(rec.tenant_id),
+                provider_id=item["provider_id"],
+                signup_data=item["signup_data"],
+                tenant_id=item["tenant_id"],
+                preclaimed=True,
             )
         except Exception:
-            logger.exception("Credentialing queue item failed provider_id=%s", rec.provider_id)
+            logger.exception("Credentialing queue item failed provider_id=%s", item["provider_id"])

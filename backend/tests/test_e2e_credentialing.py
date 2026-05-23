@@ -15,8 +15,14 @@ Run with: pytest tests/test_e2e_credentialing.py -v -s
 
 import os
 import pytest
+import json
+import time
+import hmac
+import hashlib
 from datetime import date
+from uuid import UUID, uuid4
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy import select, and_
 
 os.environ["ENV"] = "development"
 os.environ["JWT_SECRET"] = os.getenv("JWT_SECRET", "dev-secret-for-local-only-min32ch")
@@ -27,8 +33,30 @@ os.environ["DATABASE_URL"] = os.getenv(
 )
 
 from app.main import app
-from core.database import engine
+from core.database import engine, async_session_factory
+from core.password import hash_password
+from core.tenant_config import save_tenant_settings
 from models.base import Base
+from models.tenant import Tenant
+from models.user import User
+
+TEST_TENANT_ID = "00000000-0000-0000-0000-000000000001"
+TEST_ADMIN_EMAIL = "admin@claimflow.io"
+TEST_ADMIN_PASSWORD = "admin"
+TEST_WEBHOOK_SECRET = "e2e-webhook-secret"
+
+
+def _signed_webhook_headers(raw_body: bytes) -> dict:
+    timestamp = str(int(time.time()))
+    digest = hashlib.sha256(raw_body).hexdigest()
+    signed = f"{TEST_TENANT_ID}.{timestamp}.{digest}".encode("ascii")
+    signature = hmac.new(TEST_WEBHOOK_SECRET.encode(), signed, hashlib.sha256).hexdigest()
+    return {
+        "Content-Type": "application/json",
+        "X-Tenant-ID": TEST_TENANT_ID,
+        "X-Webhook-Timestamp": timestamp,
+        "X-Webhook-Signature": signature,
+    }
 
 
 @pytest.fixture(scope="module")
@@ -40,6 +68,41 @@ def anyio_backend():
 async def setup_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    async with async_session_factory() as db:
+        tenant_uuid = UUID(TEST_TENANT_ID)
+        tenant_res = await db.execute(select(Tenant).where(Tenant.id == tenant_uuid))
+        tenant = tenant_res.scalar_one_or_none()
+        if not tenant:
+            tenant = Tenant(
+                id=tenant_uuid,
+                name="E2E Test Tenant",
+                slug=f"e2e-cred-{uuid4().hex[:8]}",
+                is_active=True,
+            )
+            db.add(tenant)
+
+        user_res = await db.execute(
+            select(User).where(and_(User.tenant_id == tenant_uuid, User.email == TEST_ADMIN_EMAIL))
+        )
+        user = user_res.scalar_one_or_none()
+        if not user:
+            user = User(
+                tenant_id=tenant_uuid,
+                email=TEST_ADMIN_EMAIL,
+                full_name="E2E Admin",
+                password_hash=hash_password(TEST_ADMIN_PASSWORD),
+                roles=["super_admin", "admin", "billing", "credentialing"],
+                is_active=True,
+                created_by="e2e-seed",
+            )
+            db.add(user)
+            await db.flush()
+        else:
+            user.password_hash = hash_password(TEST_ADMIN_PASSWORD)
+            user.roles = ["super_admin", "admin", "billing", "credentialing"]
+            user.is_active = True
+        await db.commit()
+        await save_tenant_settings(db, TEST_TENANT_ID, {"webhook_secret": TEST_WEBHOOK_SECRET})
     yield
     # Teardown: skip drop to avoid FK cascade issues in shared DB
 
@@ -49,13 +112,13 @@ async def client(setup_db):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         login_resp = await ac.post("/api/auth/login", json={
-            "email": "admin@claimflow.io",
-            "password": "admin",
+            "email": TEST_ADMIN_EMAIL,
+            "password": TEST_ADMIN_PASSWORD,
         })
         assert login_resp.status_code == 200
         token = login_resp.json()["access_token"]
         ac.headers["Authorization"] = f"Bearer {token}"
-        ac.headers["X-Tenant-ID"] = "00000000-0000-0000-0000-000000000001"
+        ac.headers["X-Tenant-ID"] = TEST_TENANT_ID
         yield ac
 
 
@@ -101,12 +164,11 @@ async def provider_id(client: AsyncClient, payer_id: int):
         "provider_type": "MD",
     }
 
+    raw_body = json.dumps(signup_data).encode("utf-8")
     resp = await client.post(
         "/api/credentialing/webhook/provider-signup",
-        json=signup_data,
-        headers={
-            "X-Tenant-ID": "00000000-0000-0000-0000-000000000001",
-        },
+        content=raw_body,
+        headers=_signed_webhook_headers(raw_body),
     )
     assert resp.status_code == 200, f"Webhook failed: {resp.text}"
     data = resp.json()
@@ -166,6 +228,7 @@ async def test_step3_provider_detail(client: AsyncClient, provider_id: str):
     print(f"           Background: {data.get('background_check')}")
     print(f"           OIG Check: {data.get('oig_check')}")
     print(f"           SAM Check: {data.get('sam_check')}")
+    assert data.get("npi_verification") is not None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -210,12 +273,7 @@ async def test_step5_payer_enrollment_cases(client: AsyncClient, provider_id: st
     for case in cases:
         print(f"           - {case['payer_name']}: status={case['status']}, progress={case['completion_percentage']}%")
 
-    assert len(cases) >= 0, "Unexpected error"
-    if len(cases) == 0:
-        print("           NOTE: No cases auto-created (payer may not be published yet)")
-        print("           This is expected if smart enrollment filters by state license")
-    else:
-        assert len(cases) >= 1
+    assert len(cases) >= 1, "Expected at least one auto-created payer enrollment case after approval"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -353,17 +411,19 @@ async def test_step9_eligible_payers(client: AsyncClient, provider_id: str):
 async def test_step10_rejection_flow(client: AsyncClient):
     """Test provider rejection with reason."""
     # Create a second provider to reject
+    rejection_payload = {
+        "first_name": "Rejected",
+        "last_name": "TestProvider",
+        "email": "rejected@claimflow.io",
+        "npi": "1111111111",
+        "state_code": "CA",
+        "license_number": "CA-BAD-99999",
+    }
+    raw_rejection = json.dumps(rejection_payload).encode("utf-8")
     signup_resp = await client.post(
         "/api/credentialing/webhook/provider-signup",
-        json={
-            "first_name": "Rejected",
-            "last_name": "TestProvider",
-            "email": "rejected@claimflow.io",
-            "npi": "1111111111",
-            "state_code": "CA",
-            "license_number": "CA-BAD-99999",
-        },
-        headers={"X-Tenant-ID": "00000000-0000-0000-0000-000000000001"},
+        content=raw_rejection,
+        headers=_signed_webhook_headers(raw_rejection),
     )
     assert signup_resp.status_code == 200
     reject_provider_id = signup_resp.json()["provider_id"]
@@ -398,7 +458,7 @@ async def test_step11_lifecycle_summary(client: AsyncClient, provider_id: str, p
     print(f"  Provider ID:     {provider_id}")
     print(f"  Payer ID:        {payer_id}")
     print("  Workflow Steps:")
-    print("    1.  Webhook signup submitted        - OK")
+    print("    1.  Webhook signup submitted         - OK")
     print("    2.  Provider in credentialing queue  - OK")
     print("    3.  Verification results available   - OK")
     print("    4.  Admin approval + auto-enrollment - OK")
@@ -411,3 +471,27 @@ async def test_step11_lifecycle_summary(client: AsyncClient, provider_id: str, p
     print("=" * 60)
     print("  ALL STEPS PASSED")
     print("=" * 60)
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_webhook_replay_rejected(client: AsyncClient):
+    """Adversarial check: same signed payload replay should be rejected."""
+    replay_payload = {
+        "first_name": "Replay",
+        "last_name": "Attack",
+        "email": "replay.attack@claimflow.io",
+        "npi": "9876543211",
+        "state_code": "HI",
+        "license_number": "HI-MED-REPLAY",
+        "specialty": "Internal Medicine",
+        "date_of_birth": "1979-06-20",
+        "provider_type": "MD",
+    }
+    raw = json.dumps(replay_payload).encode("utf-8")
+    headers = _signed_webhook_headers(raw)
+
+    first = await client.post("/api/credentialing/webhook/provider-signup", content=raw, headers=headers)
+    assert first.status_code == 200, f"Initial signed webhook failed: {first.text}"
+
+    second = await client.post("/api/credentialing/webhook/provider-signup", content=raw, headers=headers)
+    assert second.status_code == 401, f"Replay should be rejected: {second.text}"

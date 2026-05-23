@@ -31,6 +31,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/rcm/claims", tags=["RCM - Claims"])
 
 MAX_CLAIMS_CSV_BYTES = int(os.getenv("MAX_CLAIMS_CSV_BYTES", str(20 * 1024 * 1024)))  # 20 MB
+_CREATABLE_CLAIM_FIELDS = frozenset({
+    "patient_id",
+    "provider_id",
+    "payer_id",
+    "facility_id",
+    "service_date_from",
+    "service_date_to",
+    "total_charges",
+    "claim_type",
+    "claim_frequency_code",
+    "billing_provider_npi",
+    "rendering_provider_npi",
+    "prior_auth_number",
+    "requires_prior_auth",
+    "auth_obtained",
+    "submission_method",
+    "notes",
+})
 
 
 @router.get("")
@@ -299,6 +317,8 @@ async def create_claim(
         for k, v in claim_data.items():
             if k in ('id', 'lines', 'diagnoses'):
                 continue
+            if k not in _CREATABLE_CLAIM_FIELDS:
+                continue
             if k in date_fields and isinstance(v, str):
                 safe_data[k] = date.fromisoformat(v)
             else:
@@ -529,10 +549,12 @@ async def submit_claim_batch(
     try:
         # Load and validate all claims in one query.
         claims_result = await db.execute(
-            select(Claim).where(and_(
+            select(Claim)
+            .where(and_(
                 Claim.id.in_(claim_ids),
                 Claim.tenant_id == current_user.tenant_id,
             ))
+            .with_for_update()
         )
         claims = claims_result.scalars().all()
         found_ids = {c.id for c in claims}
@@ -572,6 +594,7 @@ async def submit_claim_batch(
             send_result = await transport.submit_837_file(
                 local_file_path=edi_file.file_path,
                 payer_id=payer_id,
+                tenant_id=current_user.tenant_id,
             )
             if send_result["success"]:
                 edi_file.status = "transmitted"

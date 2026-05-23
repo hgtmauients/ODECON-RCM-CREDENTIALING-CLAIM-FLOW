@@ -160,6 +160,23 @@ cd webapp
 vercel deploy --prod --yes
 ```
 
+### One-command production canary verification (ClaimFlow)
+
+Run this inside the backend container to execute a safe synthetic lifecycle
+and return strict GO/NO-GO JSON. By default it auto-cleans canary artifacts.
+
+```bash
+ssh root@5.161.209.46 "docker exec noodledoc-backend-1 python -m scripts.verify_production_canary \
+  --tenant 00000000-0000-0000-0000-000000000001"
+```
+
+Notes:
+- Exit code `0` = GO, exit code `10` = NO-GO.
+- Use `--no-cleanup` only for debugging.
+- Canary uses synthetic records (`CANARY_PROD_VERIFICATION::<run_id>`) and
+  removes created payer/connection/patient/claim/EDI artifacts unless cleanup
+  is explicitly disabled.
+
 ### Zero-downtime deploy (when needed)
 
 The current setup has a single uvicorn process per container, so a `docker compose up -d backend` causes a brief (~5-10s) interruption while the new container starts. For real ZDP you have two options:

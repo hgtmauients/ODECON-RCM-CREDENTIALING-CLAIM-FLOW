@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
+from sqlalchemy.exc import IntegrityError
 
 from models.claims import Claim, ClaimLine, ClaimDiagnosis, ClaimEvent, EDIFile, ClaimState
 from models.rcm import PayerProfile
@@ -59,6 +60,37 @@ class EDIProcessor:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    async def _match_claim_by_tracking_number(self, tracking_number: str, tenant_id: str) -> Optional[Claim]:
+        """
+        Resolve a claim from a 277 TRN tracking number within a tenant.
+        If duplicates exist (historical ICN reuse), prefer the newest claim.
+        """
+        tracking = (tracking_number or "").strip()
+        if not tracking:
+            return None
+        result = await self.db.execute(
+            select(Claim)
+            .where(and_(
+                Claim.interchange_control_number == tracking,
+                Claim.tenant_id == tenant_id,
+            ))
+            .order_by(
+                Claim.submitted_date.desc().nullslast(),
+                Claim.created_date.desc().nullslast(),
+                Claim.id.desc(),
+            )
+            .limit(2)
+        )
+        matches = result.scalars().all()
+        if not matches:
+            return None
+        if len(matches) > 1:
+            logger.warning(
+                "Multiple claims matched 277 tracking number; using latest match",
+                extra={"tracking_number": tracking, "tenant_id": tenant_id, "match_count": len(matches)},
+            )
+        return matches[0]
 
     # ==================== OUTBOUND: 837P PROFESSIONAL CLAIM GENERATION ====================
 
@@ -240,14 +272,14 @@ class EDIProcessor:
         segments.append(self._build_gs_segment(payer, gs_control_number))
 
         # Billing provider info from tenant
-        billing_name = (tenant.name if tenant else "BILLING PROVIDER").upper()
+        billing_name = ((tenant.name if tenant else None) or "BILLING PROVIDER").upper()
         billing_npi_org = tenant.npi if tenant else "0000000000"
         billing_tax_id = tenant.tax_id if tenant else "000000000"
-        billing_addr1 = (tenant.address_line_1 if tenant else "123 BILLING ST").upper()
+        billing_addr1 = ((tenant.address_line_1 if tenant else None) or "123 BILLING ST").upper()
         billing_addr2 = ((tenant.address_line_2 if tenant else None) or "").upper()
-        billing_city = (tenant.city if tenant else "ANYTOWN").upper()
-        billing_state = (tenant.state if tenant else "HI").upper()
-        billing_zip = (tenant.zip_code if tenant else "96701")
+        billing_city = ((tenant.city if tenant else None) or "ANYTOWN").upper()
+        billing_state = ((tenant.state if tenant else None) or "HI").upper()
+        billing_zip = ((tenant.zip_code if tenant else None) or "96701")
         billing_phone = (tenant.phone if tenant else "8005551234")
 
         for tx_idx, entry in enumerate(claim_data, start=1):
@@ -518,13 +550,7 @@ class EDIProcessor:
                             tracking_number = parts[2]
                             # tenant_id is required (validated above) so we
                             # always filter by it — never sweep across tenants.
-                            claim_result = await self.db.execute(
-                                select(Claim).where(and_(
-                                    Claim.interchange_control_number == tracking_number,
-                                    Claim.tenant_id == tenant_id,
-                                ))
-                            )
-                            claim = claim_result.scalar_one_or_none()
+                            claim = await self._match_claim_by_tracking_number(tracking_number, tenant_id)
                             if claim:
                                 if status_updates:
                                     new_state = _map_stc_to_state(status_updates[-1]["code"])
@@ -709,7 +735,35 @@ class EDIProcessor:
                 status="processing",
             )
             self.db.add(edi_file)
-            await self.db.flush()
+            try:
+                await self.db.flush()
+            except IntegrityError:
+                # Concurrent ingests can race between duplicate-check SELECT and
+                # INSERT. If another worker committed first, treat as duplicate.
+                await self.db.rollback()
+                if file_hash and tenant_id:
+                    existing = await self.db.execute(
+                        select(EDIFile)
+                        .where(and_(
+                            EDIFile.tenant_id == tenant_id,
+                            EDIFile.file_hash == file_hash,
+                            EDIFile.file_type == "835",
+                        ))
+                        .order_by(EDIFile.id.asc())
+                        .limit(1)
+                    )
+                    dup = existing.scalars().first()
+                    if dup:
+                        return {
+                            "success": True,
+                            "is_duplicate": True,
+                            "edi_file_id": dup.id,
+                            "claims_posted": 0,
+                            "total_paid": 0.0,
+                            "payments": [],
+                            "denials": [],
+                        }
+                raise
 
             parsed = self._parse_835_content(content)
             payments = parsed["payments"]
@@ -897,7 +951,34 @@ class EDIProcessor:
         edi_file.status = "processed"
         edi_file.processed_at = datetime.utcnow()
         edi_file.transaction_count = len(payments) + len(denials)
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()
+            if file_hash:
+                existing = await self.db.execute(
+                    select(EDIFile)
+                    .where(and_(
+                        EDIFile.tenant_id == edi_file.tenant_id,
+                        EDIFile.file_hash == file_hash,
+                        EDIFile.file_type == "835",
+                    ))
+                    .order_by(EDIFile.id.asc())
+                    .limit(1)
+                )
+                dup = existing.scalars().first()
+                if dup:
+                    return {
+                        "success": True,
+                        "is_duplicate": True,
+                        "edi_file_id": dup.id,
+                        "duplicate_upload_id": edi_file.id,
+                        "claims_posted": 0,
+                        "total_paid": 0.0,
+                        "payments": [],
+                        "denials": [],
+                    }
+            raise
 
         return {
             "success": True,
@@ -935,13 +1016,7 @@ class EDIProcessor:
                     parts = segment.split("*")
                     if len(parts) >= 3:
                         tracking_number = parts[2]
-                        claim_result = await self.db.execute(
-                            select(Claim).where(and_(
-                                Claim.interchange_control_number == tracking_number,
-                                Claim.tenant_id == tenant_id,
-                            ))
-                        )
-                        claim = claim_result.scalar_one_or_none()
+                        claim = await self._match_claim_by_tracking_number(tracking_number, tenant_id)
                         if claim:
                             new_state = _map_stc_to_state(last_stc_code or "")
                             if new_state is not None:

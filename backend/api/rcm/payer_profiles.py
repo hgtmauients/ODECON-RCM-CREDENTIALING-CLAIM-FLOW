@@ -672,11 +672,14 @@ async def get_payer_connections(
     Get all trading partner connections for a payer
     Credentials are returned encrypted (not decrypted in API)
     """
+    current_user.require_role("admin")
     try:
         await _verify_payer_tenant(payer_id, current_user.tenant_id, db)
         result = await db.execute(
             select(TradingPartnerConnection)
+            .join(PayerProfile, TradingPartnerConnection.payer_id == PayerProfile.id)
             .where(TradingPartnerConnection.payer_id == payer_id)
+            .where(PayerProfile.tenant_id == current_user.tenant_id)
             .where(TradingPartnerConnection.is_active == True)
         )
         connections = result.scalars().all()
@@ -975,12 +978,15 @@ async def test_payer_connection(
     Test clearinghouse connection for payer
     Tests SFTP/API connectivity before going live
     """
+    current_user.require_role("admin")
     try:
         await _verify_payer_tenant(payer_id, current_user.tenant_id, db)
         # Get payer connection
         conn_result = await db.execute(
             select(TradingPartnerConnection)
+            .join(PayerProfile, TradingPartnerConnection.payer_id == PayerProfile.id)
             .where(TradingPartnerConnection.payer_id == payer_id)
+            .where(PayerProfile.tenant_id == current_user.tenant_id)
             .limit(1)
         )
         connection = conn_result.scalar_one_or_none()
@@ -992,10 +998,10 @@ async def test_payer_connection(
         from services.clearinghouse_transport import SFTPTransport, APITransport
         
         if connection.connection_type == "sftp":
-            sftp = SFTPTransport()
+            sftp = SFTPTransport(db)
             test_result = await sftp.test_connection(connection)
         elif connection.connection_type == "api":
-            api = APITransport()
+            api = APITransport(db)
             test_result = await api.test_connection(connection)
         else:
             return {

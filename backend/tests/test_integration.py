@@ -414,7 +414,7 @@ class TestClearinghousePolling:
             return_value=[{"local_path": "/tmp/ack1.277"}, {"local_path": "/tmp/ack2.277"}]
         )
 
-        files = await service.poll_for_277_files(payer_id=42)
+        files = await service.poll_for_277_files(payer_id=42, tenant_id=TENANT_ID)
 
         assert files == ["/tmp/ack1.277", "/tmp/ack2.277"]
         service.sftp.download_files.assert_awaited_once()

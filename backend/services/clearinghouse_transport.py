@@ -14,7 +14,7 @@ import httpx
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, and_
 
 from models.rcm import TradingPartnerConnection, PayerProfile
 from models.claims import EDIFile
@@ -440,7 +440,8 @@ class ClearinghouseService:
     async def submit_837_file(
         self,
         local_file_path: str,
-        payer_id: int
+        payer_id: int,
+        tenant_id: str,
     ) -> Dict[str, Any]:
         """
         Submit 837 file using configured method for payer
@@ -448,7 +449,10 @@ class ClearinghouseService:
         try:
             # Get payer
             payer_result = await self.db.execute(
-                select(PayerProfile).where(PayerProfile.id == payer_id)
+                select(PayerProfile).where(and_(
+                    PayerProfile.id == payer_id,
+                    PayerProfile.tenant_id == tenant_id,
+                ))
             )
             payer = payer_result.scalar_one_or_none()
             
@@ -457,9 +461,13 @@ class ClearinghouseService:
             
             # Get connection
             conn_result = await self.db.execute(
-                select(TradingPartnerConnection).where(
-                    TradingPartnerConnection.payer_id == payer_id
-                ).limit(1)
+                select(TradingPartnerConnection)
+                .join(PayerProfile, TradingPartnerConnection.payer_id == PayerProfile.id)
+                .where(and_(
+                    TradingPartnerConnection.payer_id == payer_id,
+                    PayerProfile.tenant_id == tenant_id,
+                ))
+                .limit(1)
             )
             connection = conn_result.scalar_one_or_none()
             
@@ -497,7 +505,7 @@ class ClearinghouseService:
             logger.error(f"Error submitting 837: {e}")
             return {"success": False, "error": str(e)}
     
-    async def poll_for_835_files(self, payer_id: int) -> List[str]:
+    async def poll_for_835_files(self, payer_id: int, tenant_id: str) -> List[str]:
         """
         Poll clearinghouse for new 835 remittance files
         Run this as a scheduled job (every hour)
@@ -505,9 +513,13 @@ class ClearinghouseService:
         try:
             # Get connection
             conn_result = await self.db.execute(
-                select(TradingPartnerConnection).where(
-                    TradingPartnerConnection.payer_id == payer_id
-                ).limit(1)
+                select(TradingPartnerConnection)
+                .join(PayerProfile, TradingPartnerConnection.payer_id == PayerProfile.id)
+                .where(and_(
+                    TradingPartnerConnection.payer_id == payer_id,
+                    PayerProfile.tenant_id == tenant_id,
+                ))
+                .limit(1)
             )
             connection = conn_result.scalar_one_or_none()
             
@@ -526,7 +538,7 @@ class ClearinghouseService:
             logger.error(f"Error polling for 835 files: {e}")
             return []
 
-    async def poll_for_277_files(self, payer_id: int) -> List[str]:
+    async def poll_for_277_files(self, payer_id: int, tenant_id: str) -> List[str]:
         """
         Poll clearinghouse for new 277/277CA acknowledgment files.
         Run this as a scheduled job (every hour).
@@ -534,9 +546,13 @@ class ClearinghouseService:
         try:
             # Get connection
             conn_result = await self.db.execute(
-                select(TradingPartnerConnection).where(
-                    TradingPartnerConnection.payer_id == payer_id
-                ).limit(1)
+                select(TradingPartnerConnection)
+                .join(PayerProfile, TradingPartnerConnection.payer_id == PayerProfile.id)
+                .where(and_(
+                    TradingPartnerConnection.payer_id == payer_id,
+                    PayerProfile.tenant_id == tenant_id,
+                ))
+                .limit(1)
             )
             connection = conn_result.scalar_one_or_none()
 

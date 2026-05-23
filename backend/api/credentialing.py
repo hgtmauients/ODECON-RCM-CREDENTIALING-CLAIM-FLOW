@@ -42,6 +42,8 @@ def _spawn_background(coro, name: str) -> None:
     task.add_done_callback(_on_done)
 
 WEBHOOK_REPLAY_WINDOW = 300  # 5 minutes
+_ACTIVE_CREDENTIALING_STATUSES = {"pending", "in_progress", "requires_review"}
+_IN_PROGRESS_STALE_MINUTES = int(os.getenv("CREDENTIALING_IN_PROGRESS_STALE_MINUTES", "30"))
 
 
 async def _verify_webhook_signature(
@@ -154,6 +156,26 @@ async def handle_provider_signup(
     signup_data = signup.model_dump()
 
     try:
+        # Business idempotency: if an active credentialing row already exists
+        # for this tenant + NPI, reuse it instead of creating duplicates.
+        existing_result = await db.execute(
+            select(ProviderCredentialing)
+            .where(ProviderCredentialing.tenant_id == tenant_id)
+            .order_by(ProviderCredentialing.created_at.desc())
+            .limit(200)
+        )
+        for existing in existing_result.scalars().all():
+            existing_npi = (existing.signup_data or {}).get("npi")
+            if existing_npi != signup.npi:
+                continue
+            if existing.credentialing_status in _ACTIVE_CREDENTIALING_STATUSES:
+                return {
+                    "success": True,
+                    "provider_id": existing.provider_id,
+                    "status": existing.credentialing_status,
+                    "idempotent_reuse": True,
+                }
+
         provider_id = f"PROV_{signup.npi}_{int(datetime.utcnow().timestamp())}"
 
         credentialing = ProviderCredentialing(
@@ -606,26 +628,49 @@ async def reject_provider(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-async def run_credentialing_checks(provider_id: str, signup_data: Dict[str, Any], tenant_id: str):
+async def run_credentialing_checks(
+    provider_id: str,
+    signup_data: Dict[str, Any],
+    tenant_id: str,
+    *,
+    preclaimed: bool = False,
+):
     """Run all credentialing checks in parallel (background task)."""
     from core.database import async_session_factory
 
     async with async_session_factory() as db:
         try:
             result = await db.execute(
-                select(ProviderCredentialing).where(and_(
+                select(ProviderCredentialing)
+                .where(and_(
                     ProviderCredentialing.provider_id == provider_id,
                     ProviderCredentialing.tenant_id == tenant_id,
                 ))
+                .with_for_update()
             )
             credentialing = result.scalar_one_or_none()
             if not credentialing:
                 return
 
-            credentialing.credentialing_status = "in_progress"
-            credentialing.started_at = datetime.utcnow()
-            credentialing.completed_at = None
-            await db.commit()
+            now = datetime.utcnow()
+            if not preclaimed:
+                if credentialing.credentialing_status in ("passed", "failed"):
+                    return
+                if (
+                    credentialing.credentialing_status == "in_progress"
+                    and credentialing.started_at
+                    and (now - credentialing.started_at).total_seconds() < (_IN_PROGRESS_STALE_MINUTES * 60)
+                ):
+                    # Another worker is actively processing this provider.
+                    return
+
+                credentialing.credentialing_status = "in_progress"
+                credentialing.started_at = now
+                credentialing.completed_at = None
+                await db.commit()
+            elif credentialing.credentialing_status != "in_progress":
+                # Queue pre-claimed this row, but status changed before execution.
+                return
 
             check_keys = []
             check_coros = []

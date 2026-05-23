@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "600"))
 DEFAULT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
 REDIS_URL = os.getenv("REDIS_URL", "")
+ENV = os.getenv("ENV", "development")
 
 # Path patterns that bypass rate limiting entirely (health checks etc).
 BYPASS_PATHS = ("/health", "/docs", "/openapi.json", "/redoc")
@@ -142,11 +143,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.window = window_seconds
         self._memory_store = _InMemoryStore()
         self._redis_store: Optional[_RedisStore] = None
+        if ENV == "production" and not REDIS_URL:
+            raise RuntimeError("REDIS_URL required in production for multi-worker-safe rate limiting")
         if REDIS_URL:
             try:
                 self._redis_store = _RedisStore(REDIS_URL)
                 logger.info("Rate limiter using Redis at %s", REDIS_URL)
             except Exception as e:
+                if ENV == "production":
+                    raise RuntimeError("Redis rate limiter init failed in production") from e
                 logger.warning("Failed to init Redis rate limiter, falling back to in-memory: %s", e)
 
     def _bucket_key(self, request: Request) -> str:
