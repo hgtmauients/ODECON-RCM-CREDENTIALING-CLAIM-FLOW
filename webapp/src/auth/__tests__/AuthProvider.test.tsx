@@ -19,13 +19,14 @@ vi.mock('@/services/api', () => ({
 }));
 
 function Harness() {
-  const { isAuthenticated, user, login, logout } = useAuth();
+  const { isAuthenticated, user, login, logout, setTenant } = useAuth();
   return (
     <div>
       <div data-testid="auth-state">{isAuthenticated ? 'yes' : 'no'}</div>
       <div data-testid="tenant">{user?.tenant_id ?? ''}</div>
-      <button onClick={() => login('user@example.com', 'pass')}>login</button>
+      <button onClick={() => void login('user@example.com', 'pass').catch(() => undefined)}>login</button>
       <button onClick={logout}>logout</button>
+      <button onClick={() => setTenant('tenant-override')}>set-tenant</button>
     </div>
   );
 }
@@ -96,5 +97,98 @@ describe('AuthProvider session behavior', () => {
     });
     expect(sessionStorage.getItem('claimflow_token')).toBeNull();
     expect(sessionStorage.getItem('claimflow_user')).toBeNull();
+  });
+
+  it('clears invalid session payloads on boot', async () => {
+    sessionStorage.setItem('claimflow_token', 'bad-token');
+    sessionStorage.setItem('claimflow_user', '{not-json');
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('auth-state')).toHaveTextContent('no');
+    });
+    expect(sessionStorage.getItem('claimflow_token')).toBeNull();
+    expect(sessionStorage.getItem('claimflow_user')).toBeNull();
+  });
+
+  it('setTenant updates in-memory user and sessionStorage', async () => {
+    sessionStorage.setItem('claimflow_token', 'session-token');
+    sessionStorage.setItem(
+      'claimflow_user',
+      JSON.stringify({ email: 'u@example.com', tenant_id: 'tenant-a', roles: ['admin'] })
+    );
+    const user = userEvent.setup();
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('auth-state')).toHaveTextContent('yes');
+    });
+
+    await act(async () => {
+      await user.click(screen.getByText('set-tenant'));
+    });
+
+    expect(apiService.setTenantId).toHaveBeenCalledWith('tenant-override');
+    expect(screen.getByTestId('tenant')).toHaveTextContent('tenant-override');
+    expect(sessionStorage.getItem('claimflow_user')).toContain('"tenant_id":"tenant-override"');
+  });
+
+  it('does not persist auth state when login fails', async () => {
+    vi.mocked(apiService.post).mockRejectedValue(new Error('Invalid credentials'));
+    const user = userEvent.setup();
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>
+    );
+
+    await act(async () => {
+      await user.click(screen.getByText('login'));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('auth-state')).toHaveTextContent('no');
+    });
+    expect(sessionStorage.getItem('claimflow_token')).toBeNull();
+    expect(sessionStorage.getItem('claimflow_user')).toBeNull();
+  });
+
+  it('logout removes legacy localStorage session keys too', async () => {
+    sessionStorage.setItem('claimflow_token', 'session-token');
+    sessionStorage.setItem(
+      'claimflow_user',
+      JSON.stringify({ email: 'u@example.com', tenant_id: 'tenant-a', roles: ['admin'] })
+    );
+    localStorage.setItem('claimflow_token', 'legacy-token');
+    localStorage.setItem('claimflow_user', '{"legacy":true}');
+    const user = userEvent.setup();
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('auth-state')).toHaveTextContent('yes');
+    });
+
+    await act(async () => {
+      await user.click(screen.getByText('logout'));
+    });
+
+    expect(localStorage.getItem('claimflow_token')).toBeNull();
+    expect(localStorage.getItem('claimflow_user')).toBeNull();
   });
 });
