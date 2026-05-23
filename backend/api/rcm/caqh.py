@@ -38,6 +38,7 @@ async def caqh_integration_status(
     current_user: Principal = Depends(get_current_user),
 ):
     """Check if CAQH ProView integration is configured for the current tenant."""
+    current_user.require_role("admin")
     from services.caqh_proview import is_configured_for_tenant
     configured = await is_configured_for_tenant(db, current_user.tenant_id)
     return {
@@ -53,6 +54,7 @@ async def search_caqh_by_npi(
     current_user: Principal = Depends(get_current_user),
 ):
     """Search CAQH ProView for a provider by NPI."""
+    current_user.require_role("admin")
     await _require_configured(db, current_user.tenant_id)
     client = await _get_client(db, current_user.tenant_id)
     result = await client.search_by_npi(npi)
@@ -66,6 +68,7 @@ async def get_caqh_provider_status(
     current_user: Principal = Depends(get_current_user),
 ):
     """Get CAQH attestation status for a provider."""
+    current_user.require_role("admin")
     await _require_configured(db, current_user.tenant_id)
     client = await _get_client(db, current_user.tenant_id)
     result = await client.get_provider_status(caqh_id)
@@ -82,6 +85,7 @@ async def pull_caqh_provider_data(
     Pull full credentialing profile from CAQH ProView.
     Returns licenses, certifications, malpractice, education, DEA, privileges.
     """
+    current_user.require_role("admin")
     await _require_configured(db, current_user.tenant_id)
     client = await _get_client(db, current_user.tenant_id)
     result = await client.get_provider_data(caqh_id)
@@ -101,6 +105,7 @@ async def import_caqh_to_credentialing(
     Pull CAQH data and create/update a ProviderCredentialing record.
     Automatically populates verification fields from CAQH.
     """
+    current_user.require_role("admin")
     await _require_configured(db, current_user.tenant_id)
     client = await _get_client(db, current_user.tenant_id)
     caqh_data = await client.get_provider_data(caqh_id)
@@ -188,6 +193,7 @@ async def add_provider_to_caqh_roster(
     current_user: Principal = Depends(get_current_user),
 ):
     """Add a provider to your CAQH organization roster."""
+    current_user.require_role("admin")
     await _require_configured(db, current_user.tenant_id)
     client = await _get_client(db, current_user.tenant_id)
     result = await client.add_to_roster(body)

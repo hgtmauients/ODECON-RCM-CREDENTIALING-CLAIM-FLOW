@@ -26,6 +26,7 @@ async def trigger_payer_case_creation(
     current_user: Principal = Depends(get_current_user),
 ):
     """Manually trigger payer enrollment case creation - scoped to tenant"""
+    current_user.require_role("admin")
     try:
         cred_result = await db.execute(
             select(ProviderCredentialing).where(and_(
@@ -67,6 +68,7 @@ async def get_eligible_payers_for_provider(
     current_user: Principal = Depends(get_current_user),
 ):
     """Get list of payers provider is eligible for - scoped to tenant"""
+    current_user.require_role("admin")
     try:
         result = await get_provider_eligible_payers(provider_id, db, tenant_id=current_user.tenant_id)
         return {"success": True, "data": result}

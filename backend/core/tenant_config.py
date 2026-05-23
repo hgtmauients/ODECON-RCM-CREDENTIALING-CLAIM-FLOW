@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.audit import log_credential_access
+
 logger = logging.getLogger(__name__)
 
 SENSITIVE_KEYS = frozenset({
@@ -80,7 +82,15 @@ async def get_tenant_setting(
             if key in SENSITIVE_KEYS:
                 try:
                     from services.encryption import decrypt_credential
-                    return await decrypt_credential(value)
+                    plain = await decrypt_credential(value)
+                    await log_credential_access(
+                        db,
+                        tenant_id=tenant_id,
+                        credential_type=key,
+                        action="viewed",
+                        reason="tenant_setting_read_db",
+                    )
+                    return plain
                 except Exception as e:
                     logger.warning(f"Failed to decrypt tenant setting {key}: {e}")
             else:
@@ -134,6 +144,13 @@ async def get_masked_tenant_settings(db: AsyncSession, tenant_id: str) -> Dict[s
                 try:
                     from services.encryption import decrypt_credential
                     plain = await decrypt_credential(db_val)
+                    await log_credential_access(
+                        db,
+                        tenant_id=tenant_id,
+                        credential_type=key,
+                        action="viewed",
+                        reason="tenant_setting_masked_read",
+                    )
                     masked[key] = _mask(plain)
                 except Exception:
                     masked[key] = "***error***"

@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 WINDOW_SECONDS = int(os.getenv("WEBHOOK_REPLAY_WINDOW", "300"))
 REDIS_URL = os.getenv("REDIS_URL", "")
+ENV = os.getenv("ENV", "development")
 
 
 class _MemoryNonceStore:
@@ -62,9 +63,13 @@ def _get_store():
                 _store = _RedisNonceStore(REDIS_URL)
                 logger.info("Webhook nonce store: Redis at %s", REDIS_URL)
             except Exception as e:
+                if ENV == "production":
+                    raise RuntimeError("Redis nonce store init failed in production") from e
                 logger.warning("Failed to init Redis nonce store, falling back to memory: %s", e)
                 _store = _MemoryNonceStore()
         else:
+            if ENV == "production":
+                raise RuntimeError("REDIS_URL required in production for replay-safe nonce store")
             _store = _MemoryNonceStore()
     return _store
 

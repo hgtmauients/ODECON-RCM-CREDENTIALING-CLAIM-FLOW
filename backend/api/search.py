@@ -44,6 +44,7 @@ async def global_search(
       - payers     : name ILIKE, display_name ILIKE, payer_id ILIKE
       - denials    : denial_description ILIKE, carc_code ILIKE, rarc_code ILIKE
     """
+    current_user.require_role("billing")
     term = f"%{q.strip()}%"
     tenant_filter = current_user.tenant_id
 

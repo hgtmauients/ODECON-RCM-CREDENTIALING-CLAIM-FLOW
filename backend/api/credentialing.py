@@ -86,7 +86,14 @@ async def _verify_webhook_signature(
     # Use the FULL signature so two valid signatures from the same secret
     # (legitimate retry vs. attacker replay) are still distinguishable.
     from core.nonce_store import is_replay
-    if await is_replay(f"{tenant_id}:{signature}"):
+    try:
+        replayed = await is_replay(f"{tenant_id}:{signature}")
+    except Exception:
+        # Fail closed: if replay protection backend is unavailable, reject the
+        # webhook rather than accepting a potentially replayable request.
+        logger.exception("Webhook replay check unavailable for tenant=%s", tenant_id)
+        return False
+    if replayed:
         logger.warning("Webhook signature replay detected for tenant=%s", tenant_id)
         return False
 
@@ -178,6 +185,7 @@ async def get_credentialing_status(
     current_user: Principal = Depends(get_current_user),
 ):
     """Get credentialing status - scoped to tenant"""
+    current_user.require_role("admin")
     try:
         result = await db.execute(
             select(ProviderCredentialing).where(and_(
@@ -226,6 +234,7 @@ async def list_credentialing_queue(
     current_user: Principal = Depends(get_current_user),
 ):
     """List credentialing queue - scoped to tenant. Paginated."""
+    current_user.require_role("admin")
     try:
         # Cap limit to avoid abuse / oversized responses
         limit = max(1, min(limit, 500))
@@ -614,6 +623,8 @@ async def run_credentialing_checks(provider_id: str, signup_data: Dict[str, Any]
                 return
 
             credentialing.credentialing_status = "in_progress"
+            credentialing.started_at = datetime.utcnow()
+            credentialing.completed_at = None
             await db.commit()
 
             check_keys = []

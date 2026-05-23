@@ -33,6 +33,7 @@ async def dashboard_summary(
     current_user: Principal = Depends(get_current_user),
 ):
     """Return KPI counts + work queues + AR aging for the current tenant."""
+    current_user.require_role("billing")
     tenant_filter = current_user.tenant_id
     today = date.today()
     thirty_days_out = today + timedelta(days=30)
@@ -78,7 +79,7 @@ async def dashboard_summary(
     open_denials_row = await db.execute(
         select(func.count(DenialCase.id)).where(and_(
             DenialCase.tenant_id == tenant_filter,
-            DenialCase.status.in_(["new", "in_progress", "appealed"]),
+            DenialCase.status.in_(["new", "in_review", "appeal_drafted", "appeal_submitted"]),
         ))
     )
     open_denials = int(open_denials_row.scalar() or 0)
