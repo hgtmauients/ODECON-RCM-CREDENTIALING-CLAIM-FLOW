@@ -184,7 +184,8 @@ Notes:
   - predeploy security regression subset,
   - post-deploy `/health` smoke,
   - critical route smoke for auth + payer paths,
-  - backend log error-rate guard (`ERROR|Traceback|Exception` lines over last 10m).
+  - backend log error-rate guard (`ERROR|Traceback|Exception` lines over last 10m),
+  - SLO review attestation freshness gate (`docs/slo-review-attestation.json`, max age 14 days by default).
 
 ### One-command production canary verification (ClaimFlow)
 
@@ -499,6 +500,24 @@ Rotation:
 Point an external service (BetterUptime, UptimeRobot, Pingdom) at `https://api.noodledoc.com/health` and `https://noodledoc.com` with a 1-minute interval.
 
 SLO/alert baseline: see `docs/slo-alert-policy.md`.
+
+### SLO review attestation gate
+
+- Before each production release, refresh `docs/slo-review-attestation.json` with:
+  - `reviewed_at_utc` (ISO8601 UTC),
+  - `reviewer` (on-call or release owner),
+  - `summary` (short checkpoint note).
+- `release_production.py` blocks release when the attestation is missing/stale.
+
+### Dependency patch policy (P1.3)
+
+- **Owner:** platform on-call (`platform-oncall@noodledoc.com`)
+- **Cadence:** weekly dependency review (aligned with scheduled CI dependency scan)
+- **Patch windows:**
+  - critical CVEs: patch or mitigation within 24 hours
+  - high CVEs: patch within 7 days
+  - medium CVEs: patch within 30 days
+- **Operational rule:** if a critical runtime CVE is detected and no mitigation exists, pause production deploys until remediated.
 
 ---
 

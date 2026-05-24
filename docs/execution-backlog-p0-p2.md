@@ -108,7 +108,7 @@ Raise system quality from ~8.4 to 9.0+ with a concrete, test-gated rollout plan 
   - Block merge on critical vulnerabilities in runtime dependencies.
 - Test gate commands:
   - CI-managed (scan workflow required check).
- - Status: baseline implemented (`dependency-security-scan` job with `pip-audit` + `npm audit --audit-level=high`)
+ - Status: expanded in-progress (`dependency-security-scan` CI gate active; runbook now defines owner + patch windows + deploy pause policy for critical CVEs)
 
 ### P1 Exit Criteria
 - Outbound integrations use standardized timeout/retry policies.
@@ -128,6 +128,7 @@ Raise system quality from ~8.4 to 9.0+ with a concrete, test-gated rollout plan 
   - `docs/` (SLO/alert policy doc)
 - Tests/gates:
   - Release checklist enforces SLO dashboard review before production deploy.
+ - Status: expanded in-progress (release script now enforces SLO review attestation freshness gate via `docs/slo-review-attestation.json`)
 
 ### P2.2 Security telemetry dashboard baseline
 - Scope:

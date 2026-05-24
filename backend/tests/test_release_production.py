@@ -1,5 +1,6 @@
 import json
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts import release_production as rp
@@ -64,3 +65,45 @@ def test_run_security_gate_raises_on_failure(monkeypatch):
         assert False, "expected RuntimeError"
     except RuntimeError as exc:
         assert "predeploy security gate failed" in str(exc)
+
+
+def test_slo_review_gate_passes_with_fresh_attestation(tmp_path):
+    reviewed_at = datetime.now(timezone.utc).isoformat()
+    attestation = tmp_path / "slo-review-attestation.json"
+    attestation.write_text(
+        json.dumps(
+            {
+                "reviewed_at_utc": reviewed_at,
+                "reviewer": "platform-oncall@noodledoc.com",
+                "summary": "SLO dashboard reviewed; error budget healthy.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = rp._run_slo_review_gate(
+        tmp_path,
+        attestation_path="slo-review-attestation.json",
+        max_age_days=14,
+    )
+    assert out["ok"] is True
+
+
+def test_slo_review_gate_fails_when_attestation_is_stale(tmp_path):
+    reviewed_at = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    attestation = tmp_path / "slo-review-attestation.json"
+    attestation.write_text(
+        json.dumps(
+            {
+                "reviewed_at_utc": reviewed_at,
+                "reviewer": "platform-oncall@noodledoc.com",
+                "summary": "Old review",
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = rp._run_slo_review_gate(
+        tmp_path,
+        attestation_path="slo-review-attestation.json",
+        max_age_days=14,
+    )
+    assert out["ok"] is False

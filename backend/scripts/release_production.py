@@ -134,6 +134,53 @@ def _run_error_rate_guard(server: str, *, window_minutes: int, max_error_lines: 
     }
 
 
+def _run_slo_review_gate(repo_root: Path, *, attestation_path: str, max_age_days: int) -> Dict[str, Any]:
+    attestation_file = (repo_root / attestation_path).resolve()
+    if not attestation_file.exists():
+        return {
+            "ok": False,
+            "error": f"SLO attestation file missing: {attestation_path}",
+        }
+
+    try:
+        payload = json.loads(attestation_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"Failed to parse SLO attestation JSON: {exc}",
+        }
+
+    reviewed_at_raw = str(payload.get("reviewed_at_utc", "")).strip()
+    reviewer = str(payload.get("reviewer", "")).strip()
+    summary = str(payload.get("summary", "")).strip()
+    if not reviewed_at_raw or not reviewer or not summary:
+        return {
+            "ok": False,
+            "error": "SLO attestation requires reviewed_at_utc, reviewer, and summary",
+        }
+
+    try:
+        reviewed_at = datetime.fromisoformat(reviewed_at_raw.replace("Z", "+00:00"))
+        if reviewed_at.tzinfo is None:
+            reviewed_at = reviewed_at.replace(tzinfo=timezone.utc)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"Invalid reviewed_at_utc format: {exc}",
+        }
+
+    age_days = (datetime.now(timezone.utc) - reviewed_at.astimezone(timezone.utc)).total_seconds() / 86400.0
+    ok = age_days <= float(max_age_days)
+    return {
+        "ok": ok,
+        "reviewed_at_utc": reviewed_at.astimezone(timezone.utc).isoformat(),
+        "reviewer": reviewer,
+        "summary": summary,
+        "age_days": round(age_days, 3),
+        "max_age_days": max_age_days,
+    }
+
+
 def _ensure_git_clean(repo_root: Path) -> None:
     status = _run(["git", "status", "--porcelain"], cwd=repo_root, capture_output=True)
     if status.returncode != 0:
@@ -238,6 +285,9 @@ def main() -> int:
     parser.add_argument("--skip-post-smoke", action="store_true", help="Skip post-deploy backend smoke check")
     parser.add_argument("--skip-route-smoke", action="store_true", help="Skip critical route smoke checks")
     parser.add_argument("--skip-error-rate-guard", action="store_true", help="Skip post-deploy error-rate guard")
+    parser.add_argument("--skip-slo-review-gate", action="store_true", help="Skip SLO review attestation gate")
+    parser.add_argument("--slo-attestation-path", default="docs/slo-review-attestation.json", help="Path to SLO review attestation JSON")
+    parser.add_argument("--slo-max-age-days", type=int, default=14, help="Maximum allowed age for SLO review attestation")
     parser.add_argument("--error-window-minutes", type=int, default=10, help="Lookback window for error-rate guard")
     parser.add_argument("--max-error-lines", type=int, default=20, help="Maximum ERROR/Exception lines allowed in guard window")
     parser.add_argument("--allow-dirty", action="store_true", help="Allow running with local uncommitted changes")
@@ -256,6 +306,7 @@ def main() -> int:
         "post_deploy_smoke": None,
         "route_smoke": None,
         "error_rate_guard": None,
+        "slo_review_gate": None,
         "canary": None,
         "go": False,
     }
@@ -316,6 +367,18 @@ def main() -> int:
                 raise RuntimeError("post-deploy error-rate guard failed")
         else:
             report["error_rate_guard"] = "skipped"
+
+        if not args.skip_slo_review_gate:
+            slo_gate = _run_slo_review_gate(
+                repo_root,
+                attestation_path=args.slo_attestation_path,
+                max_age_days=max(1, args.slo_max_age_days),
+            )
+            report["slo_review_gate"] = slo_gate
+            if not slo_gate.get("ok"):
+                raise RuntimeError("SLO review gate failed")
+        else:
+            report["slo_review_gate"] = "skipped"
 
         if not args.skip_canary:
             canary_json = _run_canary(server=args.server, tenant=args.tenant)
