@@ -94,7 +94,7 @@ Raise system quality from ~8.4 to 9.0+ with a concrete, test-gated rollout plan 
 - Test gate commands:
   - `py -3 -m pytest backend/tests -k \"idempotency or replay\" -v`
   - `py -3 -m pytest backend/tests/test_e2e_credentialing.py -v`
- - Status: expanded in-progress (guards now cover create + batch submit + credentialing decision mutations; helper concurrency test + E2E duplicate-key route regressions added)
+ - Status: expanded in-progress (guards now cover create + batch submit + credentialing decision mutations; helper concurrency test + E2E duplicate-key regressions added for approve/reject/rerun-checks)
 
 ### P1.3 Dependency and runtime security hygiene
 - Scope:

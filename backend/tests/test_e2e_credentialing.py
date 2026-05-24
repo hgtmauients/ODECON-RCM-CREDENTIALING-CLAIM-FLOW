@@ -512,6 +512,70 @@ async def test_step10_rejection_flow(client: AsyncClient):
     print(f"            Reason: {detail['rejection_reason']}")
 
 
+@pytest.mark.asyncio(loop_scope="module")
+async def test_reject_idempotency_key_rejects_duplicate(client: AsyncClient):
+    """Duplicate Idempotency-Key on reject must be blocked."""
+    payload = {
+        "first_name": "Idempotent",
+        "last_name": "Reject",
+        "email": "idem.reject@claimflow.io",
+        "npi": "4444444444",
+        "state_code": "HI",
+        "license_number": "HI-MED-IDEM-REJECT",
+        "run_checks": False,
+    }
+    create_resp = await client.post("/api/credentialing/manual", json=payload)
+    assert create_resp.status_code == 200, f"Manual provider create failed: {create_resp.text}"
+    provider_id = create_resp.json()["provider_id"]
+
+    idem_headers = {"Idempotency-Key": "e2e-reject-idem-key-1"}
+    first = await client.post(
+        f"/api/credentialing/{provider_id}/reject",
+        json={"reason": "First rejection for idempotency test"},
+        headers=idem_headers,
+    )
+    assert first.status_code == 200, f"First reject should succeed: {first.text}"
+
+    second = await client.post(
+        f"/api/credentialing/{provider_id}/reject",
+        json={"reason": "Replay rejection with same idempotency key"},
+        headers=idem_headers,
+    )
+    assert second.status_code == 409, f"Duplicate key should be rejected: {second.text}"
+    assert second.json()["detail"] == "Duplicate Idempotency-Key"
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_rerun_checks_idempotency_key_rejects_duplicate(client: AsyncClient):
+    """Duplicate Idempotency-Key on rerun-checks must be blocked."""
+    payload = {
+        "first_name": "Idempotent",
+        "last_name": "Rerun",
+        "email": "idem.rerun@claimflow.io",
+        "npi": "5555555555",
+        "state_code": "HI",
+        "license_number": "HI-MED-IDEM-RERUN",
+        "run_checks": False,
+    }
+    create_resp = await client.post("/api/credentialing/manual", json=payload)
+    assert create_resp.status_code == 200, f"Manual provider create failed: {create_resp.text}"
+    provider_id = create_resp.json()["provider_id"]
+
+    idem_headers = {"Idempotency-Key": "e2e-rerun-idem-key-1"}
+    first = await client.post(
+        f"/api/credentialing/{provider_id}/rerun-checks",
+        headers=idem_headers,
+    )
+    assert first.status_code == 200, f"First rerun should succeed: {first.text}"
+
+    second = await client.post(
+        f"/api/credentialing/{provider_id}/rerun-checks",
+        headers=idem_headers,
+    )
+    assert second.status_code == 409, f"Duplicate key should be rejected: {second.text}"
+    assert second.json()["detail"] == "Duplicate Idempotency-Key"
+
+
 # ═══════════════════════════════════════════════════════════════
 # Step 11: Full lifecycle summary
 # ═══════════════════════════════════════════════════════════════
