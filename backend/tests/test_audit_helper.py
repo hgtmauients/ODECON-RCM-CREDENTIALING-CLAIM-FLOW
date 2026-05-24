@@ -191,3 +191,41 @@ async def test_audit_failure_fallback_preserves_impersonation_metadata(fake_requ
     assert row.extra_data["is_impersonating"] is True
     assert row.extra_data["token_tenant_id"] == "11111111-1111-1111-1111-111111111111"
     assert row.extra_data["effective_tenant_id"] == "22222222-2222-2222-2222-222222222222"
+
+
+@pytest.mark.asyncio
+async def test_log_audit_event_ignores_xff_without_trusted_proxy(principal, monkeypatch):
+    from core import audit
+
+    class _Req:
+        headers = {"User-Agent": "pytest", "X-Forwarded-For": "203.0.113.9, 10.0.0.5"}
+        client = type("Client", (), {"host": "10.0.0.5"})()
+
+    monkeypatch.delenv("TRUSTED_PROXY_CIDRS", raising=False)
+    db = MagicMock()
+    db.add = MagicMock()
+    await audit.log_audit_event(
+        db, principal, action="patient_viewed", resource_type="patient",
+        resource_id="42", request=_Req(),
+    )
+    row = db.add.call_args.args[0]
+    assert row.ip_address == "10.0.0.5"
+
+
+@pytest.mark.asyncio
+async def test_log_audit_event_uses_xff_when_peer_is_trusted_proxy(principal, monkeypatch):
+    from core import audit
+
+    class _Req:
+        headers = {"User-Agent": "pytest", "X-Forwarded-For": "203.0.113.9, 10.0.0.5"}
+        client = type("Client", (), {"host": "10.0.0.5"})()
+
+    monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8")
+    db = MagicMock()
+    db.add = MagicMock()
+    await audit.log_audit_event(
+        db, principal, action="patient_viewed", resource_type="patient",
+        resource_id="42", request=_Req(),
+    )
+    row = db.add.call_args.args[0]
+    assert row.ip_address == "203.0.113.9"

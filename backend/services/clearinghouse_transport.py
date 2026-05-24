@@ -21,6 +21,7 @@ from models.claims import EDIFile
 from services.encryption import decrypt_credential
 from core.audit import log_credential_access
 from core.http_client import request_with_retry
+from core.outbound_guard import assert_safe_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +297,12 @@ class APITransport:
         self.http_max_retries = max(0, int(os.getenv("CLEARINGHOUSE_API_MAX_RETRIES", "2")))
         self.http_retry_backoff_seconds = float(os.getenv("CLEARINGHOUSE_API_RETRY_BACKOFF_SECONDS", "0.2"))
 
+    @staticmethod
+    def _validated_endpoint(connection: TradingPartnerConnection) -> str:
+        endpoint = str(connection.api_endpoint or "").strip()
+        assert_safe_http_url(endpoint, field_name="api_endpoint")
+        return endpoint.rstrip("/")
+
     async def _decrypt_with_audit(
         self,
         *,
@@ -355,9 +362,10 @@ class APITransport:
             
             headers["Content-Type"] = "application/x12"
             
+            endpoint = self._validated_endpoint(connection)
             response = await request_with_retry(
                 method="POST",
-                url=f"{connection.api_endpoint}/submit",
+                url=f"{endpoint}/submit",
                 content=edi_content,
                 headers=headers,
                 timeout_seconds=self.http_timeout_seconds,
@@ -407,9 +415,10 @@ class APITransport:
                 headers["Authorization"] = f"Bearer {api_key}"
             
             # Ping endpoint
+            endpoint = self._validated_endpoint(connection)
             response = await request_with_retry(
                 method="GET",
-                url=f"{connection.api_endpoint}/ping",
+                url=f"{endpoint}/ping",
                 headers=headers,
                 timeout_seconds=min(10.0, self.http_timeout_seconds),
                 max_retries=self.http_max_retries,

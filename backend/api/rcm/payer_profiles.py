@@ -16,6 +16,7 @@ import os
 
 from core.database import get_db
 from core.audit import log_audit_event
+from core.outbound_guard import assert_safe_http_url
 from models.rcm import (
     PayerProfile,
     PayerRule,
@@ -71,6 +72,7 @@ async def list_payers(
     Filterable by state, active status, draft status, and search query.
     Pass no is_active / is_draft to see all (including drafts).
     """
+    current_user.require_role("billing")
     try:
         query = select(PayerProfile).where(PayerProfile.tenant_id == current_user.tenant_id)
 
@@ -146,6 +148,7 @@ async def get_payer(
     """
     Get full payer profile with all details
     """
+    current_user.require_role("billing")
     try:
         result = await db.execute(
             select(PayerProfile).where(and_(PayerProfile.id == payer_id, PayerProfile.tenant_id == current_user.tenant_id))
@@ -508,6 +511,7 @@ async def get_payer_rules(
     """
     Get all rules for a payer
     """
+    current_user.require_role("billing")
     try:
         await _verify_payer_tenant(payer_id, current_user.tenant_id, db)
         query = select(PayerRule).where(PayerRule.payer_id == payer_id)
@@ -719,6 +723,9 @@ async def create_payer_connection(
     current_user.require_role("admin")
     try:
         await _verify_payer_tenant(payer_id, current_user.tenant_id, db)
+        api_endpoint = str(connection_data.get("api_endpoint") or "").strip()
+        if api_endpoint:
+            assert_safe_http_url(api_endpoint, field_name="api_endpoint")
         # Encrypt sensitive fields before storage.
         for raw_key, enc_key in (
             ("sftp_password", "sftp_password_encrypted"),
@@ -775,6 +782,7 @@ async def list_fee_schedules(
     current_user: Principal = Depends(get_current_user),
 ):
     """List fee schedules for a payer - scoped to tenant"""
+    current_user.require_role("billing")
     # Verify payer belongs to tenant
     payer_check = await db.execute(
         select(PayerProfile.id).where(and_(PayerProfile.id == payer_id, PayerProfile.tenant_id == current_user.tenant_id))
@@ -819,6 +827,7 @@ async def list_all_fee_schedules(
     current_user: Principal = Depends(get_current_user),
 ):
     """List fee schedules across all tenant payers"""
+    current_user.require_role("billing")
     # Only show fee schedules for payers belonging to the tenant
     query = (
         select(FeeSchedule)
@@ -944,6 +953,7 @@ async def get_payer_versions(
     """
     Get version history for payer profile
     """
+    current_user.require_role("billing")
     try:
         await _verify_payer_tenant(payer_id, current_user.tenant_id, db)
         result = await db.execute(

@@ -16,6 +16,8 @@ If the business write rolls back, the audit row rolls back with it.
 """
 
 import logging
+import ipaddress
+import os
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any
 
@@ -31,10 +33,27 @@ logger = logging.getLogger(__name__)
 def _client_ip(request: Optional[Request]) -> Optional[str]:
     if request is None:
         return None
+    peer_ip = request.client.host if request.client else None
+    if not peer_ip:
+        return None
+    trusted_raw = os.getenv("TRUSTED_PROXY_CIDRS", "")
+    trusted_proxy = False
+    if trusted_raw:
+        try:
+            peer = ipaddress.ip_address(peer_ip)
+            for token in trusted_raw.split(","):
+                candidate = token.strip()
+                if not candidate:
+                    continue
+                if peer in ipaddress.ip_network(candidate, strict=False):
+                    trusted_proxy = True
+                    break
+        except ValueError:
+            trusted_proxy = False
     xff = request.headers.get("X-Forwarded-For", "")
-    if xff:
+    if xff and trusted_proxy:
         return xff.split(",")[0].strip()
-    return request.client.host if request.client else None
+    return peer_ip
 
 
 def _user_agent(request: Optional[Request]) -> Optional[str]:

@@ -15,6 +15,7 @@ from core.audit import log_audit_event
 from api.auth import get_current_user, Principal
 from api.schemas import TenantCreate, TenantUpdate, TenantSettingsUpdate, TestSmtpRequest
 from core.http_client import request_with_retry
+from core.outbound_guard import assert_safe_smtp_host
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
@@ -273,6 +274,7 @@ async def test_smtp_settings(
     smtp_host = await get_tenant_setting(db, tenant_id, "smtp_host")
     if not smtp_host:
         raise HTTPException(status_code=400, detail="SMTP not configured — save SMTP settings first")
+    assert_safe_smtp_host(smtp_host, field_name="smtp_host")
 
     smtp_port = int(await get_tenant_setting(db, tenant_id, "smtp_port", "587"))
     smtp_user = await get_tenant_setting(db, tenant_id, "smtp_user", "")
