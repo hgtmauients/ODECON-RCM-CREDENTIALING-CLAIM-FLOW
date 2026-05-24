@@ -51,6 +51,8 @@ def _run_security_gate(repo_root: Path) -> None:
             "backend/tests/test_startup_checks.py",
             "backend/tests/test_csv_export.py",
             "backend/tests/test_auth_error_messages.py",
+            "backend/tests/test_security_signal_logging.py",
+            "backend/tests/test_rate_limit_security_signal_flow.py",
             "backend/tests/test_provider_adapter.py",
             "-v",
         ],

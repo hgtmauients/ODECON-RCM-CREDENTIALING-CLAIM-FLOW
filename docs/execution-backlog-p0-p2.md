@@ -94,7 +94,7 @@ Raise system quality from ~8.4 to 9.0+ with a concrete, test-gated rollout plan 
 - Test gate commands:
   - `py -3 -m pytest backend/tests -k \"idempotency or replay\" -v`
   - `py -3 -m pytest backend/tests/test_e2e_credentialing.py -v`
- - Status: expanded in-progress (guards now cover create + batch submit + credentialing decision mutations; helper concurrency test + E2E duplicate-key regressions added for approve/reject/rerun-checks)
+ - Status: done (guards cover create + batch submit + credentialing decision mutations; duplicate-key regressions added for approve/reject/rerun-checks)
 
 ### P1.3 Dependency and runtime security hygiene
 - Scope:
@@ -108,7 +108,7 @@ Raise system quality from ~8.4 to 9.0+ with a concrete, test-gated rollout plan 
   - Block merge on critical vulnerabilities in runtime dependencies.
 - Test gate commands:
   - CI-managed (scan workflow required check).
- - Status: expanded in-progress (`dependency-security-scan` CI gate active; runbook now defines owner + patch windows + deploy pause policy for critical CVEs)
+ - Status: done (`dependency-security-scan` CI gate active; runbook defines owner + patch windows + deploy pause policy for critical CVEs)
 
 ### P1 Exit Criteria
 - Outbound integrations use standardized timeout/retry policies.
@@ -128,7 +128,7 @@ Raise system quality from ~8.4 to 9.0+ with a concrete, test-gated rollout plan 
   - `docs/` (SLO/alert policy doc)
 - Tests/gates:
   - Release checklist enforces SLO dashboard review before production deploy.
- - Status: expanded in-progress (release script now enforces SLO review attestation freshness gate via `docs/slo-review-attestation.json`)
+ - Status: done (release script enforces SLO review attestation freshness gate via `docs/slo-review-attestation.json`)
 
 ### P2.2 Security telemetry dashboard baseline
 - Scope:
@@ -143,7 +143,7 @@ Raise system quality from ~8.4 to 9.0+ with a concrete, test-gated rollout plan 
   - Integration tests for key security event flows.
 - Test gate commands:
   - `py -3 -m pytest backend/tests -k \"audit or security\" -v`
-- Status: expanded in-progress (security signal records now carry structured `security_event` + `security_fields` with schema metadata; dashboard baseline + triage doc added; auth/rate-limit flow tests assert emitted security fields)
+- Status: done (security signal records carry structured metadata; dashboard baseline + triage doc added; auth/rate-limit flow tests assert emitted security fields)
 
 ### P2.3 Release gate expansion
 - Scope:
@@ -158,7 +158,7 @@ Raise system quality from ~8.4 to 9.0+ with a concrete, test-gated rollout plan 
   - Unit tests for release report parsing and fail/allow behavior.
 - Test gate commands:
   - `py -3 -m pytest backend/tests -k \"release or canary\" -v`
- - Status: expanded in-progress (`release_production.py` now includes security gate, post-deploy smoke, critical route smoke, and log-based error-rate guard; unit tests added)
+ - Status: done (`release_production.py` includes security gate, post-deploy smoke, critical route smoke, error-rate guard, and SLO review gate; unit tests added)
 
 ### P2 Exit Criteria
 - SLOs/alerts documented and operational.
