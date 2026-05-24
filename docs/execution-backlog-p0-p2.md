@@ -143,7 +143,7 @@ Raise system quality from ~8.4 to 9.0+ with a concrete, test-gated rollout plan 
   - Integration tests for key security event flows.
 - Test gate commands:
   - `py -3 -m pytest backend/tests -k \"audit or security\" -v`
-- Status: expanded in-progress (security signal records now carry structured `security_event` + `security_fields` with schema metadata; dashboard baseline + triage doc added)
+- Status: expanded in-progress (security signal records now carry structured `security_event` + `security_fields` with schema metadata; dashboard baseline + triage doc added; auth/rate-limit flow tests assert emitted security fields)
 
 ### P2.3 Release gate expansion
 - Scope:
