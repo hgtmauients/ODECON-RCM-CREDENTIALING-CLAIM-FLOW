@@ -142,3 +142,4 @@ python -m app.main
 ## Execution Backlog
 
 - `docs/execution-backlog-p0-p2.md` - concrete P0/P1/P2 implementation backlog with test gates and rollout order
+- `docs/release-readiness-signoff.md` - final release-readiness signoff summary for the completed P0/P1/P2 program
