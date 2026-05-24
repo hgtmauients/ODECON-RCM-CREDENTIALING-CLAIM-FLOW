@@ -29,6 +29,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
+from core.startup_checks import validate_adapter_startup_security
+
 app = FastAPI(title="ClaimFlow Provider Verification Adapter", version="0.1.0")
 
 
@@ -47,6 +49,8 @@ TRUSTED_PROXY_CIDRS = os.getenv("ADAPTER_TRUSTED_PROXY_CIDRS", "").strip()
 _RATE_LIMIT_BUCKETS: dict[str, list[float]] = {}
 _RATE_LIMIT_LOCK = asyncio.Lock()
 IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
+
+validate_adapter_startup_security(os.environ)
 
 
 class BackgroundCheckRequest(BaseModel):

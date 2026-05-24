@@ -136,3 +136,9 @@ python -m app.main
 - FastAPI, SQLAlchemy 2.0+, asyncpg
 - PostgreSQL 14+
 - React 18+, TypeScript
+
+---
+
+## Execution Backlog
+
+- `docs/execution-backlog-p0-p2.md` - concrete P0/P1/P2 implementation backlog with test gates and rollout order

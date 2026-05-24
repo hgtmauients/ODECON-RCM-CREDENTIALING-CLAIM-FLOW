@@ -4,6 +4,9 @@ asyncio_mode = "auto"
 python_files = "test_*.py"
 python_functions = "test_*"
 addopts = "-v --tb=short"
+markers = [
+    "security: security-critical regression tests and adversarial checks",
+]
 
 [tool.ruff]
 line-length = 120

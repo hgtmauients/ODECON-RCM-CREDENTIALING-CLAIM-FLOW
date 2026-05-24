@@ -6,6 +6,8 @@ import adapter.main as adapter
 
 app = adapter.app
 
+pytestmark = pytest.mark.security
+
 
 @pytest.fixture
 def anyio_backend():

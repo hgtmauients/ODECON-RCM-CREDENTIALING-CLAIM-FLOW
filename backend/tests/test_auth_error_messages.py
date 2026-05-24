@@ -2,9 +2,12 @@
 Authentication error response hardening tests.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+
+pytestmark = pytest.mark.security
 
 
 def test_invalid_jwt_returns_generic_error_detail():

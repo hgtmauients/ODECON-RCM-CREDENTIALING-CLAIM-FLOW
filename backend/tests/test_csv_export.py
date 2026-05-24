@@ -3,6 +3,7 @@ Tests for the CSV streaming helper.
 """
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,8 @@ from core.csv_export import (
     _safe_filename,
     _serialize_value,
 )
+
+pytestmark = pytest.mark.security
 
 
 def test_safe_filename_strips_unsafe_chars():
@@ -37,7 +40,23 @@ def test_serialize_value_neutralizes_spreadsheet_formula_cells():
     assert _serialize_value("@evil") == "'@evil"
     # Leading spaces are preserved while still neutralizing formula execution.
     assert _serialize_value("   =cmd|' /C calc'!A0") == "'   =cmd|' /C calc'!A0"
+    assert _serialize_value("\t=2+2") == "'\t=2+2"
+    assert _serialize_value("\r\n=2+2") == "'\r\n=2+2"
     assert _serialize_value("safe-text") == "safe-text"
+
+
+def test_export_surfaces_use_hardened_csv_helper():
+    backend_root = Path(__file__).resolve().parents[1]
+    export_files = [
+        backend_root / "api" / "rcm" / "claims.py",
+        backend_root / "api" / "rcm" / "patients.py",
+        backend_root / "api" / "rcm" / "denials.py",
+        backend_root / "api" / "admin_audit.py",
+    ]
+    for file_path in export_files:
+        text = file_path.read_text(encoding="utf-8")
+        assert "/export.csv" in text, f"Expected export route in {file_path}"
+        assert "csv_response(" in text, f"Expected hardened csv_response helper in {file_path}"
 
 
 async def _consume(response) -> str:

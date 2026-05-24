@@ -31,6 +31,8 @@ from models.base import Base
 from models.tenant import Tenant
 from models.user import User
 
+pytestmark = pytest.mark.security
+
 TENANT_A_ID = "00000000-0000-0000-0000-0000000000a1"
 TENANT_B_ID = "00000000-0000-0000-0000-0000000000b2"
 TENANT_A_EMAIL = "isolation-tenant-a@claimflow.io"

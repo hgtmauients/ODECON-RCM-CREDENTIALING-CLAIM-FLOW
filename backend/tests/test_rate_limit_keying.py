@@ -11,6 +11,8 @@ from typing import Optional
 
 import pytest
 
+pytestmark = pytest.mark.security
+
 
 @pytest.fixture
 def rl_module(monkeypatch):

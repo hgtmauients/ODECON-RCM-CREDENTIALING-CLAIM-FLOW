@@ -56,6 +56,9 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    from core.startup_checks import validate_api_startup_security
+    validate_api_startup_security(os.environ)
+
     is_production = os.getenv("ENV", "development") == "production"
 
     # In production: disable interactive API docs and the OpenAPI schema endpoint
