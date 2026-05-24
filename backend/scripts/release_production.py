@@ -41,6 +41,41 @@ def _run(cmd: List[str], *, cwd: Path | None = None, capture_output: bool = Fals
     )
 
 
+def _run_security_gate(repo_root: Path) -> None:
+    gate = _run(
+        [
+            "py",
+            "-3",
+            "-m",
+            "pytest",
+            "backend/tests/test_startup_checks.py",
+            "backend/tests/test_csv_export.py",
+            "backend/tests/test_auth_error_messages.py",
+            "backend/tests/test_provider_adapter.py",
+            "-v",
+        ],
+        cwd=repo_root,
+    )
+    if gate.returncode != 0:
+        raise RuntimeError("predeploy security gate failed")
+
+
+def _run_post_deploy_smoke(server: str) -> Dict[str, Any]:
+    smoke = _run(
+        [
+            "ssh",
+            server,
+            "docker exec noodledoc-backend-1 python -c \"import httpx; r=httpx.get('http://127.0.0.1:8000/health', timeout=5.0); print(r.status_code); raise SystemExit(0 if r.status_code==200 else 1)\"",
+        ],
+        capture_output=True,
+    )
+    return {
+        "ok": smoke.returncode == 0,
+        "stdout": (smoke.stdout or "").strip(),
+        "stderr": (smoke.stderr or "").strip(),
+    }
+
+
 def _ensure_git_clean(repo_root: Path) -> None:
     status = _run(["git", "status", "--porcelain"], cwd=repo_root, capture_output=True)
     if status.returncode != 0:
@@ -141,6 +176,8 @@ def main() -> int:
     parser.add_argument("--skip-vercel", action="store_true", help="Skip Vercel frontend deploy")
     parser.add_argument("--skip-hetzner", action="store_true", help="Skip Hetzner backend deploy")
     parser.add_argument("--skip-canary", action="store_true", help="Skip production canary run")
+    parser.add_argument("--skip-security-gate", action="store_true", help="Skip local predeploy security gate tests")
+    parser.add_argument("--skip-post-smoke", action="store_true", help="Skip post-deploy backend smoke check")
     parser.add_argument("--allow-dirty", action="store_true", help="Allow running with local uncommitted changes")
     args = parser.parse_args()
 
@@ -153,6 +190,8 @@ def main() -> int:
         "git_push": None,
         "vercel_url": None,
         "hetzner_deploy": None,
+        "security_gate": None,
+        "post_deploy_smoke": None,
         "canary": None,
         "go": False,
     }
@@ -160,6 +199,12 @@ def main() -> int:
     try:
         if not args.allow_dirty:
             _ensure_git_clean(repo_root)
+
+        if not args.skip_security_gate:
+            _run_security_gate(repo_root)
+            report["security_gate"] = "ok"
+        else:
+            report["security_gate"] = "skipped"
 
         if not args.skip_git_push:
             _git_push(repo_root)
@@ -179,6 +224,14 @@ def main() -> int:
             report["hetzner_deploy"] = "ok"
         else:
             report["hetzner_deploy"] = "skipped"
+
+        if not args.skip_post_smoke:
+            smoke = _run_post_deploy_smoke(args.server)
+            report["post_deploy_smoke"] = smoke
+            if not smoke.get("ok"):
+                raise RuntimeError("post-deploy smoke check failed")
+        else:
+            report["post_deploy_smoke"] = "skipped"
 
         if not args.skip_canary:
             canary_json = _run_canary(server=args.server, tenant=args.tenant)

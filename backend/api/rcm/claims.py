@@ -18,6 +18,7 @@ import logging
 from core.database import get_db
 from core.audit import log_audit_event
 from core.csv_export import csv_response
+from core.idempotency import reserve_idempotency_key
 from models.claims import Claim, ClaimLine, ClaimDiagnosis, ClaimEvent, EDIFile, ClaimQueue
 from models.rcm import PayerProfile
 from models.patient import Patient
@@ -285,6 +286,11 @@ async def create_claim(
 ):
     """Create new claim - scoped to tenant; mutation audited."""
     current_user.require_role("billing")
+    idem_key = request.headers.get("Idempotency-Key", "").strip()
+    if idem_key:
+        reserved = await reserve_idempotency_key(f"{current_user.tenant_id}:create_claim:{idem_key}")
+        if not reserved:
+            raise HTTPException(status_code=409, detail="Duplicate Idempotency-Key")
     try:
         import uuid
         short_id = uuid.uuid4().hex[:8].upper()

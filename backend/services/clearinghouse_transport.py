@@ -20,6 +20,7 @@ from models.rcm import TradingPartnerConnection, PayerProfile
 from models.claims import EDIFile
 from services.encryption import decrypt_credential
 from core.audit import log_credential_access
+from core.http_client import request_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -291,6 +292,9 @@ class APITransport:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+        self.http_timeout_seconds = float(os.getenv("CLEARINGHOUSE_API_TIMEOUT_SECONDS", "60"))
+        self.http_max_retries = max(0, int(os.getenv("CLEARINGHOUSE_API_MAX_RETRIES", "2")))
+        self.http_retry_backoff_seconds = float(os.getenv("CLEARINGHOUSE_API_RETRY_BACKOFF_SECONDS", "0.2"))
 
     async def _decrypt_with_audit(
         self,
@@ -340,40 +344,41 @@ class APITransport:
                 if connection.api_secret_encrypted else None
             )
             
-            # Build request
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                
-                # Authentication
-                headers = {}
-                if connection.api_auth_method == "bearer" and api_key:
-                    headers["Authorization"] = f"Bearer {api_key}"
-                elif connection.api_auth_method == "basic" and api_key and api_secret:
-                    import base64
-                    credentials = base64.b64encode(f"{api_key}:{api_secret}".encode()).decode()
-                    headers["Authorization"] = f"Basic {credentials}"
-                
-                headers["Content-Type"] = "application/x12"
-                
-                # Submit
-                response = await client.post(
-                    f"{connection.api_endpoint}/submit",
-                    content=edi_content,
-                    headers=headers
-                )
-                
-                if response.status_code == 200 or response.status_code == 201:
-                    data = response.json()
-                    return {
-                        "success": True,
-                        "submission_id": data.get("submission_id"),
-                        "tracking_number": data.get("tracking_number"),
-                        "message": "Claim submitted successfully via API"
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "error": f"API returned {response.status_code}: {response.text}"
-                    }
+            # Authentication
+            headers: Dict[str, str] = {}
+            if connection.api_auth_method == "bearer" and api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            elif connection.api_auth_method == "basic" and api_key and api_secret:
+                import base64
+                credentials = base64.b64encode(f"{api_key}:{api_secret}".encode()).decode()
+                headers["Authorization"] = f"Basic {credentials}"
+            
+            headers["Content-Type"] = "application/x12"
+            
+            response = await request_with_retry(
+                method="POST",
+                url=f"{connection.api_endpoint}/submit",
+                content=edi_content,
+                headers=headers,
+                timeout_seconds=self.http_timeout_seconds,
+                max_retries=self.http_max_retries,
+                retry_backoff_seconds=self.http_retry_backoff_seconds,
+                retry_on_statuses=(429, 500, 502, 503, 504),
+                client_factory=httpx.AsyncClient,
+            )
+            
+            if response.status_code in (200, 201):
+                data = response.json()
+                return {
+                    "success": True,
+                    "submission_id": data.get("submission_id"),
+                    "tracking_number": data.get("tracking_number"),
+                    "message": "Claim submitted successfully via API"
+                }
+            return {
+                "success": False,
+                "error": f"API returned {response.status_code}: {response.text}"
+            }
                     
         except Exception as e:
             logger.error(f"API submission failed: {e}")
@@ -397,27 +402,31 @@ class APITransport:
                 if connection.api_key_encrypted else None
             )
             
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                headers = {}
-                if connection.api_auth_method == "bearer" and api_key:
-                    headers["Authorization"] = f"Bearer {api_key}"
-                
-                # Ping endpoint
-                response = await client.get(
-                    f"{connection.api_endpoint}/ping",
-                    headers=headers
-                )
-                
-                if response.status_code == 200:
-                    return {
-                        "success": True,
-                        "message": "API connection successful."
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "message": f"API returned {response.status_code}"
-                    }
+            headers: Dict[str, str] = {}
+            if connection.api_auth_method == "bearer" and api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            
+            # Ping endpoint
+            response = await request_with_retry(
+                method="GET",
+                url=f"{connection.api_endpoint}/ping",
+                headers=headers,
+                timeout_seconds=min(10.0, self.http_timeout_seconds),
+                max_retries=self.http_max_retries,
+                retry_backoff_seconds=self.http_retry_backoff_seconds,
+                retry_on_statuses=(429, 500, 502, 503, 504),
+                client_factory=httpx.AsyncClient,
+            )
+            
+            if response.status_code == 200:
+                return {
+                    "success": True,
+                    "message": "API connection successful."
+                }
+            return {
+                "success": False,
+                "message": f"API returned {response.status_code}"
+            }
                     
         except Exception as e:
             return {

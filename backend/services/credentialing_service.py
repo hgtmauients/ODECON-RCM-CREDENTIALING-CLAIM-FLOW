@@ -1,7 +1,6 @@
 """
-Automated Provider Credentialing Service
+Automated Provider Credentialing Service.
 """
-import asyncio
 import hashlib
 import hmac
 import httpx
@@ -11,6 +10,8 @@ import logging
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+
+from core.http_client import request_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,9 @@ class CredentialingService:
         self.adapter_timeout_seconds = float(os.getenv("ADAPTER_CLIENT_TIMEOUT_SECONDS", "30"))
         self.adapter_max_retries = max(0, int(os.getenv("ADAPTER_CLIENT_MAX_RETRIES", "2")))
         self.adapter_retry_backoff_seconds = float(os.getenv("ADAPTER_CLIENT_RETRY_BACKOFF_SECONDS", "0.2"))
+        self.integration_timeout_seconds = float(os.getenv("INTEGRATION_HTTP_TIMEOUT_SECONDS", "30"))
+        self.integration_max_retries = max(0, int(os.getenv("INTEGRATION_HTTP_MAX_RETRIES", "2")))
+        self.integration_retry_backoff_seconds = float(os.getenv("INTEGRATION_HTTP_RETRY_BACKOFF_SECONDS", "0.2"))
 
     @staticmethod
     def _canonical_body_bytes(payload: Optional[Dict[str, Any]]) -> bytes:
@@ -73,68 +77,59 @@ class CredentialingService:
     ) -> httpx.Response:
         body_bytes = self._canonical_body_bytes(json_body)
         headers = self._adapter_headers(method=method, url=url, body_bytes=body_bytes)
-        attempt = 0
-        last_exception: Optional[Exception] = None
-        while attempt <= self.adapter_max_retries:
-            try:
-                async with httpx.AsyncClient(timeout=self.adapter_timeout_seconds) as client:
-                    response = await client.request(
-                        method=method,
-                        url=url,
-                        params=params,
-                        json=json_body,
-                        headers=headers or None,
-                    )
-                if response.status_code >= 500 and attempt < self.adapter_max_retries:
-                    await asyncio.sleep(self.adapter_retry_backoff_seconds * (2**attempt))
-                    attempt += 1
-                    continue
-                return response
-            except (httpx.TimeoutException, httpx.TransportError) as exc:
-                last_exception = exc
-                if attempt >= self.adapter_max_retries:
-                    raise
-                await asyncio.sleep(self.adapter_retry_backoff_seconds * (2**attempt))
-                attempt += 1
-        if last_exception:
-            raise last_exception
-        raise RuntimeError("unreachable retry state")
+        return await request_with_retry(
+            method=method,
+            url=url,
+            params=params,
+            json_body=json_body,
+            headers=headers or None,
+            timeout_seconds=self.adapter_timeout_seconds,
+            max_retries=self.adapter_max_retries,
+            retry_backoff_seconds=self.adapter_retry_backoff_seconds,
+            retry_on_statuses=(500, 502, 503, 504),
+            client_factory=httpx.AsyncClient,
+        )
     
     async def verify_npi(self, npi: str) -> Dict[str, Any]:
         """
         Verify NPI with CMS NPPES Registry
         """
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    self.npi_api_url,
-                    params={
-                        "number": npi,
-                        "version": "2.1"
-                    }
-                )
+            response = await request_with_retry(
+                method="GET",
+                url=self.npi_api_url,
+                params={
+                    "number": npi,
+                    "version": "2.1",
+                },
+                timeout_seconds=self.integration_timeout_seconds,
+                max_retries=self.integration_max_retries,
+                retry_backoff_seconds=self.integration_retry_backoff_seconds,
+                retry_on_statuses=(429, 500, 502, 503, 504),
+                client_factory=httpx.AsyncClient,
+            )
                 
-                if response.status_code == 200:
-                    data = response.json()
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get("result_count", 0) > 0:
+                    provider = data["results"][0]
                     
-                    if data.get("result_count", 0) > 0:
-                        provider = data["results"][0]
-                        
-                        return {
-                            "verified": True,
-                            "npi": npi,
-                            "provider_name": f"{provider.get('basic', {}).get('first_name', '')} {provider.get('basic', {}).get('last_name', '')}",
-                            "provider_type": provider.get("enumeration_type", ""),
-                            "taxonomy": [t.get("desc") for t in provider.get("taxonomies", [])],
-                            "address": provider.get("addresses", [{}])[0] if provider.get("addresses") else {},
-                            "verified_at": _utc_iso()
-                        }
+                    return {
+                        "verified": True,
+                        "npi": npi,
+                        "provider_name": f"{provider.get('basic', {}).get('first_name', '')} {provider.get('basic', {}).get('last_name', '')}",
+                        "provider_type": provider.get("enumeration_type", ""),
+                        "taxonomy": [t.get("desc") for t in provider.get("taxonomies", [])],
+                        "address": provider.get("addresses", [{}])[0] if provider.get("addresses") else {},
+                        "verified_at": _utc_iso()
+                    }
                 
-                return {
-                    "verified": False,
-                    "npi": npi,
-                    "error": "NPI not found in registry"
-                }
+            return {
+                "verified": False,
+                "npi": npi,
+                "error": "NPI not found in registry"
+            }
         
         except Exception as e:
             logger.error(f"Error verifying NPI {npi}: {e}")
@@ -232,25 +227,30 @@ class CredentialingService:
         Check OIG exclusion list
         """
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    self.oig_api_url,
-                    params={
-                        "name": provider_name,
-                        "npi": npi
-                    }
-                )
+            response = await request_with_retry(
+                method="GET",
+                url=self.oig_api_url,
+                params={
+                    "name": provider_name,
+                    "npi": npi,
+                },
+                timeout_seconds=self.integration_timeout_seconds,
+                max_retries=self.integration_max_retries,
+                retry_backoff_seconds=self.integration_retry_backoff_seconds,
+                retry_on_statuses=(429, 500, 502, 503, 504),
+                client_factory=httpx.AsyncClient,
+            )
                 
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    return {
-                        "verified": True,
-                        "excluded": data.get("excluded", False),
-                        "exclusion_date": data.get("exclusion_date"),
-                        "exclusion_type": data.get("exclusion_type"),
-                        "checked_at": _utc_iso()
-                    }
+            if response.status_code == 200:
+                data = response.json()
+                
+                return {
+                    "verified": True,
+                    "excluded": data.get("excluded", False),
+                    "exclusion_date": data.get("exclusion_date"),
+                    "exclusion_type": data.get("exclusion_type"),
+                    "checked_at": _utc_iso()
+                }
             
             return {
                 "verified": False,
@@ -276,23 +276,28 @@ class CredentialingService:
         Check SAM exclusion list
         """
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    self.sam_api_url,
-                    params={
-                        "name": provider_name
-                    }
-                )
+            response = await request_with_retry(
+                method="GET",
+                url=self.sam_api_url,
+                params={
+                    "name": provider_name,
+                },
+                timeout_seconds=self.integration_timeout_seconds,
+                max_retries=self.integration_max_retries,
+                retry_backoff_seconds=self.integration_retry_backoff_seconds,
+                retry_on_statuses=(429, 500, 502, 503, 504),
+                client_factory=httpx.AsyncClient,
+            )
                 
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    return {
-                        "verified": True,
-                        "excluded": data.get("excluded", False),
-                        "exclusion_date": data.get("exclusion_date"),
-                        "checked_at": _utc_iso()
-                    }
+            if response.status_code == 200:
+                data = response.json()
+                
+                return {
+                    "verified": True,
+                    "excluded": data.get("excluded", False),
+                    "exclusion_date": data.get("exclusion_date"),
+                    "checked_at": _utc_iso()
+                }
             
             return {
                 "verified": False,

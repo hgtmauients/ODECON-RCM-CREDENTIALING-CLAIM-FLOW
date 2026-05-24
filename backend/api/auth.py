@@ -22,6 +22,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 from jwt import PyJWKClient
 
+from core.security_signal import log_security_signal
+
 logger = logging.getLogger(__name__)
 
 ENV = os.getenv("ENV", "development")
@@ -126,9 +128,11 @@ def _decode_token(token: str) -> Dict[str, Any]:
             )
             return payload
         except jwt.ExpiredSignatureError:
+            log_security_signal("auth_token_expired", path="jwt_decode", algorithm="RS256")
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
         except jwt.InvalidTokenError as exc:
             logger.info("RS256 token validation failed: %s", exc)
+            log_security_signal("auth_token_invalid", path="jwt_decode", algorithm="RS256")
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
     # HS256 path - audience and issuer are always verified when configured.
@@ -148,9 +152,11 @@ def _decode_token(token: str) -> Dict[str, Any]:
         )
         return payload
     except jwt.ExpiredSignatureError:
+        log_security_signal("auth_token_expired", path="jwt_decode", algorithm=JWT_ALGORITHM)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
     except jwt.InvalidTokenError as exc:
         logger.info("JWT validation failed: %s", exc)
+        log_security_signal("auth_token_invalid", path="jwt_decode", algorithm=JWT_ALGORITHM)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 

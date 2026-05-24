@@ -27,6 +27,8 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from core.security_signal import log_security_signal
+
 logger = logging.getLogger(__name__)
 
 # Bumped 200 → 600 in B5 because the v11 rate-limit fix removed X-Tenant-ID
@@ -209,6 +211,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if not allowed:
             logger.warning("Rate limit exceeded: %s", key)
+            log_security_signal("rate_limit_exceeded", bucket=key, path=request.url.path, method=request.method)
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Too many requests. Please try again later."},

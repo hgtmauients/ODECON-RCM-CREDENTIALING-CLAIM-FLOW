@@ -5,6 +5,8 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "0 10 * * 1"
 
 jobs:
   backend-lint:
@@ -223,3 +225,36 @@ jobs:
       - name: Run frontend next-10 subset
         working-directory: webapp
         run: npm run test -- --run src/auth/__tests__/AuthProvider.test.tsx
+
+  dependency-security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install pip-audit
+        run: |
+          pip install -r backend/requirements.txt
+          pip install pip-audit
+
+      - name: Python dependency audit
+        working-directory: backend
+        run: pip-audit -r requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: webapp
+        run: npm ci || npm install
+
+      - name: Frontend dependency audit
+        working-directory: webapp
+        run: npm audit --audit-level=high

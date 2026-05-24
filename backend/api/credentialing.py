@@ -16,6 +16,8 @@ from pydantic import ValidationError
 
 from core.database import get_db
 from core.audit import log_audit_event
+from core.idempotency import reserve_idempotency_key
+from core.security_signal import log_security_signal
 from api.auth import get_current_user, Principal
 from api.schemas import ProviderCreate, ProviderUpdate, ApproveRequest, RejectRequest, ProviderSignupWebhook
 from models.credentialing import ProviderCredentialing
@@ -68,6 +70,7 @@ async def _verify_webhook_signature(
     """
     if not secret:
         logger.error("Per-tenant webhook_secret not configured for tenant=%s", tenant_id)
+        log_security_signal("webhook_secret_missing", tenant_id=tenant_id)
         return False
     if not signature or not timestamp:
         return False
@@ -80,12 +83,14 @@ async def _verify_webhook_signature(
     import time as _time
     if abs(_time.time() - ts) > WEBHOOK_REPLAY_WINDOW:
         logger.warning("Webhook timestamp outside acceptable window")
+        log_security_signal("webhook_timestamp_invalid", tenant_id=tenant_id)
         return False
 
     body_digest = hashlib.sha256(payload).hexdigest()
     signed_message = f"{tenant_id}.{timestamp}.{body_digest}".encode("ascii")
     expected = hmac.new(secret.encode(), signed_message, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
+        log_security_signal("webhook_signature_invalid", tenant_id=tenant_id)
         return False
 
     # Signature valid — now check for replay (multi-worker safe via Redis).
@@ -98,9 +103,11 @@ async def _verify_webhook_signature(
         # Fail closed: if replay protection backend is unavailable, reject the
         # webhook rather than accepting a potentially replayable request.
         logger.exception("Webhook replay check unavailable for tenant=%s", tenant_id)
+        log_security_signal("webhook_replay_backend_unavailable", tenant_id=tenant_id)
         return False
     if replayed:
         logger.warning("Webhook signature replay detected for tenant=%s", tenant_id)
+        log_security_signal("webhook_replay_detected", tenant_id=tenant_id)
         return False
 
     return True
@@ -328,6 +335,11 @@ async def create_provider_manual(
 ):
     """Manually create a provider credentialing record (no webhook needed)."""
     current_user.require_role("admin")
+    idem_key = request.headers.get("Idempotency-Key", "").strip()
+    if idem_key:
+        reserved = await reserve_idempotency_key(f"{current_user.tenant_id}:provider_manual:{idem_key}")
+        if not reserved:
+            raise HTTPException(status_code=409, detail="Duplicate Idempotency-Key")
 
     import uuid
     npi = body.npi

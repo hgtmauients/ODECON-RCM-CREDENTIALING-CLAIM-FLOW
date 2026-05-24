@@ -14,6 +14,7 @@ from core.database import get_db
 from core.audit import log_audit_event
 from api.auth import get_current_user, Principal
 from api.schemas import TenantCreate, TenantUpdate, TenantSettingsUpdate, TestSmtpRequest
+from core.http_client import request_with_retry
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
@@ -312,21 +313,24 @@ async def test_api_cert_settings(
     current_user.require_role("admin")
 
     from core.tenant_config import get_tenant_setting
-    import httpx
 
     api_key = await get_tenant_setting(db, tenant_id, "api_cert_key")
     if not api_key:
         return {"success": False, "error": "API-Cert key not configured"}
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                "https://api.api-cert.com/v1/usage",
-                headers={"X-API-Key": api_key},
-            )
-            if resp.status_code == 200:
-                return {"success": True, "data": resp.json()}
-            return {"success": False, "error": f"API-Cert returned {resp.status_code}"}
+        resp = await request_with_retry(
+            method="GET",
+            url="https://api.api-cert.com/v1/usage",
+            headers={"X-API-Key": api_key},
+            timeout_seconds=10.0,
+            max_retries=2,
+            retry_backoff_seconds=0.2,
+            retry_on_statuses=(429, 500, 502, 503, 504),
+        )
+        if resp.status_code == 200:
+            return {"success": True, "data": resp.json()}
+        return {"success": False, "error": f"API-Cert returned {resp.status_code}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -343,7 +347,6 @@ async def test_caqh_settings(
     current_user.require_role("admin")
 
     from core.tenant_config import get_tenant_setting
-    import httpx
 
     org_id = await get_tenant_setting(db, tenant_id, "caqh_org_id")
     username = await get_tenant_setting(db, tenant_id, "caqh_username")
@@ -354,18 +357,22 @@ async def test_caqh_settings(
 
     try:
         base_url = "https://proview-demo.caqh.org/RosterAPI/api"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                f"{base_url}/Roster",
-                params={"organizationId": org_id},
-                auth=(username, password),
-            )
-            if resp.status_code in (200, 401, 403):
-                connected = resp.status_code == 200
-                return {
-                    "success": connected,
-                    "message": "Connected to CAQH" if connected else f"CAQH returned {resp.status_code}",
-                }
-            return {"success": False, "error": f"CAQH returned {resp.status_code}"}
+        resp = await request_with_retry(
+            method="GET",
+            url=f"{base_url}/Roster",
+            params={"organizationId": org_id},
+            auth=(username, password),
+            timeout_seconds=15.0,
+            max_retries=2,
+            retry_backoff_seconds=0.2,
+            retry_on_statuses=(429, 500, 502, 503, 504),
+        )
+        if resp.status_code in (200, 401, 403):
+            connected = resp.status_code == 200
+            return {
+                "success": connected,
+                "message": "Connected to CAQH" if connected else f"CAQH returned {resp.status_code}",
+            }
+        return {"success": False, "error": f"CAQH returned {resp.status_code}"}
     except Exception as e:
         return {"success": False, "error": str(e)}

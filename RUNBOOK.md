@@ -242,6 +242,36 @@ Use this checklist whenever deploying credentialing changes or rotating integrat
 - [ ] `ADAPTER_HTTP_TIMEOUT_SECONDS`, `ADAPTER_MAX_RETRIES`, and `ADAPTER_RETRY_BACKOFF_SECONDS` are tuned for vendor SLAs.
 - [ ] Backend outbound adapter client policy (`ADAPTER_CLIENT_TIMEOUT_SECONDS`, `ADAPTER_CLIENT_MAX_RETRIES`, `ADAPTER_CLIENT_RETRY_BACKOFF_SECONDS`) is set.
 
+### Outbound HTTP resiliency policy (P1.1 baseline)
+
+External integration calls now use a shared retry/timeout helper with bounded
+exponential backoff. Standard defaults:
+
+- timeout: `30s`
+- max retries: `2` (3 total attempts)
+- retry backoff: `0.2s` exponential (`0.2`, `0.4`, `0.8`, ...)
+- retryable statuses: `429, 500, 502, 503, 504`
+- retryable exceptions: transport/timeouts only
+
+Service-specific overrides:
+
+- `INTEGRATION_HTTP_TIMEOUT_SECONDS`
+- `INTEGRATION_HTTP_MAX_RETRIES`
+- `INTEGRATION_HTTP_RETRY_BACKOFF_SECONDS`
+- `API_CERT_HTTP_TIMEOUT_SECONDS`
+- `API_CERT_HTTP_MAX_RETRIES`
+- `API_CERT_HTTP_RETRY_BACKOFF_SECONDS`
+- `CAQH_HTTP_TIMEOUT_SECONDS`
+- `CAQH_HTTP_MAX_RETRIES`
+- `CAQH_HTTP_RETRY_BACKOFF_SECONDS`
+- `CLEARINGHOUSE_API_TIMEOUT_SECONDS`
+- `CLEARINGHOUSE_API_MAX_RETRIES`
+- `CLEARINGHOUSE_API_RETRY_BACKOFF_SECONDS`
+
+Operator note: keep retry budgets conservative for non-idempotent endpoints.
+For POST writes to third parties, prefer idempotency keys and explicit replay
+contracts before increasing retry counts.
+
 ### Smoke checks
 
 - [ ] `GET /health` returns `auth_enabled: true` in production.
@@ -462,6 +492,8 @@ Rotation:
 ### Recommended uptime monitor
 
 Point an external service (BetterUptime, UptimeRobot, Pingdom) at `https://api.noodledoc.com/health` and `https://noodledoc.com` with a 1-minute interval.
+
+SLO/alert baseline: see `docs/slo-alert-policy.md`.
 
 ---
 

@@ -15,9 +15,14 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.http_client import request_with_retry
+
 logger = logging.getLogger(__name__)
 
 CAQH_BASE_URL = os.getenv("CAQH_BASE_URL", "https://proview-demo.caqh.org/RosterAPI/api")
+CAQH_HTTP_TIMEOUT_SECONDS = float(os.getenv("CAQH_HTTP_TIMEOUT_SECONDS", "30"))
+CAQH_HTTP_MAX_RETRIES = max(0, int(os.getenv("CAQH_HTTP_MAX_RETRIES", "2")))
+CAQH_HTTP_RETRY_BACKOFF_SECONDS = float(os.getenv("CAQH_HTTP_RETRY_BACKOFF_SECONDS", "0.2"))
 
 
 def _env_creds() -> tuple:
@@ -70,31 +75,33 @@ class CAQHProViewClient:
             return {"provider_found": False, "error": "CAQH credentials not configured"}
 
         try:
-            import httpx
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(
-                    f"{self.base_url}/Roster",
-                    params={
-                        "organizationId": self.org_id,
-                        "caqhProviderId": caqh_provider_id,
-                    },
-                    auth=self.auth,
-                )
+            resp = await request_with_retry(
+                method="GET",
+                url=f"{self.base_url}/Roster",
+                params={
+                    "organizationId": self.org_id,
+                    "caqhProviderId": caqh_provider_id,
+                },
+                auth=self.auth,
+                timeout_seconds=CAQH_HTTP_TIMEOUT_SECONDS,
+                max_retries=CAQH_HTTP_MAX_RETRIES,
+                retry_backoff_seconds=CAQH_HTTP_RETRY_BACKOFF_SECONDS,
+                retry_on_statuses=(429, 500, 502, 503, 504),
+            )
 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return {
-                        "provider_found": True,
-                        "caqh_provider_id": caqh_provider_id,
-                        "roster_status": data.get("roster_status", "UNKNOWN"),
-                        "provider_status": data.get("provider_status", ""),
-                        "provider_status_date": data.get("provider_status_date", ""),
-                        "authorization_flag": data.get("authorization_flag", "N"),
-                    }
-                elif resp.status_code == 404:
-                    return {"provider_found": False, "caqh_provider_id": caqh_provider_id}
-                else:
-                    return {"provider_found": False, "error": f"CAQH API returned {resp.status_code}"}
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    "provider_found": True,
+                    "caqh_provider_id": caqh_provider_id,
+                    "roster_status": data.get("roster_status", "UNKNOWN"),
+                    "provider_status": data.get("provider_status", ""),
+                    "provider_status_date": data.get("provider_status_date", ""),
+                    "authorization_flag": data.get("authorization_flag", "N"),
+                }
+            if resp.status_code == 404:
+                return {"provider_found": False, "caqh_provider_id": caqh_provider_id}
+            return {"provider_found": False, "error": f"CAQH API returned {resp.status_code}"}
 
         except Exception as e:
             logger.error(f"CAQH status check failed: {e}")
@@ -108,23 +115,26 @@ class CAQHProViewClient:
             return {"success": False, "error": "CAQH credentials not configured"}
 
         try:
-            import httpx
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(
-                    f"{self.base_url}/ProviderData",
-                    params={
-                        "organizationId": self.org_id,
-                        "caqhProviderId": caqh_provider_id,
-                        "attestation_date": "",
-                    },
-                    auth=self.auth,
-                )
+            resp = await request_with_retry(
+                method="GET",
+                url=f"{self.base_url}/ProviderData",
+                params={
+                    "organizationId": self.org_id,
+                    "caqhProviderId": caqh_provider_id,
+                    "attestation_date": "",
+                },
+                auth=self.auth,
+                timeout_seconds=CAQH_HTTP_TIMEOUT_SECONDS,
+                max_retries=CAQH_HTTP_MAX_RETRIES,
+                retry_backoff_seconds=CAQH_HTTP_RETRY_BACKOFF_SECONDS,
+                retry_on_statuses=(429, 500, 502, 503, 504),
+            )
 
-                if resp.status_code != 200:
-                    return {"success": False, "error": f"CAQH API returned {resp.status_code}: {resp.text}"}
+            if resp.status_code != 200:
+                return {"success": False, "error": f"CAQH API returned {resp.status_code}: {resp.text}"}
 
-                raw = resp.json()
-                return self._parse_provider_data(raw, caqh_provider_id)
+            raw = resp.json()
+            return self._parse_provider_data(raw, caqh_provider_id)
 
         except Exception as e:
             logger.error(f"CAQH data pull failed for {caqh_provider_id}: {e}")
@@ -225,7 +235,6 @@ class CAQHProViewClient:
             return {"success": False, "error": "CAQH credentials not configured"}
 
         try:
-            import httpx
             payload = {
                 "organizationId": self.org_id,
                 "firstName": provider_data.get("first_name", ""),
@@ -237,22 +246,25 @@ class CAQHProViewClient:
                 "type": "PV",
             }
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{self.base_url}/Roster",
-                    json=payload,
-                    auth=self.auth,
-                )
+            resp = await request_with_retry(
+                method="POST",
+                url=f"{self.base_url}/Roster",
+                json_body=payload,
+                auth=self.auth,
+                timeout_seconds=CAQH_HTTP_TIMEOUT_SECONDS,
+                max_retries=CAQH_HTTP_MAX_RETRIES,
+                retry_backoff_seconds=CAQH_HTTP_RETRY_BACKOFF_SECONDS,
+                retry_on_statuses=(429, 500, 502, 503, 504),
+            )
 
-                if resp.status_code in (200, 201):
-                    data = resp.json()
-                    return {
-                        "success": True,
-                        "caqh_provider_id": data.get("caqhProviderId", ""),
-                        "message": "Provider added to CAQH roster",
-                    }
-                else:
-                    return {"success": False, "error": f"CAQH returned {resp.status_code}: {resp.text}"}
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                return {
+                    "success": True,
+                    "caqh_provider_id": data.get("caqhProviderId", ""),
+                    "message": "Provider added to CAQH roster",
+                }
+            return {"success": False, "error": f"CAQH returned {resp.status_code}: {resp.text}"}
 
         except Exception as e:
             logger.error(f"CAQH roster add failed: {e}")
@@ -264,27 +276,30 @@ class CAQHProViewClient:
             return {"found": False, "error": "CAQH credentials not configured"}
 
         try:
-            import httpx
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(
-                    f"{self.base_url}/Roster",
-                    params={
-                        "organizationId": self.org_id,
-                        "npi": npi,
-                    },
-                    auth=self.auth,
-                )
+            resp = await request_with_retry(
+                method="GET",
+                url=f"{self.base_url}/Roster",
+                params={
+                    "organizationId": self.org_id,
+                    "npi": npi,
+                },
+                auth=self.auth,
+                timeout_seconds=CAQH_HTTP_TIMEOUT_SECONDS,
+                max_retries=CAQH_HTTP_MAX_RETRIES,
+                retry_backoff_seconds=CAQH_HTTP_RETRY_BACKOFF_SECONDS,
+                retry_on_statuses=(429, 500, 502, 503, 504),
+            )
 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    providers = data if isinstance(data, list) else [data]
-                    if providers:
-                        return {
-                            "found": True,
-                            "caqh_provider_id": providers[0].get("caqhProviderId", ""),
-                            "roster_status": providers[0].get("roster_status", ""),
-                        }
-                return {"found": False}
+            if resp.status_code == 200:
+                data = resp.json()
+                providers = data if isinstance(data, list) else [data]
+                if providers:
+                    return {
+                        "found": True,
+                        "caqh_provider_id": providers[0].get("caqhProviderId", ""),
+                        "roster_status": providers[0].get("roster_status", ""),
+                    }
+            return {"found": False}
 
         except Exception as e:
             logger.error(f"CAQH NPI search failed: {e}")
