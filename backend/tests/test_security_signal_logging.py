@@ -16,10 +16,12 @@ def test_log_security_signal_emits_structured_line(caplog):
     assert "tenant=t1" in line
     assert "path=/api/rcm/claims" in line
     assert getattr(caplog.records[-1], "security_event") == "rate_limit_exceeded"
-    assert getattr(caplog.records[-1], "security_fields") == {
-        "tenant": "t1",
-        "path": "/api/rcm/claims",
-    }
+    fields = getattr(caplog.records[-1], "security_fields")
+    assert fields["tenant"] == "t1"
+    assert fields["path"] == "/api/rcm/claims"
+    assert fields["schema_version"] == 1
+    assert fields["env"] is not None
+    assert "emitted_at_utc" in fields
 
 
 def test_json_formatter_includes_security_event_fields():
@@ -34,10 +36,17 @@ def test_json_formatter_includes_security_event_fields():
         exc_info=None,
     )
     record.security_event = "tenant_override_denied"
-    record.security_fields = {"tenant_id": "t1", "requested_tenant_id": "t2"}
+    record.security_fields = {
+        "tenant_id": "t1",
+        "requested_tenant_id": "t2",
+        "schema_version": 1,
+        "env": "production",
+        "emitted_at_utc": "2026-05-24T21:00:00+00:00",
+    }
 
     out = formatter.format(record)
     payload = json.loads(out)
     assert payload["security_event"] == "tenant_override_denied"
     assert payload["security_fields"]["tenant_id"] == "t1"
     assert payload["security_fields"]["requested_tenant_id"] == "t2"
+    assert payload["security_fields"]["schema_version"] == 1

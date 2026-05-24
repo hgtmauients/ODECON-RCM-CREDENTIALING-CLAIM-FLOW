@@ -500,6 +500,7 @@ Rotation:
 Point an external service (BetterUptime, UptimeRobot, Pingdom) at `https://api.noodledoc.com/health` and `https://noodledoc.com` with a 1-minute interval.
 
 SLO/alert baseline: see `docs/slo-alert-policy.md`.
+Security telemetry dashboard baseline: see `docs/security-telemetry-dashboard-baseline.md`.
 
 ### SLO review attestation gate
 
