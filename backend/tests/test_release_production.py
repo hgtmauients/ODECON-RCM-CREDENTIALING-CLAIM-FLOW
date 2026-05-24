@@ -67,6 +67,23 @@ def test_run_security_gate_raises_on_failure(monkeypatch):
         assert "predeploy security gate failed" in str(exc)
 
 
+def test_run_security_gate_includes_hardening_regression_suites(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, *, cwd=None, capture_output=False):
+        seen["cmd"] = cmd
+        return _cp(0, stdout="ok")
+
+    monkeypatch.setattr(rp, "_run", fake_run)
+    rp._run_security_gate(Path("C:/tmp"))
+    cmd = " ".join(seen["cmd"])
+    assert "test_auth_revalidation.py" in cmd
+    assert "test_outbound_guard.py" in cmd
+    assert "test_payer_role_gates.py" in cmd
+    assert "test_audit_helper.py" in cmd
+    assert "test_cors_runtime_policy.py" in cmd
+
+
 def test_slo_review_gate_passes_with_fresh_attestation(tmp_path):
     reviewed_at = datetime.now(timezone.utc).isoformat()
     attestation = tmp_path / "slo-review-attestation.json"

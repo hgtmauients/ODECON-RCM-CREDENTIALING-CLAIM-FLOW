@@ -247,6 +247,8 @@ Use this checklist whenever deploying credentialing changes or rotating integrat
 - [ ] `ADAPTER_RATE_LIMIT_REQUESTS` and `ADAPTER_RATE_LIMIT_WINDOW_SECONDS` are set for expected traffic.
 - [ ] `ADAPTER_HTTP_TIMEOUT_SECONDS`, `ADAPTER_MAX_RETRIES`, and `ADAPTER_RETRY_BACKOFF_SECONDS` are tuned for vendor SLAs.
 - [ ] Backend outbound adapter client policy (`ADAPTER_CLIENT_TIMEOUT_SECONDS`, `ADAPTER_CLIENT_MAX_RETRIES`, `ADAPTER_CLIENT_RETRY_BACKOFF_SECONDS`) is set.
+- [ ] `TRUSTED_PROXY_CIDRS` is set for the real reverse-proxy CIDRs so audit/rate-limit IP attribution trusts forwarding headers only from known hops.
+- [ ] `ALLOW_PRIVATE_OUTBOUND_DESTINATIONS` remains unset/false in production (override only for explicitly approved private-network integrations).
 
 ### Outbound HTTP resiliency policy (P1.1 baseline)
 
@@ -277,6 +279,22 @@ Service-specific overrides:
 Operator note: keep retry budgets conservative for non-idempotent endpoints.
 For POST writes to third parties, prefer idempotency keys and explicit replay
 contracts before increasing retry counts.
+
+### Outbound destination SSRF controls
+
+Admin-configured outbound targets are validated before use:
+
+- tenant SMTP test host (`/tenants/{tenant_id}/settings/test-smtp`)
+- clearinghouse API endpoint for payer connection test/submit flows
+
+Blocked by default:
+
+- localhost / `.local` hostnames
+- loopback, private, link-local, multicast, reserved, and unspecified IP ranges
+
+Operational override:
+
+- `ALLOW_PRIVATE_OUTBOUND_DESTINATIONS=true` disables these blocks. Use only for approved private network routes and document the exception in the release notes.
 
 ### Smoke checks
 
@@ -509,6 +527,18 @@ Security telemetry dashboard baseline: see `docs/security-telemetry-dashboard-ba
   - `reviewer` (on-call or release owner),
   - `summary` (short checkpoint note).
 - `release_production.py` blocks release when the attestation is missing/stale.
+
+### Release regression suite coverage
+
+`backend/scripts/release_production.py` runs a predeploy security gate that now includes:
+
+- startup config fail-fast validation (JWT, encryption key, CORS origin policy, adapter auth requirements)
+- auth error and token revalidation regressions
+- provider adapter auth/rate-limit regressions
+- outbound destination SSRF guardrail tests
+- payer read-surface role-gate tests
+- trusted-proxy audit IP attribution tests
+- CORS runtime preflight policy test
 
 ### Dependency patch policy (P1.3)
 
