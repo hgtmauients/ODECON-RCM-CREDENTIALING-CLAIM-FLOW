@@ -78,18 +78,12 @@ def _run_post_deploy_smoke(server: str) -> Dict[str, Any]:
 
 def _run_route_smoke(server: str) -> Dict[str, Any]:
     script = (
-        "import json, httpx; "
-        "results=[]; "
-        "checks=["
+        "import json, httpx; checks=["
         "('http://127.0.0.1:8000/health', 200),"
         "('http://127.0.0.1:8000/api/auth/me', 401),"
         "('http://127.0.0.1:8000/api/rcm/payers', 401)"
-        "]; "
-        "ok=True; "
-        "for url, expected in checks: "
-        "  r=httpx.get(url, timeout=5.0); "
-        "  results.append({'url':url,'expected':expected,'actual':r.status_code}); "
-        "  ok = ok and (r.status_code==expected); "
+        "]; results=[{'url':u,'expected':e,'actual':httpx.get(u, timeout=5.0).status_code} for (u,e) in checks]; "
+        "ok=all(item['actual']==item['expected'] for item in results); "
         "print(json.dumps({'ok':ok,'checks':results}))"
     )
     route_check = _run(
