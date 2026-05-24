@@ -146,7 +146,7 @@ async def _auth_headers(ac: AsyncClient, email: str, tenant_id: str) -> dict[str
 
 
 @pytest.mark.asyncio(loop_scope="module")
-async def test_header_spoofing_rejected_for_non_super_admin(setup_db):
+async def test_header_spoofing_rejected_for_non_super_admin(setup_db, caplog):
     """
     Exploit attempt: valid token for tenant A + forged X-Tenant-ID tenant B.
     Expectation: hard reject with 403 for non-super-admin principals.
@@ -160,10 +160,11 @@ async def test_header_spoofing_rejected_for_non_super_admin(setup_db):
         resp = await ac.get("/api/auth/me", headers=forged)
         assert resp.status_code == 403
         assert "requires super_admin" in resp.text
+        assert any("tenant_override_denied" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio(loop_scope="module")
-async def test_super_admin_override_only_when_explicitly_requested(setup_db):
+async def test_super_admin_override_only_when_explicitly_requested(setup_db, caplog):
     """
     Negative control:
     - same super_admin token without X-Tenant-ID => acts in token tenant
@@ -184,6 +185,7 @@ async def test_super_admin_override_only_when_explicitly_requested(setup_db):
         me_override = await ac.get("/api/auth/me", headers=with_override)
         assert me_override.status_code == 200, me_override.text
         assert me_override.json()["tenant_id"] == TENANT_B_ID
+        assert any("tenant_override_applied" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio(loop_scope="module")

@@ -299,6 +299,39 @@ async def test_step4_approve_provider(client: AsyncClient, approved_provider_id:
     print(f"           Credentialing status confirmed: passed")
 
 
+@pytest.mark.asyncio(loop_scope="module")
+async def test_approve_idempotency_key_rejects_duplicate(client: AsyncClient):
+    """Duplicate Idempotency-Key on approve must be rejected."""
+    payload = {
+        "first_name": "Idempotent",
+        "last_name": "Approve",
+        "email": "idem.approve@claimflow.io",
+        "npi": "3333333333",
+        "state_code": "HI",
+        "license_number": "HI-MED-IDEM-APPROVE",
+        "run_checks": False,
+    }
+    create_resp = await client.post("/api/credentialing/manual", json=payload)
+    assert create_resp.status_code == 200, f"Manual provider create failed: {create_resp.text}"
+    provider_id = create_resp.json()["provider_id"]
+
+    idem_headers = {"Idempotency-Key": "e2e-approve-idem-key-1"}
+    first = await client.post(
+        f"/api/credentialing/{provider_id}/approve",
+        json={"notes": "first approval with idempotency key"},
+        headers=idem_headers,
+    )
+    assert first.status_code == 200, f"First approve should succeed: {first.text}"
+
+    second = await client.post(
+        f"/api/credentialing/{provider_id}/approve",
+        json={"notes": "replay approve with same idempotency key"},
+        headers=idem_headers,
+    )
+    assert second.status_code == 409, f"Duplicate key should be rejected: {second.text}"
+    assert second.json()["detail"] == "Duplicate Idempotency-Key"
+
+
 # ═══════════════════════════════════════════════════════════════
 # Step 5: Verify payer enrollment cases exist
 # ═══════════════════════════════════════════════════════════════

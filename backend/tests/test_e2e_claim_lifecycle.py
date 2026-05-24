@@ -336,6 +336,39 @@ async def test_step5_claim_submitted(client: AsyncClient, claim_data: dict, subm
     print(f"  [Step 5] Claim events: {event_types}")
 
 
+@pytest.mark.asyncio(loop_scope="module")
+async def test_batch_submit_idempotency_key_rejects_duplicate(client: AsyncClient, patient_id: int, payer_id: int):
+    """Adversarial check: duplicate Idempotency-Key on batch submit should be blocked."""
+    claim_resp = await client.post("/api/rcm/claims", json={
+        "patient_id": patient_id,
+        "payer_id": payer_id,
+        "service_date_from": str(date.today()),
+        "total_charges": 99.00,
+        "claim_type": "professional",
+    })
+    assert claim_resp.status_code == 200, f"Create claim failed: {claim_resp.text}"
+    claim_id = claim_resp.json()["data"]["id"]
+
+    validate_resp = await client.post(f"/api/rcm/claims/{claim_id}/validate")
+    assert validate_resp.status_code == 200, f"Validate claim failed: {validate_resp.text}"
+
+    idem_headers = {"Idempotency-Key": "e2e-submit-idem-key-1"}
+    first = await client.post(
+        "/api/rcm/claims/batch/submit",
+        json={"claim_ids": [claim_id], "payer_id": payer_id},
+        headers=idem_headers,
+    )
+    assert first.status_code == 200, f"First submit should succeed: {first.text}"
+
+    second = await client.post(
+        "/api/rcm/claims/batch/submit",
+        json={"claim_ids": [claim_id], "payer_id": payer_id},
+        headers=idem_headers,
+    )
+    assert second.status_code == 409, f"Duplicate key should be rejected: {second.text}"
+    assert second.json()["detail"] == "Duplicate Idempotency-Key"
+
+
 # ═══════════════════════════════════════════════════════════════
 # Step 6: Simulate 277CA Acknowledgment
 # ═══════════════════════════════════════════════════════════════
