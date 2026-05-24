@@ -207,6 +207,12 @@ async def get_current_user(
     header_tenant_id = request.headers.get("X-Tenant-ID")
     if header_tenant_id and header_tenant_id != token_tenant_id:
         if not is_super_admin:
+            log_security_signal(
+                "tenant_override_denied",
+                user_id=payload.get("sub", ""),
+                token_tenant_id=token_tenant_id,
+                requested_tenant_id=header_tenant_id,
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="X-Tenant-ID override requires super_admin role",
@@ -214,6 +220,12 @@ async def get_current_user(
         logger.info(
             "Super-admin tenant override: user=%s token_tenant=%s acting_as=%s",
             payload.get("sub", ""), token_tenant_id, header_tenant_id,
+        )
+        log_security_signal(
+            "tenant_override_applied",
+            user_id=payload.get("sub", ""),
+            token_tenant_id=token_tenant_id,
+            requested_tenant_id=header_tenant_id,
         )
         effective_tenant_id = header_tenant_id
     else:

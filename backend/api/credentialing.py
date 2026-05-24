@@ -475,6 +475,11 @@ async def rerun_credentialing_checks(
     Refuses while a previous run is already in_progress to prevent duplicate
     parallel runs that would race on writes."""
     current_user.require_role("admin")
+    idem_key = request.headers.get("Idempotency-Key", "").strip()
+    if idem_key:
+        reserved = await reserve_idempotency_key(f"{current_user.tenant_id}:provider_rerun:{provider_id}:{idem_key}")
+        if not reserved:
+            raise HTTPException(status_code=409, detail="Duplicate Idempotency-Key")
     # Take a row-level lock so two concurrent rerun-checks calls cannot both
     # observe the row in a non-in_progress state and then both flip to pending.
     result = await db.execute(
@@ -521,6 +526,11 @@ async def approve_provider(
     to serialize concurrent approval attempts.
     """
     current_user.require_role("admin")
+    idem_key = request.headers.get("Idempotency-Key", "").strip()
+    if idem_key:
+        reserved = await reserve_idempotency_key(f"{current_user.tenant_id}:provider_approve:{provider_id}:{idem_key}")
+        if not reserved:
+            raise HTTPException(status_code=409, detail="Duplicate Idempotency-Key")
     notes = body.notes if body else None
     try:
         result = await db.execute(
@@ -598,6 +608,11 @@ async def reject_provider(
 ):
     """Reject provider credentialing - scoped to tenant. Same state guards as approve."""
     current_user.require_role("admin")
+    idem_key = request.headers.get("Idempotency-Key", "").strip()
+    if idem_key:
+        reserved = await reserve_idempotency_key(f"{current_user.tenant_id}:provider_reject:{provider_id}:{idem_key}")
+        if not reserved:
+            raise HTTPException(status_code=409, detail="Duplicate Idempotency-Key")
     reason = body.reason
     try:
         result = await db.execute(

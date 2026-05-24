@@ -94,7 +94,7 @@ Raise system quality from ~8.4 to 9.0+ with a concrete, test-gated rollout plan 
 - Test gate commands:
   - `py -3 -m pytest backend/tests -k \"idempotency or replay\" -v`
   - `py -3 -m pytest backend/tests/test_e2e_credentialing.py -v`
- - Status: baseline implemented (idempotency-key reservation guard on high-risk create endpoints; duplicate key yields 409)
+ - Status: expanded in-progress (guards now cover create + batch submit + credentialing decision mutations; helper concurrency test added)
 
 ### P1.3 Dependency and runtime security hygiene
 - Scope:
@@ -156,7 +156,7 @@ Raise system quality from ~8.4 to 9.0+ with a concrete, test-gated rollout plan 
   - Unit tests for release report parsing and fail/allow behavior.
 - Test gate commands:
   - `py -3 -m pytest backend/tests -k \"release or canary\" -v`
- - Status: baseline implemented (`release_production.py` now runs local predeploy security gate + post-deploy smoke by default)
+ - Status: expanded in-progress (`release_production.py` now includes security gate, post-deploy smoke, critical route smoke, and log-based error-rate guard; unit tests added)
 
 ### P2 Exit Criteria
 - SLOs/alerts documented and operational.

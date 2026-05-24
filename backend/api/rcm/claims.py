@@ -553,6 +553,11 @@ async def submit_claim_batch(
 ):
     """Submit batch of claims - scoped to tenant; submission audited."""
     current_user.require_role("billing")
+    idem_key = request.headers.get("Idempotency-Key", "").strip()
+    if idem_key:
+        reserved = await reserve_idempotency_key(f"{current_user.tenant_id}:submit_claim_batch:{idem_key}")
+        if not reserved:
+            raise HTTPException(status_code=409, detail="Duplicate Idempotency-Key")
     claim_ids: List[int] = list(dict.fromkeys(batch.get("claim_ids", [])))
     payer_id: int = batch.get("payer_id", 0)
     if not claim_ids or not payer_id:

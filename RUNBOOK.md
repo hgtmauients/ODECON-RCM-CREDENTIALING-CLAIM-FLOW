@@ -180,6 +180,11 @@ Notes:
 - Script prints a final JSON summary including Vercel URL and canary JSON.
 - Use `--skip-vercel`, `--skip-hetzner`, `--skip-canary`, or `--skip-git-push` for partial runs.
 - If you intentionally have local uncommitted changes (not recommended), pass `--allow-dirty`.
+- Default release gates include:
+  - predeploy security regression subset,
+  - post-deploy `/health` smoke,
+  - critical route smoke for auth + payer paths,
+  - backend log error-rate guard (`ERROR|Traceback|Exception` lines over last 10m).
 
 ### One-command production canary verification (ClaimFlow)
 

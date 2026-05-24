@@ -76,6 +76,70 @@ def _run_post_deploy_smoke(server: str) -> Dict[str, Any]:
     }
 
 
+def _run_route_smoke(server: str) -> Dict[str, Any]:
+    script = (
+        "import json, httpx; "
+        "results=[]; "
+        "checks=["
+        "('http://127.0.0.1:8000/health', 200),"
+        "('http://127.0.0.1:8000/api/auth/me', 401),"
+        "('http://127.0.0.1:8000/api/rcm/payers', 401)"
+        "]; "
+        "ok=True; "
+        "for url, expected in checks: "
+        "  r=httpx.get(url, timeout=5.0); "
+        "  results.append({'url':url,'expected':expected,'actual':r.status_code}); "
+        "  ok = ok and (r.status_code==expected); "
+        "print(json.dumps({'ok':ok,'checks':results}))"
+    )
+    route_check = _run(
+        ["ssh", server, f"docker exec noodledoc-backend-1 python -c \"{script}\""],
+        capture_output=True,
+    )
+    payload: Dict[str, Any] = {
+        "ok": False,
+        "stdout": (route_check.stdout or "").strip(),
+        "stderr": (route_check.stderr or "").strip(),
+    }
+    if route_check.returncode != 0:
+        return payload
+    try:
+        parsed = json.loads(payload["stdout"] or "{}")
+        return {
+            "ok": bool(parsed.get("ok")),
+            "checks": parsed.get("checks", []),
+            "stdout": payload["stdout"],
+            "stderr": payload["stderr"],
+        }
+    except json.JSONDecodeError:
+        return payload
+
+
+def _run_error_rate_guard(server: str, *, window_minutes: int, max_error_lines: int) -> Dict[str, Any]:
+    logs = _run(
+        [
+            "ssh",
+            server,
+            f"bash -lc \"docker logs --since {window_minutes}m noodledoc-backend-1 2>&1 | egrep -i 'ERROR|Traceback|Exception' | wc -l\"",
+        ],
+        capture_output=True,
+    )
+    raw = (logs.stdout or "").strip()
+    try:
+        error_lines = int(raw.splitlines()[-1]) if raw else -1
+    except Exception:
+        error_lines = -1
+    ok = logs.returncode == 0 and error_lines >= 0 and error_lines <= max_error_lines
+    return {
+        "ok": ok,
+        "window_minutes": window_minutes,
+        "max_error_lines": max_error_lines,
+        "error_lines": error_lines,
+        "stdout": raw,
+        "stderr": (logs.stderr or "").strip(),
+    }
+
+
 def _ensure_git_clean(repo_root: Path) -> None:
     status = _run(["git", "status", "--porcelain"], cwd=repo_root, capture_output=True)
     if status.returncode != 0:
@@ -178,6 +242,10 @@ def main() -> int:
     parser.add_argument("--skip-canary", action="store_true", help="Skip production canary run")
     parser.add_argument("--skip-security-gate", action="store_true", help="Skip local predeploy security gate tests")
     parser.add_argument("--skip-post-smoke", action="store_true", help="Skip post-deploy backend smoke check")
+    parser.add_argument("--skip-route-smoke", action="store_true", help="Skip critical route smoke checks")
+    parser.add_argument("--skip-error-rate-guard", action="store_true", help="Skip post-deploy error-rate guard")
+    parser.add_argument("--error-window-minutes", type=int, default=10, help="Lookback window for error-rate guard")
+    parser.add_argument("--max-error-lines", type=int, default=20, help="Maximum ERROR/Exception lines allowed in guard window")
     parser.add_argument("--allow-dirty", action="store_true", help="Allow running with local uncommitted changes")
     args = parser.parse_args()
 
@@ -192,6 +260,8 @@ def main() -> int:
         "hetzner_deploy": None,
         "security_gate": None,
         "post_deploy_smoke": None,
+        "route_smoke": None,
+        "error_rate_guard": None,
         "canary": None,
         "go": False,
     }
@@ -232,6 +302,26 @@ def main() -> int:
                 raise RuntimeError("post-deploy smoke check failed")
         else:
             report["post_deploy_smoke"] = "skipped"
+
+        if not args.skip_route_smoke:
+            route_smoke = _run_route_smoke(args.server)
+            report["route_smoke"] = route_smoke
+            if not route_smoke.get("ok"):
+                raise RuntimeError("critical route smoke checks failed")
+        else:
+            report["route_smoke"] = "skipped"
+
+        if not args.skip_error_rate_guard:
+            guard = _run_error_rate_guard(
+                args.server,
+                window_minutes=max(1, args.error_window_minutes),
+                max_error_lines=max(0, args.max_error_lines),
+            )
+            report["error_rate_guard"] = guard
+            if not guard.get("ok"):
+                raise RuntimeError("post-deploy error-rate guard failed")
+        else:
+            report["error_rate_guard"] = "skipped"
 
         if not args.skip_canary:
             canary_json = _run_canary(server=args.server, tenant=args.tenant)
