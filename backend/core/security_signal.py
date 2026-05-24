@@ -5,11 +5,35 @@ Structured security telemetry helper.
 from __future__ import annotations
 
 import logging
+import json
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 def log_security_signal(event: str, **fields: Any) -> None:
-    ordered = " ".join(f"{k}={fields[k]}" for k in sorted(fields.keys()))
-    logger.warning("SECURITY-SIGNAL event=%s %s", event, ordered)
+    normalized_fields = {
+        str(k): _normalize_value(v)
+        for k, v in fields.items()
+    }
+    ordered = " ".join(f"{k}={normalized_fields[k]}" for k in sorted(normalized_fields.keys()))
+    logger.warning(
+        "SECURITY-SIGNAL event=%s %s",
+        event,
+        ordered,
+        extra={
+            "security_event": event,
+            "security_fields": normalized_fields,
+        },
+    )
+
+
+def _normalize_value(value: Any) -> Any:
+    """Keep security field values JSON-serializable for structured sinks."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    try:
+        json.dumps(value)
+        return value
+    except TypeError:
+        return str(value)

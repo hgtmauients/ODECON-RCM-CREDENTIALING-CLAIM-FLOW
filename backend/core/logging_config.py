@@ -24,6 +24,10 @@ class JSONFormatter(logging.Formatter):
             log_entry["tenant_id"] = record.tenant_id
         if hasattr(record, "user_id"):
             log_entry["user_id"] = record.user_id
+        if hasattr(record, "security_event"):
+            log_entry["security_event"] = record.security_event
+        if hasattr(record, "security_fields"):
+            log_entry["security_fields"] = record.security_fields
         if record.exc_info:
             log_entry["exception"] = self.formatException(record.exc_info)
         return json.dumps(log_entry)
