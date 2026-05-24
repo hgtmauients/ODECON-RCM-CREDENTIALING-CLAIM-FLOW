@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { apiService } from '@/services/api';
 
 interface AuthContextType {
+  isLoading: boolean;
   isAuthenticated: boolean;
   user: {
     email: string;
@@ -16,6 +17,7 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType>({
+  isLoading: true,
   isAuthenticated: false,
   user: null,
   login: async () => {},
@@ -37,24 +39,29 @@ export function useAuth() {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthContextType['user']>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const token = sessionStorage.getItem(TOKEN_KEY);
-    const storedUser = sessionStorage.getItem(USER_KEY);
-    // Security hardening: avoid persisting auth tokens across browser restarts.
-    clearLegacyLocalSession();
-    if (token && storedUser) {
-      try {
-        apiService.setAuthToken(token);
-        const parsed = JSON.parse(storedUser);
-        setUser(parsed);
-        if (parsed.tenant_id) {
-          apiService.setTenantId(parsed.tenant_id);
+    try {
+      const token = sessionStorage.getItem(TOKEN_KEY);
+      const storedUser = sessionStorage.getItem(USER_KEY);
+      // Security hardening: avoid persisting auth tokens across browser restarts.
+      clearLegacyLocalSession();
+      if (token && storedUser) {
+        try {
+          apiService.setAuthToken(token);
+          const parsed = JSON.parse(storedUser);
+          setUser(parsed);
+          if (parsed.tenant_id) {
+            apiService.setTenantId(parsed.tenant_id);
+          }
+        } catch {
+          sessionStorage.removeItem(TOKEN_KEY);
+          sessionStorage.removeItem(USER_KEY);
         }
-      } catch {
-        sessionStorage.removeItem(TOKEN_KEY);
-        sessionStorage.removeItem(USER_KEY);
       }
+    } finally {
+      setIsLoading(false);
     }
   }, []);
 
@@ -87,7 +94,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user]);
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated: !!user, user, login, logout, setTenant }}>
+    <AuthContext.Provider value={{ isLoading, isAuthenticated: !!user, user, login, logout, setTenant }}>
       {children}
     </AuthContext.Provider>
   );

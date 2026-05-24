@@ -35,7 +35,8 @@ const queryClient = new QueryClient({
 });
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuth();
+  const { isLoading, isAuthenticated } = useAuth();
+  if (isLoading) return <PageLoader />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
@@ -47,7 +48,8 @@ function RoleRoute({
   children: React.ReactNode;
   requiresAnyRole: string[];
 }) {
-  const { isAuthenticated, user } = useAuth();
+  const { isLoading, isAuthenticated, user } = useAuth();
+  if (isLoading) return <PageLoader />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   const roles = user?.roles || [];
   const allowed = requiresAnyRole.some((role) => roles.includes(role));

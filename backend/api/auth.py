@@ -14,15 +14,20 @@ import os
 import secrets
 import logging
 from dataclasses import dataclass, field
+from uuid import UUID
 from typing import Dict, Any, List, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import jwt
 from jwt import PyJWKClient
 
 from core.security_signal import log_security_signal
+from core.database import get_db
+from models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +168,7 @@ def _decode_token(token: str) -> Dict[str, Any]:
 async def get_current_user(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    db: AsyncSession = Depends(get_db),
 ) -> Principal:
     """
     FastAPI dependency: validates JWT and returns a Principal with tenant context.
@@ -200,11 +206,43 @@ async def get_current_user(
             detail="Token does not contain a tenant_id claim",
         )
 
-    roles = payload.get("roles", []) or []
+    token_roles = payload.get("roles", []) or []
+    roles = list(token_roles)
     is_super_admin = any(r == "super_admin" for r in roles)
 
-    # Only super_admin can override tenant via the X-Tenant-ID header
     header_tenant_id = request.headers.get("X-Tenant-ID")
+    effective_tenant_id = token_tenant_id
+
+    user_id = payload.get("sub", "")
+    if user_id:
+        try:
+            user_uuid = UUID(str(user_id))
+            user_result = await db.execute(
+                select(User).where(
+                    and_(
+                        User.id == user_uuid,
+                        User.tenant_id == token_tenant_id,
+                    )
+                )
+            )
+            user_row = user_result.scalar_one_or_none()
+            if not user_row or not user_row.is_active:
+                log_security_signal(
+                    "auth_user_inactive_or_missing",
+                    user_id=str(user_id),
+                    token_tenant_id=token_tenant_id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token",
+                )
+            # Enforce server-side revocation by using current DB roles over stale JWT roles.
+            roles = list(user_row.roles or [])
+            is_super_admin = any(r == "super_admin" for r in roles)
+        except ValueError:
+            # Non-UUID subjects can come from external IdPs; keep JWT claims path.
+            pass
+
     if header_tenant_id and header_tenant_id != token_tenant_id:
         if not is_super_admin:
             log_security_signal(
@@ -228,8 +266,6 @@ async def get_current_user(
             requested_tenant_id=header_tenant_id,
         )
         effective_tenant_id = header_tenant_id
-    else:
-        effective_tenant_id = token_tenant_id
 
     return Principal(
         user_id=payload.get("sub", ""),

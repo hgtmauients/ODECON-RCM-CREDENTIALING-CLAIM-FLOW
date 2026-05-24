@@ -39,7 +39,10 @@ BACKGROUND_UPSTREAM_URL = os.getenv("BACKGROUND_UPSTREAM_URL", "").strip()
 HTTP_TIMEOUT_SECONDS = float(os.getenv("ADAPTER_HTTP_TIMEOUT_SECONDS", "10"))
 MAX_RETRIES = max(0, int(os.getenv("ADAPTER_MAX_RETRIES", "2")))
 RETRY_BACKOFF_SECONDS = float(os.getenv("ADAPTER_RETRY_BACKOFF_SECONDS", "0.2"))
+ENV = os.getenv("ENV", "development")
 REQUIRE_AUTH = os.getenv("ADAPTER_REQUIRE_AUTH", "true").strip().lower() in {"1", "true", "yes", "y"}
+if ENV == "production":
+    REQUIRE_AUTH = True
 ADAPTER_API_KEY = os.getenv("ADAPTER_API_KEY", "").strip()
 ADAPTER_SHARED_SECRET = os.getenv("ADAPTER_SHARED_SECRET", "").strip()
 AUTH_WINDOW_SECONDS = max(30, int(os.getenv("ADAPTER_AUTH_WINDOW_SECONDS", "300")))
@@ -73,7 +76,7 @@ def _to_bool(value: Any, default: bool = False) -> bool:
 
 
 def _requires_auth() -> bool:
-    return REQUIRE_AUTH or bool(ADAPTER_API_KEY) or bool(ADAPTER_SHARED_SECRET)
+    return REQUIRE_AUTH
 
 
 def _parse_trusted_proxy_cidrs(raw: str) -> list[IPNetwork]:
