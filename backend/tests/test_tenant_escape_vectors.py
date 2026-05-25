@@ -549,7 +549,7 @@ async def test_background_277_pipeline_always_propagates_tenant_context(monkeypa
 
     seen: dict[str, object] = {"parse_277_tenant_ids": []}
 
-    async def fake_get_async_session():
+    async def fake_get_async_session(**_kwargs):
         yield db
 
     class FakeTransport:

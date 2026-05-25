@@ -23,7 +23,7 @@ async def poll_and_process_835_files():
     Main polling function - downloads and processes 835 files.
     Iterates over active tenants to ensure tenant-scoped processing.
     """
-    async for db in get_async_session():
+    async for db in get_async_session(allow_rls_bypass=True):
         try:
             logger.info("Starting 835 file polling job...")
 
@@ -124,7 +124,7 @@ async def _poll_835_for_tenant(db: AsyncSession, tenant):
 
 async def poll_277_files():
     """Poll for 277 claim acknowledgment files - tenant-scoped."""
-    async for db in get_async_session():
+    async for db in get_async_session(allow_rls_bypass=True):
         try:
             tenants_result = await db.execute(select(Tenant).where(Tenant.is_active == True))
             tenants = tenants_result.scalars().all()

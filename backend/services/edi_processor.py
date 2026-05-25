@@ -7,6 +7,7 @@ Handles ANSI X12 formatting according to payer specifications
 import os
 import asyncio
 import logging
+import threading
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,8 @@ from models.denials import DenialCase
 logger = logging.getLogger(__name__)
 
 EDI_STORAGE_PATH = os.getenv("EDI_STORAGE_PATH", "/data/edi")
+_CONTROL_NUMBER_LOCK = threading.Lock()
+_LAST_CONTROL_NUMBER = 0
 
 
 def _utcnow() -> datetime:
@@ -501,7 +504,16 @@ class EDIProcessor:
         )
 
     def _generate_control_number(self) -> str:
-        return datetime.now().strftime("%Y%m%d%H%M%S%f")[:9]
+        # ISA13 is 9-digit numeric. Use monotonic epoch-ms modulo 1e9 and
+        # guard with a process-local lock so burst submissions don't collide.
+        global _LAST_CONTROL_NUMBER
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        candidate = now_ms % 1_000_000_000
+        with _CONTROL_NUMBER_LOCK:
+            if candidate <= _LAST_CONTROL_NUMBER:
+                candidate = (_LAST_CONTROL_NUMBER + 1) % 1_000_000_000
+            _LAST_CONTROL_NUMBER = candidate
+        return f"{candidate:09d}"
 
     # ==================== INBOUND: CLAIM ACKNOWLEDGMENTS & STATUS (999/277CA/277) ====================
 

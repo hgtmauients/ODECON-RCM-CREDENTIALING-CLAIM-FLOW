@@ -36,6 +36,11 @@ describe('AuthProvider session behavior', () => {
     vi.clearAllMocks();
     sessionStorage.clear();
     localStorage.clear();
+    vi.mocked(apiService.get).mockResolvedValue({
+      email: 'u@example.com',
+      tenant_id: 'tenant-a',
+      roles: ['admin'],
+    });
   });
 
   it('rehydrates from sessionStorage and clears legacy localStorage keys', async () => {
@@ -116,12 +121,17 @@ describe('AuthProvider session behavior', () => {
     expect(sessionStorage.getItem('claimflow_user')).toBeNull();
   });
 
-  it('setTenant updates in-memory user and sessionStorage', async () => {
+  it('setTenant only applies for super_admin users', async () => {
     sessionStorage.setItem('claimflow_token', 'session-token');
     sessionStorage.setItem(
       'claimflow_user',
-      JSON.stringify({ email: 'u@example.com', tenant_id: 'tenant-a', roles: ['admin'] })
+      JSON.stringify({ email: 'u@example.com', tenant_id: 'tenant-a', roles: ['super_admin'] })
     );
+    vi.mocked(apiService.get).mockResolvedValue({
+      email: 'u@example.com',
+      tenant_id: 'tenant-a',
+      roles: ['super_admin'],
+    });
     const user = userEvent.setup();
 
     render(

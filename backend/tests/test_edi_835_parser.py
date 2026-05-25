@@ -90,3 +90,10 @@ def test_parse_835_zero_pay_no_adjustments_treated_as_payment():
     assert len(out["payments"]) == 1
     assert out["payments"][0]["paid_amount"] == 0.0
     assert out["denials"] == []
+
+
+def test_generate_control_number_is_nine_digit_and_unique_across_burst_calls():
+    processor = EDIProcessor(db=None)  # type: ignore[arg-type]
+    values = [processor._generate_control_number() for _ in range(20)]
+    assert all(len(v) == 9 and v.isdigit() for v in values)
+    assert len(set(values)) == len(values)

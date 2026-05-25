@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import jwt
@@ -48,13 +49,15 @@ class _FakeDB:
         return _FakeResult(row)
 
 
-def _make_token(*, sub: str, tenant_id: str, roles: list[str]) -> str:
+def _make_token(*, sub: str, tenant_id: str, roles: list[str], iat: datetime | None = None) -> str:
+    issued_at = iat or datetime.now(timezone.utc)
     payload = {
         "sub": sub,
         "email": "user@example.com",
         "tenant_id": tenant_id,
         "roles": roles,
         "aud": "claimflow",
+        "iat": issued_at,
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -188,3 +191,5 @@ async def test_super_admin_override_rejects_inactive_target_tenant():
         await get_current_user(request=request, credentials=creds, db=db)
     assert exc.value.status_code == 403
     assert "inactive or missing" in exc.value.detail
+
+

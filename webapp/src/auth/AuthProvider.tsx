@@ -42,27 +42,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    try {
-      const token = sessionStorage.getItem(TOKEN_KEY);
-      const storedUser = sessionStorage.getItem(USER_KEY);
-      // Security hardening: avoid persisting auth tokens across browser restarts.
-      clearLegacyLocalSession();
-      if (token && storedUser) {
-        try {
-          apiService.setAuthToken(token);
-          const parsed = JSON.parse(storedUser);
-          setUser(parsed);
-          if (parsed.tenant_id) {
-            apiService.setTenantId(parsed.tenant_id);
+    let mounted = true;
+    (async () => {
+      try {
+        const token = sessionStorage.getItem(TOKEN_KEY);
+        const storedUser = sessionStorage.getItem(USER_KEY);
+        // Security hardening: avoid persisting auth tokens across browser restarts.
+        clearLegacyLocalSession();
+        if (token && storedUser) {
+          try {
+            apiService.setAuthToken(token);
+            const parsed = JSON.parse(storedUser);
+            // Revalidate server-side before trusting rehydrated session state.
+            const me = await apiService.get('/auth/me');
+            const mergedUser = { ...parsed, ...me };
+            if (!mounted) return;
+            setUser(mergedUser);
+            if (mergedUser.tenant_id) {
+              apiService.setTenantId(mergedUser.tenant_id);
+            }
+            sessionStorage.setItem(USER_KEY, JSON.stringify(mergedUser));
+          } catch {
+            sessionStorage.removeItem(TOKEN_KEY);
+            sessionStorage.removeItem(USER_KEY);
+            apiService.setAuthToken(null);
+            apiService.setTenantId(null);
           }
-        } catch {
-          sessionStorage.removeItem(TOKEN_KEY);
-          sessionStorage.removeItem(USER_KEY);
         }
+      } finally {
+        if (mounted) setIsLoading(false);
       }
-    } finally {
-      setIsLoading(false);
-    }
+    })();
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
@@ -85,6 +98,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setTenant = useCallback((tenantId: string) => {
+    if (!user?.roles?.includes('super_admin')) {
+      return;
+    }
     apiService.setTenantId(tenantId);
     if (user) {
       const updated = { ...user, tenant_id: tenantId };

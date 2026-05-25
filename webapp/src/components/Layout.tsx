@@ -16,7 +16,7 @@ const navItems: NavItem[] = [
   { path: '/', label: 'Home' },
   { path: '/claims', label: 'Claims' },
   { path: '/denials', label: 'Denials' },
-  { path: '/admin/payers', label: 'Payers' },
+  { path: '/admin/payers', label: 'Payers', requiresAnyRole: ['admin', 'super_admin'] },
   { path: '/patients', label: 'Patients' },
   { path: '/edi', label: 'EDI Files' },
   { path: '/credentialing', label: 'Credentialing' },

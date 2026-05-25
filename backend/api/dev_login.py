@@ -19,7 +19,8 @@ Bootstrapping:
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+import time
+from uuid import UUID, uuid4
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -36,6 +37,10 @@ from models.user import User
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["Auth"])
+LOGIN_ATTEMPT_WINDOW_SECONDS = int(os.getenv("LOGIN_ATTEMPT_WINDOW_SECONDS", "900"))
+LOGIN_ATTEMPT_LIMIT = int(os.getenv("LOGIN_ATTEMPT_LIMIT", "8"))
+ACCESS_TOKEN_TTL_SECONDS = int(os.getenv("ACCESS_TOKEN_TTL_SECONDS", "3600"))
+_failed_login_attempts: dict[str, list[float]] = {}
 
 
 def _password_login_enabled() -> bool:
@@ -54,8 +59,39 @@ class LoginRequest(BaseModel):
     tenant_id: str | None = None
 
 
+def _prune_attempts(values: list[float], now: float) -> list[float]:
+    cutoff = now - LOGIN_ATTEMPT_WINDOW_SECONDS
+    return [ts for ts in values if ts >= cutoff]
+
+
+def _login_attempt_key(*, email: str, client_ip: str) -> str:
+    return f"{email}|{client_ip}"
+
+
+def _enforce_login_throttle(*, email: str, client_ip: str) -> None:
+    now = time.time()
+    key = _login_attempt_key(email=email, client_ip=client_ip)
+    attempts = _prune_attempts(_failed_login_attempts.get(key, []), now)
+    _failed_login_attempts[key] = attempts
+    if len(attempts) >= LOGIN_ATTEMPT_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many failed login attempts. Try again later.")
+
+
+def _record_failed_login(*, email: str, client_ip: str) -> None:
+    now = time.time()
+    key = _login_attempt_key(email=email, client_ip=client_ip)
+    attempts = _prune_attempts(_failed_login_attempts.get(key, []), now)
+    attempts.append(now)
+    _failed_login_attempts[key] = attempts
+
+
+def _clear_failed_login(*, email: str, client_ip: str) -> None:
+    key = _login_attempt_key(email=email, client_ip=client_ip)
+    _failed_login_attempts.pop(key, None)
+
+
 @router.post("/login")
-async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Validate email + password against the users table and return a JWT.
 
     Generic 401 response for every failure mode (wrong password, missing user,
@@ -66,6 +102,8 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Not found")
 
     email = req.email.strip().lower()
+    client_ip = request.client.host if request.client else "unknown"
+    _enforce_login_throttle(email=email, client_ip=client_ip)
 
     filters = [User.email == email, User.is_active.is_(True)]
     if req.tenant_id:
@@ -79,11 +117,14 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     matches = result.scalars().all()
 
     if len(matches) != 1 or not matches[0].password_hash:
+        _record_failed_login(email=email, client_ip=client_ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     user = matches[0]
     if not verify_password(req.password, user.password_hash):
+        _record_failed_login(email=email, client_ip=client_ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    _clear_failed_login(email=email, client_ip=client_ip)
 
     # Refresh the hash if Argon2 parameters have moved on.
     if needs_rehash(user.password_hash):
@@ -102,7 +143,8 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         "roles": list(user.roles or []),
         "aud": os.getenv("JWT_AUDIENCE", "claimflow"),
         "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(hours=24),
+        "exp": datetime.now(timezone.utc) + timedelta(seconds=ACCESS_TOKEN_TTL_SECONDS),
+        "jti": str(uuid4()),
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 

@@ -87,6 +87,10 @@ def validate_api_startup_security(env: Mapping[str, str] | None = None) -> None:
     errors.extend(_validate_encryption_key(config.get("CLAIMFLOW_ENCRYPTION_KEY") or ""))
     errors.extend(_validate_cors_origins(config.get("CORS_ORIGINS") or ""))
     errors.extend(_validate_cidrs(config.get("TRUSTED_PROXY_CIDRS") or "", env_key="TRUSTED_PROXY_CIDRS"))
+    if _as_bool(config.get("ALLOW_PRIVATE_OUTBOUND_DESTINATIONS"), default=False):
+        errors.append("ALLOW_PRIVATE_OUTBOUND_DESTINATIONS=true is not allowed in production")
+    if _as_bool(config.get("SFTP_ALLOW_UNKNOWN_HOST_KEYS"), default=False):
+        errors.append("SFTP_ALLOW_UNKNOWN_HOST_KEYS=true is not allowed in production")
 
     if errors:
         raise RuntimeError("Startup security validation failed: " + "; ".join(errors))

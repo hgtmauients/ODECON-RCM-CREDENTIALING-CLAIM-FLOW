@@ -40,6 +40,8 @@ function authHeaders(): Record<string, string> {
 }
 
 function clearStoredSession(): void {
+  authToken = null;
+  tenantId = null;
   if (typeof window === 'undefined') return;
   sessionStorage.removeItem(TOKEN_KEY);
   sessionStorage.removeItem(USER_KEY);
@@ -153,6 +155,10 @@ async function downloadBlob(path: string): Promise<Blob> {
     const errorBody = await resp.json().catch(() => ({ detail: resp.statusText }));
     const error: any = new Error(errorBody.detail || `HTTP ${resp.status}`);
     error.status = resp.status;
+    if (resp.status === 401 && typeof window !== 'undefined') {
+      clearStoredSession();
+      window.location.replace('/login');
+    }
     throw error;
   }
   return resp.blob();
@@ -179,6 +185,10 @@ async function downloadFile(path: string, fallback: string, query?: ParamsInput)
     const errorBody = await resp.json().catch(() => ({ detail: resp.statusText }));
     const error: any = new Error(errorBody.detail || `HTTP ${resp.status}`);
     error.status = resp.status;
+    if (resp.status === 401 && typeof window !== 'undefined') {
+      clearStoredSession();
+      window.location.replace('/login');
+    }
     throw error;
   }
 

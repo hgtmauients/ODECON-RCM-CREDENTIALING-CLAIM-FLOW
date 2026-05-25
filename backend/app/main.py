@@ -7,7 +7,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text as sa_text
@@ -133,6 +133,7 @@ def create_app() -> FastAPI:
     from api.notifications import router as notifications_router
     from api.dashboard import router as dashboard_router
     from api.search import router as search_router
+    from api.auth import get_current_user, Principal
 
     app.include_router(tenants_router, prefix="/api")
     app.include_router(dev_login_router, prefix="/api")
@@ -158,6 +159,23 @@ def create_app() -> FastAPI:
     # instance. Body always includes the same JSON shape for human inspection.
     @app.get("/health")
     async def health():
+        from core.database import engine
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(sa_text("SELECT 1"))
+            db_ok = True
+        except Exception:
+            db_ok = False
+        body = {
+            "status": "ok" if db_ok else "degraded",
+            "service": "ClaimFlow",
+            "database": db_ok,
+        }
+        return JSONResponse(status_code=200 if db_ok else 503, content=body)
+
+    @app.get("/api/health/details")
+    async def health_details(current_user: Principal = Depends(get_current_user)):
+        current_user.require_role("admin")
         from core.database import engine
         from core.scheduler import SCHEDULER_ENABLED, get_scheduler_status
         from jobs.credentialing_queue import get_credentialing_queue_stats

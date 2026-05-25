@@ -28,6 +28,12 @@ RUN printf 'server {\n\
   server_name _;\n\
   root /usr/share/nginx/html;\n\
   index index.html;\n\
+  add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;\n\
+  add_header X-Content-Type-Options "nosniff" always;\n\
+  add_header X-Frame-Options "DENY" always;\n\
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;\n\
+  add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;\n\
+  add_header Content-Security-Policy "default-src '\''self'\''; script-src '\''self'\''; style-src '\''self'\'' '\''unsafe-inline'\'' https://fonts.googleapis.com; img-src '\''self'\'' data: https:; font-src '\''self'\'' data: https://fonts.gstatic.com; connect-src '\''self'\'' https://api.noodledoc.com https://api.api-cert.com https://*.ingest.sentry.io https://*.ingest.us.sentry.io; frame-ancestors '\''none'\''; base-uri '\''self'\''; form-action '\''self'\''" always;\n\
   location /assets/ {\n\
     expires 1y;\n\
     add_header Cache-Control "public, immutable";\n\

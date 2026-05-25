@@ -4,6 +4,7 @@ Provides `get_db` dependency and `get_async_session` generator for background jo
 """
 
 import os
+import logging
 from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
@@ -12,6 +13,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from core.db_rls import set_rls_bypass, set_tenant_context
+
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -45,12 +48,14 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_async_session(*, allow_rls_bypass: bool = False) -> AsyncGenerator[AsyncSession, None]:
     """Generator for background jobs (non-FastAPI contexts)."""
     async with async_session_factory() as session:
         try:
-            # Background workers iterate across tenants and use explicit app-layer filters.
-            await set_rls_bypass(session, enabled=True)
+            # Default to strict mode; callers must explicitly opt into bypass.
+            await set_rls_bypass(session, enabled=allow_rls_bypass)
+            if allow_rls_bypass:
+                logger.warning("Background DB session started with RLS bypass enabled")
             await set_tenant_context(session, tenant_id=None)
             yield session
         finally:

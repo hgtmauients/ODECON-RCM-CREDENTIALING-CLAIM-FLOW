@@ -95,6 +95,32 @@ def test_api_validator_rejects_wildcard_cors_in_production():
         validate_api_startup_security(env)
 
 
+def test_api_validator_rejects_private_outbound_override_in_production():
+    env = {
+        "ENV": "production",
+        "JWT_ALGORITHM": "HS256",
+        "JWT_SECRET": "x" * 32,
+        "CLAIMFLOW_ENCRYPTION_KEY": base64.b64encode(AESGCM.generate_key(bit_length=256)).decode("ascii"),
+        "CORS_ORIGINS": "https://app.claimflow.example",
+        "ALLOW_PRIVATE_OUTBOUND_DESTINATIONS": "true",
+    }
+    with pytest.raises(RuntimeError, match="ALLOW_PRIVATE_OUTBOUND_DESTINATIONS=true is not allowed"):
+        validate_api_startup_security(env)
+
+
+def test_api_validator_rejects_unknown_sftp_host_keys_override_in_production():
+    env = {
+        "ENV": "production",
+        "JWT_ALGORITHM": "HS256",
+        "JWT_SECRET": "x" * 32,
+        "CLAIMFLOW_ENCRYPTION_KEY": base64.b64encode(AESGCM.generate_key(bit_length=256)).decode("ascii"),
+        "CORS_ORIGINS": "https://app.claimflow.example",
+        "SFTP_ALLOW_UNKNOWN_HOST_KEYS": "1",
+    }
+    with pytest.raises(RuntimeError, match="SFTP_ALLOW_UNKNOWN_HOST_KEYS=true is not allowed"):
+        validate_api_startup_security(env)
+
+
 def test_adapter_validator_rejects_missing_auth_material_when_required():
     env = {
         "ENV": "production",
