@@ -37,9 +37,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency that yields a scoped async session."""
     async with async_session_factory() as session:
         try:
-            # Request sessions should never bypass tenant RLS by default.
-            await set_rls_bypass(session, enabled=False)
-            await set_tenant_context(session, tenant_id=None)
+            # Request sessions get tenant context in auth.get_current_user once
+            # token validation succeeds. Avoid forcing a DB connection here so
+            # invalid-token requests can fail fast before touching the DB.
             yield session
         finally:
             await session.close()
