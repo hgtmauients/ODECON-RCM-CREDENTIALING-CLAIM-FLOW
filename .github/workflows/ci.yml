@@ -57,7 +57,7 @@ jobs:
       - name: Install dependencies
         working-directory: backend
         run: |
-          pip install --require-hashes -r requirements.lock
+          pip install --require-hashes --no-deps -r requirements.lock
           pip install pytest pytest-asyncio pytest-cov httpx
 
       - name: Validate migrations
@@ -116,7 +116,7 @@ jobs:
       - name: Install dependencies
         working-directory: backend
         run: |
-          pip install --require-hashes -r requirements.lock
+          pip install --require-hashes --no-deps -r requirements.lock
           pip install pytest pytest-asyncio httpx
 
       - name: Run security regression suite
@@ -157,7 +157,7 @@ jobs:
       - name: Install dependencies
         working-directory: backend
         run: |
-          pip install --require-hashes -r requirements.lock
+          pip install --require-hashes --no-deps -r requirements.lock
           pip install pytest pytest-asyncio httpx
 
       - name: Apply migrations for RLS snapshot
@@ -252,7 +252,7 @@ jobs:
       - name: Install backend test dependencies
         working-directory: backend
         run: |
-          pip install --require-hashes -r requirements.lock
+          pip install --require-hashes --no-deps -r requirements.lock
           pip install pytest pytest-asyncio httpx
 
       - name: Run backend next-10 subset
@@ -287,7 +287,7 @@ jobs:
 
       - name: Install pip-audit
         run: |
-          pip install --require-hashes -r backend/requirements.lock
+          pip install --require-hashes --no-deps -r backend/requirements.lock
           pip install pip-audit
 
       - name: Python dependency audit

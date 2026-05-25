@@ -18,7 +18,7 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt requirements.lock ./
-RUN pip install --require-hashes -r requirements.lock
+RUN pip install --require-hashes --no-deps -r requirements.lock
 
 
 FROM python:3.11-slim AS runtime
