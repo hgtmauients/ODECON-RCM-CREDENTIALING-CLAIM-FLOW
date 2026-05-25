@@ -24,6 +24,7 @@ async def search_icd10(
     current_user: Principal = Depends(get_current_user),
 ):
     """Search ICD-10 diagnosis codes. Used for autocomplete on claim forms."""
+    current_user.require_role("billing")
     query = select(ICD10Code)
     search = f"%{q}%"
     query = query.where(or_(
@@ -57,6 +58,7 @@ async def search_cpt(
     current_user: Principal = Depends(get_current_user),
 ):
     """Search CPT/HCPCS procedure codes. Used for autocomplete on claim forms."""
+    current_user.require_role("billing")
     query = select(CPTCode)
     search = f"%{q}%"
     query = query.where(or_(
@@ -88,6 +90,7 @@ async def list_icd10_categories(
     current_user: Principal = Depends(get_current_user),
 ):
     """List ICD-10 categories for filtering."""
+    current_user.require_role("billing")
     from sqlalchemy import func, distinct
     result = await db.execute(select(distinct(ICD10Code.category)).where(ICD10Code.category.isnot(None)).order_by(ICD10Code.category))
     cats = [r[0] for r in result.fetchall()]
@@ -100,6 +103,7 @@ async def list_cpt_categories(
     current_user: Principal = Depends(get_current_user),
 ):
     """List CPT categories for filtering."""
+    current_user.require_role("billing")
     from sqlalchemy import func, distinct
     result = await db.execute(select(distinct(CPTCode.category)).where(CPTCode.category.isnot(None)).order_by(CPTCode.category))
     cats = [r[0] for r in result.fetchall()]

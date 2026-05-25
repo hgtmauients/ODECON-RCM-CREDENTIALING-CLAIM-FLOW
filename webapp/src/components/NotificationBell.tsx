@@ -10,6 +10,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from 'react-query';
 import { apiService } from '@/services/api';
+import { getSafeInternalPath } from '@/utils/safeNavigation';
 
 interface NotifRow {
   id: string;
@@ -74,9 +75,10 @@ export default function NotificationBell() {
 
   const handleClick = async (n: NotifRow) => {
     if (!n.is_read) markRead.mutate(n.id);
-    if (n.link_url) {
+    const safePath = getSafeInternalPath(n.link_url);
+    if (safePath) {
       setOpen(false);
-      navigate(n.link_url);
+      navigate(safePath);
     }
   };
 

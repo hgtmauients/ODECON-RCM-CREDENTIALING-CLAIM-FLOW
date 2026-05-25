@@ -26,6 +26,11 @@ router = APIRouter(prefix="/tenants", tags=["Tenants"])
 _PROTECTED_TENANT_FIELDS = frozenset({"id", "settings", "is_active", "created_at", "created_by"})
 
 
+def _integration_test_error_message() -> str:
+    # Keep responses stable and non-sensitive; detailed errors stay in server logs.
+    return "Integration test failed. Check server logs for details."
+
+
 @router.post("")
 async def create_tenant(
     payload: TenantCreate,
@@ -280,7 +285,9 @@ async def test_smtp_settings(
     smtp_user = await get_tenant_setting(db, tenant_id, "smtp_user", "")
     smtp_pass = await get_tenant_setting(db, tenant_id, "smtp_pass", "")
     from_email = await get_tenant_setting(db, tenant_id, "from_email", "noreply@claimflow.io")
-    to_email = (body.to if body and body.to else None) or current_user.email
+    # Test emails always go to the authenticated operator to prevent abuse
+    # as an open relay via arbitrary recipients.
+    to_email = current_user.email
 
     try:
         import smtplib
@@ -299,8 +306,8 @@ async def test_smtp_settings(
 
         return {"success": True, "message": f"Test email sent to {to_email}"}
     except Exception as e:
-        logger.warning(f"SMTP test failed for tenant {tenant_id}: {e}")
-        return {"success": False, "error": str(e)}
+        logger.warning("SMTP test failed for tenant %s: %s", tenant_id, e)
+        return {"success": False, "error": _integration_test_error_message()}
 
 
 @router.post("/{tenant_id}/settings/test-api-cert")
@@ -334,7 +341,8 @@ async def test_api_cert_settings(
             return {"success": True, "data": resp.json()}
         return {"success": False, "error": f"API-Cert returned {resp.status_code}"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        logger.warning("API-Cert test failed for tenant %s: %s", tenant_id, e)
+        return {"success": False, "error": _integration_test_error_message()}
 
 
 @router.post("/{tenant_id}/settings/test-caqh")
@@ -377,4 +385,5 @@ async def test_caqh_settings(
             }
         return {"success": False, "error": f"CAQH returned {resp.status_code}"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        logger.warning("CAQH test failed for tenant %s: %s", tenant_id, e)
+        return {"success": False, "error": _integration_test_error_message()}

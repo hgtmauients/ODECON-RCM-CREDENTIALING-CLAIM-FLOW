@@ -10,6 +10,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from 'react-query';
 import { apiService } from '@/services/api';
+import { getSafeInternalPath } from '@/utils/safeNavigation';
 
 interface Hit {
   type: 'claim' | 'provider' | 'payer' | 'denial';
@@ -92,9 +93,11 @@ export default function GlobalSearch() {
   useEffect(() => { setActiveIdx(0); }, [debounced]);
 
   const goto = (h: Hit) => {
+    const safePath = getSafeInternalPath(h.link);
+    if (!safePath) return;
     setOpen(false);
     setQuery('');
-    navigate(h.link);
+    navigate(safePath);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {

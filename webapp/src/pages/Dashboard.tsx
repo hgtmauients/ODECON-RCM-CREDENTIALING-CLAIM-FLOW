@@ -16,6 +16,7 @@ import { useQuery } from 'react-query';
 import { apiService } from '@/services/api';
 import { useAuth } from '@/auth/AuthProvider';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { getSafeInternalPath } from '@/utils/safeNavigation';
 
 type DashboardData = {
   as_of: string;
@@ -196,6 +197,11 @@ export default function Dashboard() {
   const compliance: ComplianceData | null = complianceQuery.data?.data || null;
   const scalability: ScalabilityData | null = scalabilityQuery.data?.data || null;
   const greeting = user?.email ? user.email.split('@')[0] : 'there';
+  const navigateIfSafe = (path: string) => {
+    const safePath = getSafeInternalPath(path);
+    if (!safePath) return;
+    navigate(safePath);
+  };
 
   if (isLoading) {
     return (
@@ -267,7 +273,7 @@ export default function Dashboard() {
             {summary.work_queues.map((q) => (
               <button
                 key={q.key}
-                onClick={() => navigate(q.link)}
+                onClick={() => navigateIfSafe(q.link)}
                 style={{
                   display: 'flex',
                   justifyContent: 'space-between',
