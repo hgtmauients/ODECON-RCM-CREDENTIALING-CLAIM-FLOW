@@ -93,6 +93,51 @@ async def test_readonly_blocked_from_dashboard_summary_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_readonly_blocked_from_dashboard_integrations_endpoint():
+    from api.dashboard import integrations_overview
+
+    with pytest.raises(HTTPException) as ei:
+        await integrations_overview(db=AsyncMock(), current_user=_readonly_principal())
+    assert ei.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_readonly_blocked_from_dashboard_benchmarks_endpoint():
+    from api.dashboard import operational_benchmarks
+
+    with pytest.raises(HTTPException) as ei:
+        await operational_benchmarks(db=AsyncMock(), current_user=_readonly_principal())
+    assert ei.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_readonly_blocked_from_dashboard_compliance_endpoint():
+    from api.dashboard import compliance_security_controls
+
+    with pytest.raises(HTTPException) as ei:
+        await compliance_security_controls(db=AsyncMock(), current_user=_readonly_principal())
+    assert ei.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_readonly_blocked_from_dashboard_scalability_endpoint():
+    from api.dashboard import scalability_readiness
+
+    with pytest.raises(HTTPException) as ei:
+        await scalability_readiness(db=AsyncMock(), current_user=_readonly_principal())
+    assert ei.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_readonly_blocked_from_dashboard_rls_assurance_endpoint():
+    from api.dashboard import rls_assurance
+
+    with pytest.raises(HTTPException) as ei:
+        await rls_assurance(db=AsyncMock(), current_user=_readonly_principal())
+    assert ei.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_billing_blocked_from_caqh_admin_endpoint():
     from api.rcm.caqh import search_caqh_by_npi
 

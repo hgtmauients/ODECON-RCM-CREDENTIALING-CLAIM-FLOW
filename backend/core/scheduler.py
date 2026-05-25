@@ -13,6 +13,7 @@ import os
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
+from datetime import datetime, timezone
 
 from sqlalchemy import text as sa_text
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -31,6 +32,65 @@ _LOCK_ID_835_POLL = 0x1F00_835A_AAAA_0001
 _LOCK_ID_EXPIRATION = 0x1F00_835A_AAAA_0002
 _LOCK_ID_277_POLL = 0x1F00_835A_AAAA_0003
 _LOCK_ID_CREDENTIALING_QUEUE = 0x1F00_835A_AAAA_0004
+
+_JOB_KEYS = ("poll_835_files", "poll_277_files", "check_expirations", "process_credentialing_queue")
+
+_scheduler_metrics = {
+    key: {
+        "runs": 0,
+        "successes": 0,
+        "failures": 0,
+        "skips_locked": 0,
+        "last_run_at": None,
+        "last_success_at": None,
+        "last_failure_at": None,
+        "last_error": None,
+    }
+    for key in _JOB_KEYS
+}
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _capture_job_exception(exc: Exception, *, job_id: str) -> None:
+    try:
+        import sentry_sdk
+
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("scheduler_job", job_id)
+            scope.set_extra("scheduler_enabled", SCHEDULER_ENABLED)
+            sentry_sdk.capture_exception(exc)
+    except Exception:
+        # Sentry is optional; never let alert plumbing break scheduler execution.
+        pass
+
+
+def _record_job_run(job_id: str, *, outcome: str, error: str | None = None) -> None:
+    metrics = _scheduler_metrics[job_id]
+    now = _utcnow_iso()
+    metrics["runs"] += 1
+    metrics["last_run_at"] = now
+    if outcome == "success":
+        metrics["successes"] += 1
+        metrics["last_success_at"] = now
+        metrics["last_error"] = None
+    elif outcome == "failure":
+        metrics["failures"] += 1
+        metrics["last_failure_at"] = now
+        metrics["last_error"] = error
+    elif outcome == "skipped_locked":
+        metrics["skips_locked"] += 1
+
+
+def get_scheduler_status() -> dict:
+    """Return scheduler metrics for health/monitoring endpoints."""
+    return {
+        "enabled": SCHEDULER_ENABLED,
+        "running": bool(scheduler.running),
+        "jobs": {k: dict(v) for k, v in _scheduler_metrics.items()},
+    }
 
 
 @asynccontextmanager
@@ -110,12 +170,16 @@ async def _run_835_poll():
     async with _try_advisory_lock(_LOCK_ID_835_POLL) as acquired:
         if not acquired:
             logger.debug("835 poll skipped on this worker (another worker holds the lock)")
+            _record_job_run("poll_835_files", outcome="skipped_locked")
             return
         try:
             from jobs.poll_835_files import poll_and_process_835_files
             await poll_and_process_835_files()
+            _record_job_run("poll_835_files", outcome="success")
         except Exception as e:
-            logger.error(f"835 poll job failed: {e}")
+            logger.exception("835 poll job failed")
+            _record_job_run("poll_835_files", outcome="failure", error=str(e))
+            _capture_job_exception(e, job_id="poll_835_files")
 
 
 async def _run_277_poll():
@@ -123,12 +187,16 @@ async def _run_277_poll():
     async with _try_advisory_lock(_LOCK_ID_277_POLL) as acquired:
         if not acquired:
             logger.debug("277 poll skipped on this worker (another worker holds the lock)")
+            _record_job_run("poll_277_files", outcome="skipped_locked")
             return
         try:
             from jobs.poll_835_files import poll_277_files
             await poll_277_files()
+            _record_job_run("poll_277_files", outcome="success")
         except Exception as e:
-            logger.error(f"277 poll job failed: {e}")
+            logger.exception("277 poll job failed")
+            _record_job_run("poll_277_files", outcome="failure", error=str(e))
+            _capture_job_exception(e, job_id="poll_277_files")
 
 
 async def _run_credentialing_queue():
@@ -136,12 +204,16 @@ async def _run_credentialing_queue():
     async with _try_advisory_lock(_LOCK_ID_CREDENTIALING_QUEUE) as acquired:
         if not acquired:
             logger.debug("Credentialing queue skipped on this worker (another worker holds the lock)")
+            _record_job_run("process_credentialing_queue", outcome="skipped_locked")
             return
         try:
             from jobs.credentialing_queue import process_credentialing_queue
             await process_credentialing_queue()
+            _record_job_run("process_credentialing_queue", outcome="success")
         except Exception as e:
-            logger.error(f"Credentialing queue job failed: {e}")
+            logger.exception("Credentialing queue job failed")
+            _record_job_run("process_credentialing_queue", outcome="failure", error=str(e))
+            _capture_job_exception(e, job_id="process_credentialing_queue")
 
 
 async def _run_expiration_check():
@@ -154,6 +226,7 @@ async def _run_expiration_check():
     async with _try_advisory_lock(_LOCK_ID_EXPIRATION) as acquired:
         if not acquired:
             logger.debug("Expiration check skipped on this worker (another worker holds the lock)")
+            _record_job_run("check_expirations", outcome="skipped_locked")
             return
         try:
             from core.database import async_session_factory
@@ -232,8 +305,11 @@ async def _run_expiration_check():
                             ),
                             recipients=recipients,
                         )
+            _record_job_run("check_expirations", outcome="success")
         except Exception as e:
             logger.exception("Expiration check failed: %s", e)
+            _record_job_run("check_expirations", outcome="failure", error=str(e))
+            _capture_job_exception(e, job_id="check_expirations")
 
 
 def start_scheduler():

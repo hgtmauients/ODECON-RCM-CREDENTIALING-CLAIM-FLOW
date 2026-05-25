@@ -159,7 +159,8 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health():
         from core.database import engine
-        from core.scheduler import SCHEDULER_ENABLED
+        from core.scheduler import SCHEDULER_ENABLED, get_scheduler_status
+        from jobs.credentialing_queue import get_credentialing_queue_stats
         try:
             async with engine.connect() as conn:
                 await conn.execute(sa_text("SELECT 1"))
@@ -183,6 +184,8 @@ def create_app() -> FastAPI:
             "database": db_ok,
             "redis": redis_ok,
             "scheduler_enabled": SCHEDULER_ENABLED,
+            "scheduler": get_scheduler_status(),
+            "credentialing_queue": get_credentialing_queue_stats(),
         }
         return JSONResponse(status_code=200 if db_ok else 503, content=body)
 
