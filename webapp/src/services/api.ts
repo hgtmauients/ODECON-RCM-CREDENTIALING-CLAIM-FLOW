@@ -6,6 +6,8 @@
 const BASE_URL = import.meta.env?.VITE_API_BASE_URL || '/api';
 const TOKEN_KEY = 'claimflow_token';
 const USER_KEY = 'claimflow_user';
+const CSRF_COOKIE_NAME = 'claimflow_csrf_token';
+const CSRF_HEADER_NAME = 'X-CSRF-Token';
 
 let authToken: string | null = null;
 let tenantId: string | null = null;
@@ -18,7 +20,23 @@ function setTenantId(id: string | null): void {
   tenantId = id;
 }
 
-function buildHeaders(extra: Record<string, string> = {}): Record<string, string> {
+function getCookieValue(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const parts = document.cookie.split(';').map((part) => part.trim());
+  for (const part of parts) {
+    if (!part.startsWith(`${name}=`)) continue;
+    return decodeURIComponent(part.slice(name.length + 1));
+  }
+  return null;
+}
+
+function getCsrfHeader(): Record<string, string> {
+  const csrfToken = getCookieValue(CSRF_COOKIE_NAME);
+  if (!csrfToken) return {};
+  return { [CSRF_HEADER_NAME]: csrfToken };
+}
+
+function buildHeaders(extra: Record<string, string> = {}, mutating = false): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...extra,
@@ -28,6 +46,9 @@ function buildHeaders(extra: Record<string, string> = {}): Record<string, string
   }
   if (tenantId) {
     headers['X-Tenant-ID'] = tenantId;
+  }
+  if (mutating) {
+    Object.assign(headers, getCsrfHeader());
   }
   return headers;
 }
@@ -108,7 +129,7 @@ async function post<T = any>(path: string, body?: any, options?: { headers?: Rec
   }
   const resp = await fetch(`${BASE_URL}${path}`, {
     method: 'POST',
-    headers: buildHeaders(options?.headers),
+    headers: buildHeaders(options?.headers, true),
     credentials: 'include',
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
@@ -118,7 +139,7 @@ async function post<T = any>(path: string, body?: any, options?: { headers?: Rec
 async function put<T = any>(path: string, body?: any): Promise<T> {
   const resp = await fetch(`${BASE_URL}${path}`, {
     method: 'PUT',
-    headers: buildHeaders(),
+    headers: buildHeaders({}, true),
     credentials: 'include',
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
@@ -128,7 +149,7 @@ async function put<T = any>(path: string, body?: any): Promise<T> {
 async function patch<T = any>(path: string, body?: any): Promise<T> {
   const resp = await fetch(`${BASE_URL}${path}`, {
     method: 'PATCH',
-    headers: buildHeaders(),
+    headers: buildHeaders({}, true),
     credentials: 'include',
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
@@ -136,14 +157,14 @@ async function patch<T = any>(path: string, body?: any): Promise<T> {
 }
 
 async function del<T = any>(path: string): Promise<T> {
-  const resp = await fetch(`${BASE_URL}${path}`, { method: 'DELETE', headers: buildHeaders(), credentials: 'include' });
+  const resp = await fetch(`${BASE_URL}${path}`, { method: 'DELETE', headers: buildHeaders({}, true), credentials: 'include' });
   return handleResponse<T>(resp);
 }
 
 async function upload<T = any>(path: string, formData: FormData): Promise<T> {
   const resp = await fetch(`${BASE_URL}${path}`, {
     method: 'POST',
-    headers: authHeaders(),
+    headers: { ...authHeaders(), ...getCsrfHeader() },
     credentials: 'include',
     body: formData,
   });

@@ -13,6 +13,7 @@ import base64
 import os
 import secrets
 import logging
+import hmac
 from dataclasses import dataclass, field
 from uuid import UUID
 from typing import Dict, Any, List, Optional
@@ -78,6 +79,14 @@ _jwks_client: Optional[PyJWKClient] = None
 
 security_scheme = HTTPBearer(auto_error=False)
 AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "claimflow_access_token")
+CSRF_COOKIE_NAME = os.getenv("CSRF_COOKIE_NAME", "claimflow_csrf_token")
+CSRF_HEADER_NAME = os.getenv("CSRF_HEADER_NAME", "X-CSRF-Token")
+
+
+def csrf_tokens_match(expected: str, provided: str) -> bool:
+    if not expected or not provided:
+        return False
+    return hmac.compare_digest(expected, provided)
 
 ROLES = {
     "super_admin": ["super_admin", "admin", "billing", "credentialing", "readonly"],

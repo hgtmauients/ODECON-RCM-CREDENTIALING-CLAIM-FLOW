@@ -205,6 +205,7 @@ class TenantSettingsUpdate(BaseModel):
 
 
 class TestSmtpRequest(BaseModel):
+    __test__ = False
     to: Optional[EmailStr] = None
 
 

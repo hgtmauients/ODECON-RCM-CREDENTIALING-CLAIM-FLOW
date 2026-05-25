@@ -53,6 +53,7 @@ def _run_security_gate(repo_root: Path) -> None:
             "backend/tests/test_startup_checks.py",
             "backend/tests/test_csv_export.py",
             "backend/tests/test_auth_error_messages.py",
+            "backend/tests/test_csrf_cookie_guard.py",
             "backend/tests/test_auth_revalidation.py",
             "backend/tests/test_security_signal_logging.py",
             "backend/tests/test_rate_limit_keying.py",
@@ -67,11 +68,53 @@ def _run_security_gate(repo_root: Path) -> None:
             "backend/tests/test_secondary_service_tenant_scope.py",
             "backend/tests/test_rules_engine_tenant_scope.py",
             "-v",
+            "-W",
+            "error::RuntimeWarning",
         ],
         cwd=repo_root,
     )
     if gate.returncode != 0:
         raise RuntimeError("predeploy security gate failed")
+
+
+def _run_remote_env_contract_gate(server: str, *, remote_dir: str, required_keys: List[str]) -> Dict[str, Any]:
+    keys_blob = " ".join(required_keys)
+    script = (
+        "set -euo pipefail; "
+        f"cd {remote_dir}; "
+        "if [ ! -f .env ]; then echo '{\"ok\": false, \"error\": \"missing .env\"}'; exit 0; fi; "
+        "missing=''; "
+        f"for key in {keys_blob}; do "
+        "  value=$(awk -F= -v k=\"$key\" '$1==k{print substr($0, index($0,\"=\")+1)}' .env | tail -n1); "
+        "  if [ -z \"$value\" ]; then missing=\"$missing $key\"; fi; "
+        "done; "
+        "compose_ok=true; compose_err=''; "
+        "if ! docker compose -f docker-compose.prod.yml config >/tmp/claimflow_compose_config.out 2>/tmp/claimflow_compose_config.err; then "
+        "  compose_ok=false; compose_err=$(cat /tmp/claimflow_compose_config.err); "
+        "fi; "
+        "if [ -n \"$missing\" ]; then "
+        "  miss=$(echo \"$missing\" | xargs); "
+        "  printf '{\"ok\": false, \"missing_keys\": \"%s\", \"compose_ok\": %s, \"compose_error\": %s}\\n' \"$miss\" \"$compose_ok\" \"\\\"$compose_err\\\"\"; "
+        "else "
+        "  printf '{\"ok\": %s, \"missing_keys\": \"\", \"compose_ok\": %s, \"compose_error\": %s}\\n' \"$compose_ok\" \"$compose_ok\" \"\\\"$compose_err\\\"\"; "
+        "fi"
+    )
+    result = _run(["ssh", server, f"bash -lc \"{script}\""], capture_output=True)
+    payload: Dict[str, Any] = {
+        "ok": False,
+        "stdout": (result.stdout or "").strip(),
+        "stderr": (result.stderr or "").strip(),
+        "required_keys": required_keys,
+    }
+    if result.returncode != 0:
+        return payload
+    try:
+        parsed = json.loads(payload["stdout"] or "{}")
+        payload.update(parsed)
+        payload["ok"] = bool(parsed.get("ok"))
+        return payload
+    except json.JSONDecodeError:
+        return payload
 
 
 def _run_post_deploy_smoke(server: str) -> Dict[str, Any]:
@@ -305,6 +348,105 @@ def _run_canary(*, server: str, tenant: str) -> Dict[str, Any]:
     return payload
 
 
+def _validate_release_contract(report: Dict[str, Any], args: argparse.Namespace) -> None:
+    required = [
+        "security_gate",
+        "slo_review_gate",
+        "git_push",
+        "vercel_url",
+        "hetzner_deploy",
+        "env_contract_gate",
+        "post_deploy_smoke",
+        "route_smoke",
+        "error_rate_guard",
+        "canary",
+    ]
+    for key in required:
+        if key not in report or report[key] is None:
+            raise RuntimeError(f"release contract missing required field: {key}")
+
+    if args.skip_security_gate:
+        if report["security_gate"] != "skipped":
+            raise RuntimeError("release contract violation: security_gate skip mismatch")
+    elif report["security_gate"] != "ok":
+        raise RuntimeError("release contract violation: security_gate must be ok")
+
+    if args.skip_slo_review_gate:
+        if report["slo_review_gate"] != "skipped":
+            raise RuntimeError("release contract violation: slo_review_gate skip mismatch")
+    else:
+        slo = report["slo_review_gate"]
+        if not isinstance(slo, dict) or not slo.get("ok"):
+            raise RuntimeError("release contract violation: slo_review_gate must be ok dict")
+
+    if args.skip_git_push:
+        if report["git_push"] != "skipped":
+            raise RuntimeError("release contract violation: git_push skip mismatch")
+    elif report["git_push"] != "ok":
+        raise RuntimeError("release contract violation: git_push must be ok")
+
+    if args.skip_vercel:
+        if report["vercel_url"] != "skipped":
+            raise RuntimeError("release contract violation: vercel skip mismatch")
+    elif not isinstance(report["vercel_url"], str) or not report["vercel_url"].startswith("https://"):
+        raise RuntimeError("release contract violation: vercel_url must be https URL")
+
+    if args.skip_hetzner:
+        if report["hetzner_deploy"] != "skipped":
+            raise RuntimeError("release contract violation: hetzner skip mismatch")
+        if report["env_contract_gate"] != "skipped":
+            raise RuntimeError("release contract violation: env contract skip mismatch")
+    else:
+        if report["hetzner_deploy"] != "ok":
+            raise RuntimeError("release contract violation: hetzner_deploy must be ok")
+        env_gate = report["env_contract_gate"]
+        if not isinstance(env_gate, dict) or not env_gate.get("ok"):
+            raise RuntimeError("release contract violation: env_contract_gate must be ok dict")
+
+    if args.skip_post_smoke:
+        if report["post_deploy_smoke"] != "skipped":
+            raise RuntimeError("release contract violation: post smoke skip mismatch")
+    else:
+        smoke = report["post_deploy_smoke"]
+        if not isinstance(smoke, dict) or not smoke.get("ok"):
+            raise RuntimeError("release contract violation: post_deploy_smoke must be ok dict")
+
+    if args.skip_route_smoke:
+        if report["route_smoke"] != "skipped":
+            raise RuntimeError("release contract violation: route smoke skip mismatch")
+    else:
+        route = report["route_smoke"]
+        if not isinstance(route, dict) or not route.get("ok"):
+            raise RuntimeError("release contract violation: route_smoke must be ok dict")
+        checks = route.get("checks", [])
+        if not isinstance(checks, list) or len(checks) == 0:
+            raise RuntimeError("release contract violation: route_smoke checks required")
+
+    if args.skip_error_rate_guard:
+        if report["error_rate_guard"] != "skipped":
+            raise RuntimeError("release contract violation: error rate guard skip mismatch")
+    else:
+        guard = report["error_rate_guard"]
+        if not isinstance(guard, dict) or not guard.get("ok"):
+            raise RuntimeError("release contract violation: error_rate_guard must be ok dict")
+        if not isinstance(guard.get("error_lines"), int) or guard["error_lines"] < 0:
+            raise RuntimeError("release contract violation: error_rate_guard error_lines invalid")
+
+    if args.skip_canary:
+        if report["canary"] != "skipped":
+            raise RuntimeError("release contract violation: canary skip mismatch")
+        if report.get("partial") is not True or report.get("go") is not False:
+            raise RuntimeError("release contract violation: skip-canary must be partial true and go false")
+    else:
+        canary = report["canary"]
+        if not isinstance(canary, dict):
+            raise RuntimeError("release contract violation: canary must be dict")
+        if canary.get("go") is not True:
+            raise RuntimeError("release contract violation: canary go must be true")
+        if report.get("partial") is not False:
+            raise RuntimeError("release contract violation: full release cannot be partial")
+
+
 def _repo_root_from_script() -> Path:
     # backend/scripts/release_production.py -> repo root is two levels up
     return Path(__file__).resolve().parents[2]
@@ -341,6 +483,7 @@ def main() -> int:
         "vercel_url": None,
         "hetzner_deploy": None,
         "security_gate": None,
+        "env_contract_gate": None,
         "post_deploy_smoke": None,
         "route_smoke": None,
         "error_rate_guard": None,
@@ -393,10 +536,19 @@ def main() -> int:
         if not args.skip_hetzner:
             archive = _create_deploy_archive(repo_root)
             _upload_and_extract_archive(archive, server=args.server, remote_dir=args.remote_dir)
+            env_gate = _run_remote_env_contract_gate(
+                args.server,
+                remote_dir=args.remote_dir,
+                required_keys=["POSTGRES_PASSWORD", "REDIS_PASSWORD", "CLAIMFLOW_ENCRYPTION_KEY"],
+            )
+            report["env_contract_gate"] = env_gate
+            if not env_gate.get("ok"):
+                raise RuntimeError("remote env contract gate failed")
             _deploy_backend(server=args.server, remote_dir=args.remote_dir)
             report["hetzner_deploy"] = "ok"
         else:
             report["hetzner_deploy"] = "skipped"
+            report["env_contract_gate"] = "skipped"
 
         if not args.skip_post_smoke:
             smoke = _run_post_deploy_smoke(args.server)
@@ -435,6 +587,8 @@ def main() -> int:
             report["canary"] = "skipped"
             report["partial"] = True
             report["go"] = False
+
+        _validate_release_contract(report, args)
 
     except Exception as exc:
         report["error"] = str(exc)

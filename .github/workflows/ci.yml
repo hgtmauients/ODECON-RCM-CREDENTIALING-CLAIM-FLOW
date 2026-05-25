@@ -57,7 +57,7 @@ jobs:
       - name: Install dependencies
         working-directory: backend
         run: |
-          pip install -r requirements.txt
+          pip install --require-hashes -r requirements.lock
           pip install pytest pytest-asyncio pytest-cov httpx
 
       - name: Validate migrations
@@ -116,7 +116,7 @@ jobs:
       - name: Install dependencies
         working-directory: backend
         run: |
-          pip install -r requirements.txt
+          pip install --require-hashes -r requirements.lock
           pip install pytest pytest-asyncio httpx
 
       - name: Run security regression suite
@@ -127,7 +127,7 @@ jobs:
           JWT_SECRET: ci-test-secret-must-be-at-least-32-characters-long
           CLAIMFLOW_ENCRYPTION_KEY: aWRlbnRpY2FsLWtleS1mb3ItY2ktcnVucy1vbmx5LTEyMzQ=
           ENV: test
-        run: pytest -m security -v
+        run: pytest -m security -v -W error::RuntimeWarning
 
   backend-rls-assurance-gate:
     runs-on: ubuntu-latest
@@ -157,7 +157,7 @@ jobs:
       - name: Install dependencies
         working-directory: backend
         run: |
-          pip install -r requirements.txt
+          pip install --require-hashes -r requirements.lock
           pip install pytest pytest-asyncio httpx
 
       - name: Apply migrations for RLS snapshot
@@ -252,7 +252,7 @@ jobs:
       - name: Install backend test dependencies
         working-directory: backend
         run: |
-          pip install -r requirements.txt
+          pip install --require-hashes -r requirements.lock
           pip install pytest pytest-asyncio httpx
 
       - name: Run backend next-10 subset
@@ -287,12 +287,12 @@ jobs:
 
       - name: Install pip-audit
         run: |
-          pip install -r backend/requirements.txt
+          pip install --require-hashes -r backend/requirements.lock
           pip install pip-audit
 
       - name: Python dependency audit
         working-directory: backend
-        run: pip-audit -r requirements.txt
+        run: pip-audit -r requirements.lock
 
       - uses: actions/setup-node@v4
         with:

@@ -17,8 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+COPY requirements.txt requirements.lock ./
+RUN pip install --require-hashes -r requirements.lock
 
 
 FROM python:3.11-slim AS runtime

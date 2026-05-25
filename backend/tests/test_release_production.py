@@ -79,6 +79,7 @@ def test_run_security_gate_includes_hardening_regression_suites(monkeypatch):
     rp._run_security_gate(Path("C:/tmp"))
     cmd = " ".join(seen["cmd"])
     assert "test_auth_revalidation.py" in cmd
+    assert "test_csrf_cookie_guard.py" in cmd
     assert "test_outbound_guard.py" in cmd
     assert "test_payer_role_gates.py" in cmd
     assert "test_audit_helper.py" in cmd
@@ -180,9 +181,14 @@ def test_main_runs_slo_gate_before_deploy(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(rp, "_create_deploy_archive", lambda _repo: (order.append("archive"), tmp_path / "bundle.tar.gz")[1])
     monkeypatch.setattr(rp, "_upload_and_extract_archive", lambda *_args, **_kwargs: order.append("upload"))
+    monkeypatch.setattr(rp, "_run_remote_env_contract_gate", lambda *_args, **_kwargs: {"ok": True})
     monkeypatch.setattr(rp, "_deploy_backend", lambda **_kwargs: order.append("deploy"))
     monkeypatch.setattr(rp, "_run_post_deploy_smoke", lambda _server: {"ok": True})
-    monkeypatch.setattr(rp, "_run_route_smoke", lambda _server: {"ok": True, "checks": []})
+    monkeypatch.setattr(
+        rp,
+        "_run_route_smoke",
+        lambda _server: {"ok": True, "checks": [{"url": "http://127.0.0.1:8000/health", "expected": 200, "actual": 200}]},
+    )
     monkeypatch.setattr(rp, "_run_error_rate_guard", lambda *_args, **_kwargs: {"ok": True, "error_lines": 0})
     monkeypatch.setattr(rp, "_run_canary", lambda **_kwargs: {"go": True})
     monkeypatch.setattr(sys, "argv", ["release_production.py", "--skip-git-push", "--skip-vercel"])
@@ -218,6 +224,56 @@ def test_main_skip_canary_marks_partial_and_returns_no_go(monkeypatch, tmp_path,
     assert rc == 10
     assert payload["partial"] is True
     assert payload["go"] is False
+
+
+def test_remote_env_contract_gate_parses_missing_values(monkeypatch):
+    def fake_run(cmd, *, cwd=None, capture_output=False):
+        return _cp(
+            0,
+            stdout=json.dumps({"ok": False, "missing_keys": "REDIS_PASSWORD", "compose_ok": False}),
+        )
+
+    monkeypatch.setattr(rp, "_run", fake_run)
+    out = rp._run_remote_env_contract_gate(
+        "root@host",
+        remote_dir="/opt/noodledoc",
+        required_keys=["POSTGRES_PASSWORD", "REDIS_PASSWORD"],
+    )
+    assert out["ok"] is False
+    assert out["missing_keys"] == "REDIS_PASSWORD"
+
+
+def test_validate_release_contract_rejects_missing_route_checks():
+    class _Args:
+        skip_security_gate = False
+        skip_slo_review_gate = False
+        skip_git_push = False
+        skip_vercel = False
+        skip_hetzner = False
+        skip_post_smoke = False
+        skip_route_smoke = False
+        skip_error_rate_guard = False
+        skip_canary = False
+
+    payload = {
+        "security_gate": "ok",
+        "slo_review_gate": {"ok": True},
+        "git_push": "ok",
+        "vercel_url": "https://example.vercel.app",
+        "hetzner_deploy": "ok",
+        "env_contract_gate": {"ok": True},
+        "post_deploy_smoke": {"ok": True},
+        "route_smoke": {"ok": True, "checks": []},
+        "error_rate_guard": {"ok": True, "error_lines": 0},
+        "canary": {"go": True},
+        "partial": False,
+        "go": True,
+    }
+    try:
+        rp._validate_release_contract(payload, _Args())
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "route_smoke checks required" in str(exc)
 
 
 def test_main_rejects_allow_dirty_when_backend_deploy_enabled(monkeypatch, tmp_path, capsys):

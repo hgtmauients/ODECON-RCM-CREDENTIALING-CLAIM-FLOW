@@ -18,6 +18,7 @@ Bootstrapping:
 
 import logging
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 import time
 from uuid import UUID, uuid4
@@ -29,7 +30,14 @@ import redis.asyncio as redis
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import AUTH_COOKIE_NAME, JWT_SECRET, JWT_ALGORITHM, get_current_user, Principal
+from api.auth import (
+    AUTH_COOKIE_NAME,
+    CSRF_COOKIE_NAME,
+    JWT_SECRET,
+    JWT_ALGORITHM,
+    get_current_user,
+    Principal,
+)
 from core.audit import log_audit_event
 from core.database import get_db
 from core.password import verify_password, hash_password, needs_rehash
@@ -188,10 +196,20 @@ async def login(
         "jti": str(uuid4()),
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    csrf_token = secrets.token_urlsafe(32)
     response.set_cookie(
         key=AUTH_COOKIE_NAME,
         value=token,
         httponly=True,
+        secure=os.getenv("ENV", "development") == "production",
+        samesite="lax",
+        max_age=ACCESS_TOKEN_TTL_SECONDS,
+        path="/",
+    )
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=csrf_token,
+        httponly=False,
         secure=os.getenv("ENV", "development") == "production",
         samesite="lax",
         max_age=ACCESS_TOKEN_TTL_SECONDS,
@@ -221,6 +239,7 @@ async def logout(
         exp=current_user.raw_claims.get("exp") if isinstance(current_user.raw_claims, dict) else None,
     )
     response.delete_cookie(key=AUTH_COOKIE_NAME, path="/")
+    response.delete_cookie(key=CSRF_COOKIE_NAME, path="/")
     return {"success": True}
 
 

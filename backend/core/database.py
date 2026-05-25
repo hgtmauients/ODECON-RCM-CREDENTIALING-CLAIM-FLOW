@@ -5,6 +5,7 @@ Provides `get_db` dependency and `get_async_session` generator for background jo
 
 import os
 import logging
+import sys
 from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
@@ -20,13 +21,16 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+asyncpg://claimflow:claimflow@localhost:5432/claimflow",
 )
+_is_pytest_runtime = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
+_is_test_env = os.getenv("ENV", "development") == "test" or _is_pytest_runtime
+_pool_pre_ping_default = "false" if _is_test_env else "true"
 
 engine = create_async_engine(
     DATABASE_URL,
     echo=os.getenv("SQL_ECHO", "false").lower() == "true",
     pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
     max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
-    pool_pre_ping=True,
+    pool_pre_ping=os.getenv("DB_POOL_PRE_PING", _pool_pre_ping_default).lower() == "true",
 )
 
 async_session_factory = async_sessionmaker(

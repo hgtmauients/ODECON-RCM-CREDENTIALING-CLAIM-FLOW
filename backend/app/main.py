@@ -47,11 +47,13 @@ async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle hooks."""
     from core.logging_config import setup_logging
     from core.scheduler import start_scheduler, stop_scheduler
+    from core.database import engine
     setup_logging()
     logger.info("ClaimFlow starting up")
     start_scheduler()
     yield
     stop_scheduler()
+    await engine.dispose()
     logger.info("ClaimFlow shutting down")
 
 
@@ -91,6 +93,7 @@ def create_app() -> FastAPI:
             "X-Tenant-ID",
             "Idempotency-Key",
             "X-Request-ID",
+            "X-CSRF-Token",
         ],
     )
 
@@ -134,6 +137,32 @@ def create_app() -> FastAPI:
     from api.dashboard import router as dashboard_router
     from api.search import router as search_router
     from api.auth import get_current_user, Principal
+    from api.auth import AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER_NAME, csrf_tokens_match
+
+    @app.middleware("http")
+    async def csrf_cookie_guard(request: Request, call_next):
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path.startswith("/api/"):
+            csrf_exempt_paths = {"/api/auth/login"}
+            auth_cookie = request.cookies.get(AUTH_COOKIE_NAME, "")
+            auth_header = request.headers.get("Authorization", "")
+            uses_bearer_header = auth_header.lower().startswith("bearer ")
+            if request.url.path not in csrf_exempt_paths and auth_cookie and not uses_bearer_header:
+                expected = request.cookies.get(CSRF_COOKIE_NAME, "")
+                provided = request.headers.get(CSRF_HEADER_NAME, "")
+                if not expected or not provided or not csrf_tokens_match(expected, provided):
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "CSRF token missing or invalid"},
+                    )
+            origin = request.headers.get("Origin")
+            if origin:
+                origin_allowed = any(origin == allowed for allowed in allowed_origins if allowed)
+                if not origin_allowed:
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "CSRF origin denied"},
+                    )
+        return await call_next(request)
 
     app.include_router(tenants_router, prefix="/api")
     app.include_router(dev_login_router, prefix="/api")
