@@ -230,7 +230,7 @@ def test_remote_env_contract_gate_parses_missing_values(monkeypatch):
     def fake_run(cmd, *, cwd=None, capture_output=False):
         return _cp(
             0,
-            stdout=json.dumps({"ok": False, "missing_keys": "REDIS_PASSWORD", "compose_ok": False}),
+            stdout=json.dumps({"ok": False, "missing_keys": ["REDIS_PASSWORD"], "compose_ok": False}),
         )
 
     monkeypatch.setattr(rp, "_run", fake_run)
@@ -240,7 +240,7 @@ def test_remote_env_contract_gate_parses_missing_values(monkeypatch):
         required_keys=["POSTGRES_PASSWORD", "REDIS_PASSWORD"],
     )
     assert out["ok"] is False
-    assert out["missing_keys"] == "REDIS_PASSWORD"
+    assert out["missing_keys"] == ["REDIS_PASSWORD"]
 
 
 def test_validate_release_contract_rejects_missing_route_checks():

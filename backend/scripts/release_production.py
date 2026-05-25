@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -78,28 +79,46 @@ def _run_security_gate(repo_root: Path) -> None:
 
 
 def _run_remote_env_contract_gate(server: str, *, remote_dir: str, required_keys: List[str]) -> Dict[str, Any]:
-    keys_blob = " ".join(required_keys)
-    script = (
-        "set -euo pipefail; "
-        f"cd {remote_dir}; "
-        "if [ ! -f .env ]; then echo '{\"ok\": false, \"error\": \"missing .env\"}'; exit 0; fi; "
-        "missing=''; "
-        f"for key in {keys_blob}; do "
-        "  value=$(awk -F= -v k=\"$key\" '$1==k{print substr($0, index($0,\"=\")+1)}' .env | tail -n1); "
-        "  if [ -z \"$value\" ]; then missing=\"$missing $key\"; fi; "
-        "done; "
-        "compose_ok=true; compose_err=''; "
-        "if ! docker compose -f docker-compose.prod.yml config >/tmp/claimflow_compose_config.out 2>/tmp/claimflow_compose_config.err; then "
-        "  compose_ok=false; compose_err=$(cat /tmp/claimflow_compose_config.err); "
-        "fi; "
-        "if [ -n \"$missing\" ]; then "
-        "  miss=$(echo \"$missing\" | xargs); "
-        "  printf '{\"ok\": false, \"missing_keys\": \"%s\", \"compose_ok\": %s, \"compose_error\": %s}\\n' \"$miss\" \"$compose_ok\" \"\\\"$compose_err\\\"\"; "
-        "else "
-        "  printf '{\"ok\": %s, \"missing_keys\": \"\", \"compose_ok\": %s, \"compose_error\": %s}\\n' \"$compose_ok\" \"$compose_ok\" \"\\\"$compose_err\\\"\"; "
-        "fi"
-    )
-    result = _run(["ssh", server, f"bash -lc \"{script}\""], capture_output=True)
+    remote_script = f"""
+import json
+import pathlib
+import subprocess
+
+remote_dir = {json.dumps(remote_dir)}
+required_keys = {json.dumps(required_keys)}
+env_file = pathlib.Path(remote_dir) / ".env"
+payload = {{"ok": False, "missing_keys": [], "compose_ok": False, "compose_error": ""}}
+
+if not env_file.exists():
+    payload["error"] = "missing .env"
+    print(json.dumps(payload))
+    raise SystemExit(0)
+
+values = {{}}
+for raw in env_file.read_text(encoding="utf-8").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    values[key.strip()] = value.strip()
+
+missing = [k for k in required_keys if not values.get(k, "").strip()]
+payload["missing_keys"] = missing
+
+compose = subprocess.run(
+    ["docker", "compose", "-f", "docker-compose.prod.yml", "config"],
+    cwd=remote_dir,
+    text=True,
+    capture_output=True,
+    check=False,
+)
+payload["compose_ok"] = compose.returncode == 0
+payload["compose_error"] = (compose.stderr or "").strip()
+payload["ok"] = payload["compose_ok"] and not missing
+print(json.dumps(payload))
+"""
+    remote_cmd = f"python3 -c {shlex.quote(remote_script)}"
+    result = _run(["ssh", server, remote_cmd], capture_output=True)
     payload: Dict[str, Any] = {
         "ok": False,
         "stdout": (result.stdout or "").strip(),
