@@ -6,6 +6,7 @@ Create Date: 2026-05-25
 """
 
 from alembic import op
+from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
 revision = "rcm_013"
@@ -38,7 +39,26 @@ TENANT_TABLES = [
 ]
 
 
+def _table_has_tenant_id(table_name: str) -> bool:
+    bind = op.get_bind()
+    result = bind.execute(
+        text(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = :table_name
+              AND column_name = 'tenant_id'
+            """
+        ),
+        {"table_name": table_name},
+    ).scalar()
+    return bool(result)
+
+
 def _enable_rls_for_table(table_name: str) -> None:
+    if not _table_has_tenant_id(table_name):
+        return
     op.execute(f'ALTER TABLE "{table_name}" ENABLE ROW LEVEL SECURITY')
     op.execute(f'DROP POLICY IF EXISTS tenant_isolation_policy ON "{table_name}"')
     op.execute(
@@ -58,6 +78,8 @@ def _enable_rls_for_table(table_name: str) -> None:
 
 
 def _disable_rls_for_table(table_name: str) -> None:
+    if not _table_has_tenant_id(table_name):
+        return
     op.execute(f'DROP POLICY IF EXISTS tenant_isolation_policy ON "{table_name}"')
     op.execute(f'ALTER TABLE "{table_name}" NO FORCE ROW LEVEL SECURITY')
     op.execute(f'ALTER TABLE "{table_name}" DISABLE ROW LEVEL SECURITY')
