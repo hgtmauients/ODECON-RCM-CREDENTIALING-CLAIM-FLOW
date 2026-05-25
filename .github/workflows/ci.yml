@@ -129,6 +129,55 @@ jobs:
           ENV: test
         run: pytest -m security -v
 
+  backend-rls-assurance-gate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: claimflow
+          POSTGRES_PASSWORD: claimflow
+          POSTGRES_DB: claimflow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Apply migrations for RLS snapshot
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://claimflow:claimflow@localhost:5432/claimflow_test
+          JWT_SECRET: ci-test-secret-must-be-at-least-32-characters-long
+          CLAIMFLOW_ENCRYPTION_KEY: aWRlbnRpY2FsLWtleS1mb3ItY2ktcnVucy1vbmx5LTEyMzQ=
+          ENV: test
+        run: alembic upgrade head
+
+      - name: RLS assurance gate (force/policy coverage)
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://claimflow:claimflow@localhost:5432/claimflow_test
+          JWT_SECRET: ci-test-secret-must-be-at-least-32-characters-long
+          CLAIMFLOW_ENCRYPTION_KEY: aWRlbnRpY2FsLWtleS1mb3ItY2ktcnVucy1vbmx5LTEyMzQ=
+          ENV: test
+        run: python scripts/check_rls_assurance.py
+
   frontend-lint:
     runs-on: ubuntu-latest
     steps:

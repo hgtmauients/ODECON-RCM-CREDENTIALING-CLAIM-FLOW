@@ -33,6 +33,8 @@ ENV_VAR_MAP: Dict[str, str] = {
     "smtp_pass": "SMTP_PASS",
     "from_email": "FROM_EMAIL",
     "webhook_secret": "WEBHOOK_SECRET",
+    "alert_webhook_url": "ALERT_WEBHOOK_URL",
+    "slack_webhook_url": "SLACK_WEBHOOK_URL",
 }
 
 ALL_SETTING_KEYS: List[str] = list(ENV_VAR_MAP.keys())

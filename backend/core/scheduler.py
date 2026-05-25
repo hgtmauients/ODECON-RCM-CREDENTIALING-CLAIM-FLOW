@@ -32,8 +32,9 @@ _LOCK_ID_835_POLL = 0x1F00_835A_AAAA_0001
 _LOCK_ID_EXPIRATION = 0x1F00_835A_AAAA_0002
 _LOCK_ID_277_POLL = 0x1F00_835A_AAAA_0003
 _LOCK_ID_CREDENTIALING_QUEUE = 0x1F00_835A_AAAA_0004
+_LOCK_ID_ALERT_MONITOR = 0x1F00_835A_AAAA_0005
 
-_JOB_KEYS = ("poll_835_files", "poll_277_files", "check_expirations", "process_credentialing_queue")
+_JOB_KEYS = ("poll_835_files", "poll_277_files", "check_expirations", "process_credentialing_queue", "monitor_alert_breaches")
 
 _scheduler_metrics = {
     key: {
@@ -157,6 +158,16 @@ def register_jobs():
         CronTrigger(minute="*/5"),  # Every 5 minutes
         id="process_credentialing_queue",
         name="Process credentialing queue",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    scheduler.add_job(
+        _run_alert_monitor,
+        CronTrigger(minute="*/5"),  # Every 5 minutes
+        id="monitor_alert_breaches",
+        name="Monitor threshold breach transitions",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -310,6 +321,30 @@ async def _run_expiration_check():
             logger.exception("Expiration check failed: %s", e)
             _record_job_run("check_expirations", outcome="failure", error=str(e))
             _capture_job_exception(e, job_id="check_expirations")
+
+
+async def _run_alert_monitor():
+    """Evaluate threshold alerts and dispatch transition notifications."""
+    async with _try_advisory_lock(_LOCK_ID_ALERT_MONITOR) as acquired:
+        if not acquired:
+            logger.debug("Alert monitor skipped on this worker (another worker holds the lock)")
+            _record_job_run("monitor_alert_breaches", outcome="skipped_locked")
+            return
+        try:
+            from services.alert_hooks import monitor_breach_transitions
+
+            result = await monitor_breach_transitions()
+            logger.info(
+                "Alert monitor processed tenants=%s alerts=%s transitions=%s",
+                result.get("tenants_scanned", 0),
+                result.get("alerts_checked", 0),
+                result.get("breach_transitions", 0),
+            )
+            _record_job_run("monitor_alert_breaches", outcome="success")
+        except Exception as e:
+            logger.exception("Alert monitor job failed")
+            _record_job_run("monitor_alert_breaches", outcome="failure", error=str(e))
+            _capture_job_exception(e, job_id="monitor_alert_breaches")
 
 
 def start_scheduler():

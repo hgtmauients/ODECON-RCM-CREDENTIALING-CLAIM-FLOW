@@ -200,6 +200,8 @@ class TenantSettingsUpdate(BaseModel):
     smtp_pass: Optional[str] = None
     from_email: Optional[str] = None
     webhook_secret: Optional[str] = None
+    alert_webhook_url: Optional[str] = None
+    slack_webhook_url: Optional[str] = None
 
 
 class TestSmtpRequest(BaseModel):
