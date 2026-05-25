@@ -52,7 +52,9 @@ async def test_change_password_uses_tenant_scoped_lookup_and_succeeds():
     db.commit = AsyncMock()
 
     payload = ChangePasswordRequest(current_password="old-pass-123", new_password="new-pass-456")
-    with patch("api.dev_login.verify_password", return_value=True), patch("api.dev_login.hash_password", return_value="hashed-new"):
+    with patch("api.dev_login.verify_password", return_value=True), patch("api.dev_login.hash_password", return_value="hashed-new"), patch("api.dev_login.revoke_user_tokens", new_callable=AsyncMock) as revoke_user_tokens, patch("api.dev_login.revoke_token_jti", new_callable=AsyncMock) as revoke_token_jti:
         out = await change_password(payload=payload, request=MagicMock(), db=db, current_user=principal)
     assert out["success"] is True
     assert user.password_hash == "hashed-new"
+    revoke_user_tokens.assert_awaited_once()
+    revoke_token_jti.assert_awaited_once()

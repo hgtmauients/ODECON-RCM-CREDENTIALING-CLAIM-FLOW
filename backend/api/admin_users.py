@@ -22,6 +22,7 @@ from api.auth import ROLES, get_current_user, Principal
 from core.audit import log_audit_event
 from core.database import get_db
 from core.password import hash_password
+from core.token_revocation import revoke_user_tokens
 from models.user import User
 
 logger = logging.getLogger(__name__)
@@ -238,6 +239,9 @@ async def update_user(
             raise HTTPException(status_code=409, detail="Refusing to deactivate yourself")
         user.is_active = bool(updates["is_active"])
 
+    if "roles" in updates or "is_active" in updates:
+        await revoke_user_tokens(tenant_id=str(user.tenant_id), user_id=str(user.id))
+
     await log_audit_event(
         db, current_user, action="user_updated", resource_type="user",
         resource_id=str(user.id), request=request,
@@ -258,6 +262,7 @@ async def reset_password(
     current_user.require_role("admin")
     user = await _load_user(user_id, current_user, db)
     user.password_hash = hash_password(payload.new_password)
+    await revoke_user_tokens(tenant_id=str(user.tenant_id), user_id=str(user.id))
     await log_audit_event(
         db, current_user, action="user_password_reset", resource_type="user",
         resource_id=str(user.id), request=request,
@@ -279,6 +284,7 @@ async def deactivate_user(
     if str(user.id) == current_user.user_id:
         raise HTTPException(status_code=409, detail="Refusing to deactivate yourself")
     user.is_active = False
+    await revoke_user_tokens(tenant_id=str(user.tenant_id), user_id=str(user.id))
     await log_audit_event(
         db, current_user, action="user_deactivated", resource_type="user",
         resource_id=str(user.id), request=request,

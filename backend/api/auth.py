@@ -28,6 +28,7 @@ from jwt import PyJWKClient
 from core.security_signal import log_security_signal
 from core.database import get_db
 from core.db_rls import set_tenant_context
+from core.token_revocation import is_token_revoked
 from models.user import User
 from models.tenant import Tenant
 
@@ -267,6 +268,17 @@ async def get_current_user(
             # Enforce server-side revocation by using current DB roles over stale JWT roles.
             roles = list(user_row.roles or [])
             is_super_admin = any(r == "super_admin" for r in roles)
+            resolved_user_id = str(getattr(user_row, "id", user_id))
+            if await is_token_revoked(tenant_id=token_tenant_id, user_id=resolved_user_id, payload=payload):
+                log_security_signal(
+                    "auth_token_revoked",
+                    user_id=resolved_user_id,
+                    token_tenant_id=token_tenant_id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token",
+                )
         except ValueError:
             token_email = str(payload.get("email", "")).strip().lower()
             if not token_email:
@@ -309,6 +321,16 @@ async def get_current_user(
                 )
             roles = list(oidc_users[0].roles or [])
             is_super_admin = any(r == "super_admin" for r in roles)
+            if await is_token_revoked(tenant_id=token_tenant_id, user_id=str(oidc_users[0].id), payload=payload):
+                log_security_signal(
+                    "auth_token_revoked",
+                    user_id=str(oidc_users[0].id),
+                    token_tenant_id=token_tenant_id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token",
+                )
 
     if header_tenant_id and header_tenant_id != token_tenant_id:
         if not is_super_admin:

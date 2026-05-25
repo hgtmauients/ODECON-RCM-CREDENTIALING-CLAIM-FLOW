@@ -32,6 +32,7 @@ from api.auth import JWT_SECRET, JWT_ALGORITHM, get_current_user, Principal
 from core.audit import log_audit_event
 from core.database import get_db
 from core.password import verify_password, hash_password, needs_rehash
+from core.token_revocation import revoke_token_jti, revoke_user_tokens
 from models.tenant import Tenant
 from models.user import User
 
@@ -225,6 +226,11 @@ async def change_password(
         raise HTTPException(status_code=422, detail="New password must differ from current")
 
     user.password_hash = hash_password(payload.new_password)
+    await revoke_user_tokens(tenant_id=current_user.tenant_id, user_id=str(user.id))
+    await revoke_token_jti(
+        current_user.raw_claims.get("jti") if isinstance(current_user.raw_claims, dict) else None,
+        exp=current_user.raw_claims.get("exp") if isinstance(current_user.raw_claims, dict) else None,
+    )
     await log_audit_event(
         db, current_user, action="password_changed_self", resource_type="user",
         resource_id=str(user.id), request=request,
