@@ -9,6 +9,7 @@ import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { apiService } from '@/services/api';
 import { formatDate } from '@/utils/formatters';
 import toast from 'react-hot-toast';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 interface ChecklistItem {
   item: string;
@@ -42,6 +43,7 @@ interface EnrollmentCaseDetail {
 
 export default function PayerEnrollmentDetail() {
   const { caseId } = useParams<{ caseId: string }>();
+  const isMobile = useIsMobile();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [editingNotes, setEditingNotes] = useState(false);
@@ -176,7 +178,7 @@ export default function PayerEnrollmentDetail() {
         >
           Back to Enrollment
         </button>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--space-3)', flexDirection: isMobile ? 'column' : 'row' }}>
           <div>
             <h1 className="page-title">{enrollmentCase.provider_name}</h1>
             <p className="page-subtitle">
@@ -191,13 +193,14 @@ export default function PayerEnrollmentDetail() {
             fontSize: 'var(--font-size-xs)',
             fontWeight: 600,
             textTransform: 'uppercase',
+            alignSelf: isMobile ? 'flex-start' : 'auto',
           }}>
             {enrollmentCase.status.replace(/_/g, ' ')}
           </span>
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 360px', gap: 'var(--space-6)' }}>
         {/* Left: Checklist */}
         <div>
           <div className="card" style={{ padding: 'var(--space-5)' }}>
@@ -226,8 +229,9 @@ export default function PayerEnrollmentDetail() {
                   key={idx}
                   style={{
                     display: 'flex',
-                    alignItems: 'center',
+                    alignItems: isMobile ? 'stretch' : 'center',
                     gap: 'var(--space-3)',
+                    flexDirection: isMobile ? 'column' : 'row',
                     padding: 'var(--space-3)',
                     borderRadius: 'var(--radius-md)',
                     border: '1px solid var(--border-light)',
@@ -260,13 +264,13 @@ export default function PayerEnrollmentDetail() {
                       className="btn btn-ghost btn-sm"
                       onClick={() => triggerDocUpload(item.doc_type!)}
                       disabled={documentUploadMutation.isLoading}
-                      style={{ fontSize: 'var(--font-size-xs)' }}
+                      style={{ fontSize: 'var(--font-size-xs)', alignSelf: isMobile ? 'flex-start' : 'auto' }}
                     >
                       {documentUploadMutation.isLoading ? 'Uploading...' : (item.doc_id ? 'Replace' : 'Upload')}
                     </button>
                   )}
                   {item.completed_date && (
-                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-tertiary)' }}>
+                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-tertiary)', alignSelf: isMobile ? 'flex-start' : 'auto' }}>
                       {item.completed_date}
                     </span>
                   )}
@@ -386,8 +390,9 @@ export default function PayerEnrollmentDetail() {
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
+  const isMobile = useIsMobile();
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--font-size-sm)' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--font-size-sm)', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 2 : 0 }}>
       <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
       <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{value}</span>
     </div>

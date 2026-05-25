@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '@/auth/AuthProvider';
 import NotificationBell from '@/components/NotificationBell';
 import GlobalSearch from '@/components/GlobalSearch';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 interface NavItem {
   path: string;
@@ -24,20 +25,6 @@ const navItems: NavItem[] = [
   { path: '/admin/audit-log', label: 'Audit log', requiresAnyRole: ['admin', 'super_admin'] },
   { path: '/admin/settings', label: 'Settings', requiresAnyRole: ['admin', 'super_admin'] },
 ];
-
-const MOBILE_BREAKPOINT = 768;
-
-function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = useState(
-    typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT,
-  );
-  useEffect(() => {
-    const handler = () => setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
-    window.addEventListener('resize', handler);
-    return () => window.removeEventListener('resize', handler);
-  }, []);
-  return isMobile;
-}
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();

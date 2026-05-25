@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 import logging
 import asyncio
+from uuid import UUID
 
 from pydantic import ValidationError
 
@@ -29,6 +30,49 @@ router = APIRouter(prefix="/credentialing", tags=["Credentialing"])
 
 def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _safe_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _is_high_risk_for_approval(credentialing: ProviderCredentialing) -> Optional[str]:
+    """
+    Return a blocking reason when provider data is too risky to manual-approve.
+
+    Approval is only allowed after verification has completed and no explicit
+    exclusion/adverse background indicators are present.
+    """
+    if credentialing.completed_at is None:
+        return "Verification has not completed"
+
+    if not all(
+        check is not None
+        for check in (
+            credentialing.npi_verification,
+            credentialing.state_license_verification,
+            credentialing.background_check,
+            credentialing.oig_check,
+            credentialing.sam_check,
+        )
+    ):
+        return "Verification checks are incomplete"
+
+    background = credentialing.background_check or {}
+    if _safe_bool(background.get("clear")) is False:
+        return "Background check is not clear"
+
+    oig = credentialing.oig_check or {}
+    if _safe_bool(oig.get("excluded")) is True:
+        return "Provider is OIG excluded"
+
+    sam = credentialing.sam_check or {}
+    if _safe_bool(sam.get("excluded")) is True:
+        return "Provider is SAM excluded"
+
+    return None
 
 
 def _spawn_background(coro, name: str) -> None:
@@ -132,6 +176,19 @@ async def handle_provider_signup(
     tenant_id = request.headers.get("X-Tenant-ID")
     if not tenant_id:
         raise HTTPException(status_code=400, detail="X-Tenant-ID header required for webhooks")
+
+    try:
+        tenant_uuid = UUID(str(tenant_id))
+    except (TypeError, ValueError):
+        # Keep generic auth failure semantics for malformed tenant identifiers.
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    from models.tenant import Tenant
+    tenant_result = await db.execute(
+        select(Tenant.id).where(and_(Tenant.id == tenant_uuid, Tenant.is_active.is_(True)))
+    )
+    if not tenant_result.scalar_one_or_none():
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     from core.tenant_config import get_tenant_setting
     webhook_secret = await get_tenant_setting(
@@ -550,11 +607,20 @@ async def approve_provider(
                 status_code=409,
                 detail="Verification is still running; wait for it to finish before approving",
             )
+        if credentialing.credentialing_status == "pending":
+            raise HTTPException(
+                status_code=409,
+                detail="Verification has not completed; run checks before approving",
+            )
         if credentialing.credentialing_status in ("passed", "failed"):
             raise HTTPException(
                 status_code=409,
                 detail=f"Provider already in terminal state '{credentialing.credentialing_status}'",
             )
+
+        block_reason = _is_high_risk_for_approval(credentialing)
+        if block_reason is not None:
+            raise HTTPException(status_code=409, detail=block_reason)
 
         credentialing.credentialing_status = "passed"
         credentialing.verified_by = current_user.user_id

@@ -11,9 +11,11 @@ import { PremiumIcon } from '@/services/iconReplacementService';
 import { formatCurrency, formatDate } from '@/utils/formatters';
 import Modal from '@/components/Modal';
 import toast from 'react-hot-toast';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 export default function DenialDetail() {
   const { denialId } = useParams<{ denialId: string }>();
+  const isMobile = useIsMobile();
   const navigate = useNavigate();
   const [showAppealLetter, setShowAppealLetter] = useState(false);
   const [appealLetter, setAppealLetter] = useState('');
@@ -85,7 +87,7 @@ export default function DenialDetail() {
   };
 
   return (
-    <div className="min-h-screen" style={{ background: 'var(--bg-primary)', padding: 'var(--space-6)' }}>
+    <div className="min-h-screen" style={{ background: 'var(--bg-primary)', padding: isMobile ? 'var(--space-3)' : 'var(--space-6)' }}>
       <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
         {/* Header */}
         <div style={{
@@ -96,11 +98,11 @@ export default function DenialDetail() {
           padding: 'var(--space-6)',
           marginBottom: 'var(--space-6)'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--space-3)', flexDirection: isMobile ? 'column' : 'row' }}>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-2)' }}>
                 <h1 style={{
-                  fontSize: 'var(--font-size-3xl)',
+                  fontSize: isMobile ? 'var(--font-size-2xl)' : 'var(--font-size-3xl)',
                   fontWeight: 700,
                   background: 'var(--gradient-primary)',
                   backgroundClip: 'text',
@@ -124,7 +126,7 @@ export default function DenialDetail() {
                 CARC: {denial.carc_code} {denial.rarc_code && `| RARC: ${denial.rarc_code}`}
               </p>
             </div>
-            <div style={{ display: 'flex', gap: 'var(--space-2)' }} className="no-print">
+            <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap', width: isMobile ? '100%' : 'auto' }} className="no-print">
               <button
                 onClick={() => window.print()}
                 style={{
@@ -160,7 +162,7 @@ export default function DenialDetail() {
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-6)' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 'var(--space-6)' }}>
           {/* Denial Info */}
           <div style={{
             background: 'var(--surface-glass)',
@@ -276,7 +278,8 @@ export default function DenialDetail() {
                     fontSize: 'var(--font-size-base)',
                     fontWeight: 600,
                     cursor: generateAppealMutation.isLoading ? 'not-allowed' : 'pointer',
-                    opacity: generateAppealMutation.isLoading ? 0.5 : 1
+                    opacity: generateAppealMutation.isLoading ? 0.5 : 1,
+                    width: isMobile ? '100%' : undefined,
                   }}
                 >
                   {generateAppealMutation.isLoading ? 'Generating...' : 'Generate Appeal Letter'}
@@ -311,7 +314,7 @@ export default function DenialDetail() {
             {appealLetter}
           </div>
 
-          <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end', flexDirection: isMobile ? 'column' : 'row' }}>
             <button
               onClick={() => {
                 navigator.clipboard.writeText(appealLetter);
@@ -325,7 +328,8 @@ export default function DenialDetail() {
                 color: 'var(--text-primary)',
                 fontSize: 'var(--font-size-base)',
                 fontWeight: 600,
-                cursor: 'pointer'
+                cursor: 'pointer',
+                width: isMobile ? '100%' : undefined,
               }}
             >
               Copy to Clipboard
@@ -349,7 +353,8 @@ export default function DenialDetail() {
                 color: 'white',
                 fontSize: 'var(--font-size-base)',
                 fontWeight: 600,
-                cursor: 'pointer'
+                cursor: 'pointer',
+                width: isMobile ? '100%' : undefined,
               }}
             >
               Download Letter

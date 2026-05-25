@@ -103,6 +103,7 @@ body {
   color: var(--text-primary);
   background: var(--bg-primary);
   line-height: 1.5;
+  overflow-x: hidden;
 }
 
 /* ─── Focus Styles ─── */
@@ -385,6 +386,45 @@ tbody tr:last-child td {
 /* ─── Toast Overrides ─── */
 [data-sonner-toaster] {
   font-family: var(--font-family) !important;
+}
+
+/* ─── Mobile Optimizations ─── */
+@media (max-width: 768px) {
+  html {
+    font-size: 15px;
+  }
+
+  .btn,
+  button,
+  input,
+  select,
+  textarea {
+    min-height: 40px;
+  }
+
+  .card,
+  .stat-card {
+    border-radius: var(--radius-lg);
+  }
+
+  .page-title {
+    font-size: var(--font-size-xl);
+  }
+
+  .page-subtitle {
+    font-size: var(--font-size-xs);
+  }
+
+  th,
+  td {
+    padding: var(--space-2) var(--space-3);
+  }
+
+  [data-sonner-toaster] {
+    right: 8px !important;
+    left: 8px !important;
+    width: auto !important;
+  }
 }
 
 /* ─── Animations ─── */

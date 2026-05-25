@@ -15,6 +15,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from 'react-query';
 import { apiService } from '@/services/api';
 import { useAuth } from '@/auth/AuthProvider';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 type DashboardData = {
   as_of: string;
@@ -40,6 +41,7 @@ const fmtCurrency = (v: number) =>
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const isMobile = useIsMobile();
   const navigate = useNavigate();
   const { data, isLoading, error } = useQuery(
     'dashboard-summary',
@@ -113,7 +115,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 'var(--space-6)', marginBottom: 'var(--space-6)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1fr) minmax(0, 1fr)', gap: 'var(--space-6)', marginBottom: 'var(--space-6)' }}>
         {/* Work queues */}
         <Card title="Work queues" subtitle="Counts of actionable items right now">
           <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -180,7 +182,7 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 'var(--space-6)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1fr) minmax(0, 1fr)', gap: 'var(--space-6)' }}>
         <Card title="Claims by state" subtitle="Breakdown across the lifecycle">
           {Object.keys(summary.claims.by_state).length === 0 ? (
             <p style={{ color: 'var(--text-secondary)' }}>No claims yet.</p>

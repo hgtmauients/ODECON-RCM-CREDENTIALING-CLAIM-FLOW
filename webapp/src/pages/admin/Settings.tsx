@@ -9,6 +9,7 @@ import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { apiService } from '@/services/api';
 import { useAuth } from '@/auth/AuthProvider';
 import toast from 'react-hot-toast';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 interface SettingField {
   key: string;
@@ -47,6 +48,7 @@ function SourceBadge({ source }: { source: string }) {
 
 export default function Settings() {
   const { user } = useAuth();
+  const isMobile = useIsMobile();
   const tenantId = user?.tenant_id || '';
   const queryClient = useQueryClient();
 
@@ -160,7 +162,7 @@ export default function Settings() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--space-6)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--space-6)', gap: 'var(--space-3)', flexDirection: isMobile ? 'column' : 'row' }}>
         <div>
           <h1 className="page-title">Settings</h1>
           <p className="page-subtitle">Configure API keys, integrations, and email for your organization</p>
@@ -169,7 +171,7 @@ export default function Settings() {
           className="btn btn-primary"
           disabled={!dirty || saveMutation.isLoading}
           onClick={handleSave}
-          style={{ minWidth: 120 }}
+          style={{ minWidth: 120, width: isMobile ? '100%' : undefined }}
         >
           {saveMutation.isLoading ? 'Saving...' : 'Save Changes'}
         </button>
@@ -178,7 +180,7 @@ export default function Settings() {
       {/* System Status */}
       <div className="card" style={{ padding: 'var(--space-5)', marginBottom: 'var(--space-6)' }}>
         <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 600, marginBottom: 'var(--space-4)' }}>System Status</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 'var(--space-3)' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: 'var(--space-3)' }}>
           <div className="stat-card">
             <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', marginBottom: 2 }}>Backend</div>
             <div style={{ fontWeight: 700, color: healthData?.status === 'ok' ? 'var(--brand-success)' : 'var(--brand-error)' }}>
@@ -217,7 +219,7 @@ export default function Settings() {
 
         return (
           <div key={cat} className="card" style={{ padding: 'var(--space-5)', marginBottom: 'var(--space-4)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
               <h2 style={{ fontSize: 'var(--font-size-base)', fontWeight: 600, color: 'var(--text-primary)' }}>{cat}</h2>
               {testButton}
             </div>
@@ -230,7 +232,7 @@ export default function Settings() {
                 const isPlaceholder = isSensitive && currentValue.startsWith('***');
 
                 return (
-                  <div key={f.key} style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: 'var(--space-3)', alignItems: 'center', padding: 'var(--space-2) 0' }}>
+                  <div key={f.key} style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1.5fr', gap: 'var(--space-3)', alignItems: isMobile ? 'stretch' : 'center', padding: 'var(--space-2) 0' }}>
                     <div>
                       <div style={{ fontWeight: 600, fontSize: 'var(--font-size-sm)' }}>
                         {f.label}
@@ -238,7 +240,7 @@ export default function Settings() {
                       </div>
                       <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-tertiary)', marginTop: 2 }}>{f.description}</div>
                     </div>
-                    <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                    <div style={{ display: 'flex', gap: 'var(--space-2)', flexDirection: isMobile ? 'column' : 'row' }}>
                       <input
                         type={isSensitive && !showing ? 'password' : (f.type || 'text')}
                         className="form-input"
@@ -255,7 +257,7 @@ export default function Settings() {
                       {isSensitive && (
                         <button
                           className="btn btn-ghost btn-sm"
-                          style={{ fontSize: 10, padding: '4px 8px', whiteSpace: 'nowrap' }}
+                          style={{ fontSize: 10, padding: '4px 8px', whiteSpace: 'nowrap', alignSelf: isMobile ? 'flex-start' : 'auto' }}
                           onClick={() => setShowFields(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
                         >
                           {showing ? 'Hide' : 'Show'}
@@ -285,6 +287,7 @@ export default function Settings() {
 }
 
 function WebhooksSection({ tenantId, settings }: { tenantId: string; settings: Record<string, string> }) {
+  const isMobile = useIsMobile();
   const [generated, setGenerated] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -351,11 +354,11 @@ print(urllib.request.urlopen(req).read())`;
         <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
           POST URL
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: isMobile ? 'stretch' : 'center', flexDirection: isMobile ? 'column' : 'row' }}>
           <code style={{ flex: 1, padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', fontSize: 'var(--font-size-sm)', overflowX: 'auto' }}>
             {webhookUrl}
           </code>
-          <button className="btn btn-ghost btn-sm" onClick={() => copy(webhookUrl, 'URL')}>Copy</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => copy(webhookUrl, 'URL')} style={{ alignSelf: isMobile ? 'flex-start' : 'auto' }}>Copy</button>
         </div>
       </div>
 
@@ -396,11 +399,11 @@ print(urllib.request.urlopen(req).read())`;
             <p style={{ margin: '0 0 8px', fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>
               New webhook secret — copy it NOW. It will not be shown again.
             </p>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: isMobile ? 'stretch' : 'center', flexDirection: isMobile ? 'column' : 'row' }}>
               <code style={{ flex: 1, padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', fontSize: 'var(--font-size-sm)', wordBreak: 'break-all' }}>
                 {generated}
               </code>
-              <button className="btn btn-ghost btn-sm" onClick={() => copy(generated, 'Secret')}>Copy</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => copy(generated, 'Secret')} style={{ alignSelf: isMobile ? 'flex-start' : 'auto' }}>Copy</button>
             </div>
           </div>
         )}
@@ -419,6 +422,7 @@ print(urllib.request.urlopen(req).read())`;
 }
 
 function ChangePasswordSection() {
+  const isMobile = useIsMobile();
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -500,18 +504,18 @@ function ChangePasswordSection() {
         </div>
       </div>
 
-      <div style={{ marginTop: 'var(--space-3)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+      <div style={{ marginTop: 'var(--space-3)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap', flexDirection: isMobile ? 'column' : 'row' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)' }}>
           <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
           Show passwords
         </label>
-        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-2)', flexDirection: isMobile ? 'column' : 'row', width: isMobile ? '100%' : 'auto' }}>
           {(tooShort || mismatch || sameAsCurrent) && (
             <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--brand-error)', alignSelf: 'center' }}>
               {tooShort ? 'New password too short' : sameAsCurrent ? 'New must differ from current' : 'Passwords do not match'}
             </span>
           )}
-          <button className="btn btn-primary btn-sm" disabled={!canSubmit} onClick={submit}>
+          <button className="btn btn-primary btn-sm" disabled={!canSubmit} onClick={submit} style={{ width: isMobile ? '100%' : undefined }}>
             {busy ? 'Changing…' : 'Change password'}
           </button>
         </div>

@@ -11,9 +11,11 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { apiService } from '@/services/api';
 import toast from 'react-hot-toast';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 export default function ClaimEdit() {
   const { claimId } = useParams<{ claimId: string }>();
+  const isMobile = useIsMobile();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -99,6 +101,7 @@ export default function ClaimEdit() {
     fontSize: 'var(--font-size-xs)', fontWeight: 600,
     color: 'var(--text-secondary)', textTransform: 'uppercase' as const, letterSpacing: '0.04em',
   };
+  const formColumns = isMobile ? '1fr' : '1fr 1fr';
 
   if (isLoading) {
     return (
@@ -142,10 +145,10 @@ export default function ClaimEdit() {
         <p className="page-subtitle">Service lines and diagnoses are not edited here — void this draft and recreate if those need to change.</p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-6)', maxWidth: 900 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: formColumns, gap: 'var(--space-6)', maxWidth: 900 }}>
         <div className="card" style={{ padding: 'var(--space-5)' }}>
           <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 600, marginBottom: 'var(--space-4)' }}>Claim Information</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: formColumns, gap: 'var(--space-3)' }}>
             <div>
               <label style={labelStyle}>Service Date From *</label>
               <input type="date" value={form.service_date_from} onChange={e => setForm({ ...form, service_date_from: e.target.value })} style={inputStyle} />
@@ -201,9 +204,9 @@ export default function ClaimEdit() {
         </div>
       </div>
 
-      <div style={{ marginTop: 'var(--space-6)', display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-3)' }}>
+      <div style={{ marginTop: 'var(--space-6)', display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-3)', flexDirection: isMobile ? 'column-reverse' : 'row' }}>
         <button className="btn btn-ghost" onClick={() => navigate(`/claims/${claimId}`)}>Cancel</button>
-        <button className="btn btn-primary btn-lg" onClick={() => saveMutation.mutate()} disabled={saveMutation.isLoading}>
+        <button className="btn btn-primary btn-lg" onClick={() => saveMutation.mutate()} disabled={saveMutation.isLoading} style={{ width: isMobile ? '100%' : undefined }}>
           {saveMutation.isLoading ? 'Saving...' : 'Save Changes'}
         </button>
       </div>

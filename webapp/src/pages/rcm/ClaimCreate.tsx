@@ -10,6 +10,7 @@ import { apiService } from '@/services/api';
 import toast from 'react-hot-toast';
 import CodeAutocomplete from '@/components/rcm/CodeAutocomplete';
 import CPTWizard from '@/components/rcm/CPTWizard';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 interface ClaimLine {
   cpt_code: string;
@@ -28,6 +29,7 @@ interface Diagnosis {
 
 export default function ClaimCreate() {
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
 
   // Fetch available payers and patients for dropdowns
   const { data: payersData, isLoading: loadingPayers, isError: payersError } = useQuery(
@@ -178,6 +180,8 @@ export default function ClaimCreate() {
     textTransform: 'uppercase' as const,
     letterSpacing: '0.04em',
   };
+  const formColumns = isMobile ? '1fr' : '1fr 1fr';
+  const rowDirection = isMobile ? 'column' : 'row';
 
   return (
     <div>
@@ -189,13 +193,13 @@ export default function ClaimCreate() {
         <p className="page-subtitle">Enter claim details for manual submission</p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-6)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: formColumns, gap: 'var(--space-6)' }}>
         {/* Left column */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
           {/* Claim Info */}
           <div className="card" style={{ padding: 'var(--space-5)' }}>
             <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 600, marginBottom: 'var(--space-4)' }}>Claim Information</h2>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: formColumns, gap: 'var(--space-3)' }}>
               <div>
                 <label style={labelStyle}>Service Date From</label>
                 <input type="date" value={form.service_date_from} onChange={e => handleFieldChange('service_date_from', e.target.value)} style={inputStyle} />
@@ -221,10 +225,10 @@ export default function ClaimCreate() {
           {/* IDs */}
           <div className="card" style={{ padding: 'var(--space-5)' }}>
             <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 600, marginBottom: 'var(--space-4)' }}>References</h2>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: formColumns, gap: 'var(--space-3)' }}>
               <div>
                 <label style={labelStyle}>Patient *</label>
-                <div style={{ display: 'flex', gap: 4 }}>
+                <div style={{ display: 'flex', gap: 4, flexDirection: isMobile ? 'column' : 'row' }}>
                   <select
                     value={form.patient_id}
                     onChange={e => handleFieldChange('patient_id', e.target.value)}
@@ -244,7 +248,7 @@ export default function ClaimCreate() {
                       <option key={p.id} value={String(p.id)}>{p.last_name}, {p.first_name} ({p.member_id})</option>
                     ))}
                   </select>
-                  <button className="btn btn-ghost btn-sm" style={{ whiteSpace: 'nowrap', fontSize: 10 }} onClick={() => navigate('/patients')}>Manage</button>
+                  <button className="btn btn-ghost btn-sm" style={{ whiteSpace: 'nowrap', fontSize: 10, alignSelf: isMobile ? 'flex-start' : 'auto' }} onClick={() => navigate('/patients')}>Manage</button>
                 </div>
               </div>
               <div>
@@ -291,16 +295,16 @@ export default function ClaimCreate() {
             </div>
             {diagnoses.map((dx, i) => (
               <div key={i} style={{ marginBottom: 'var(--space-2)' }}>
-                <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'flex-end' }}>
-                  <div style={{ width: 160 }}>
+                <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: isMobile ? 'stretch' : 'flex-end', flexDirection: rowDirection }}>
+                  <div style={{ width: isMobile ? '100%' : 160 }}>
                     {i === 0 && <label style={labelStyle}>ICD-10 Code</label>}
                     <CodeAutocomplete type="icd10" value={dx.icd10_code} onChange={(code, desc) => { handleDxChange(i, 'icd10_code', code); handleDxChange(i, 'icd10_description', desc); }} placeholder="Search ICD-10..." />
                   </div>
-                  <div style={{ flex: 1 }}>
+                  <div style={{ flex: 1, width: isMobile ? '100%' : undefined }}>
                     {i === 0 && <label style={labelStyle}>Description</label>}
                     <input value={dx.icd10_description} onChange={e => handleDxChange(i, 'icd10_description', e.target.value)} placeholder="Auto-filled from code lookup" style={inputStyle} />
                   </div>
-                  <div style={{ marginBottom: 2 }}>
+                  <div style={{ marginBottom: isMobile ? 0 : 2 }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--font-size-xs)', whiteSpace: 'nowrap', cursor: 'pointer' }}>
                       <input type="checkbox" checked={dx.is_primary} onChange={() => handleDxChange(i, 'is_primary', !dx.is_primary)} /> Primary
                     </label>
@@ -323,23 +327,23 @@ export default function ClaimCreate() {
             </div>
             {lines.map((line, i) => (
               <div key={i} style={{ marginBottom: 'var(--space-3)' }}>
-                <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'flex-end' }}>
-                  <div style={{ width: 160 }}>
+                <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: isMobile ? 'stretch' : 'flex-end', flexDirection: rowDirection }}>
+                  <div style={{ width: isMobile ? '100%' : 160 }}>
                     {i === 0 && <label style={labelStyle}>CPT Code</label>}
-                    <div style={{ display: 'flex', gap: 4 }}>
+                    <div style={{ display: 'flex', gap: 4, flexDirection: isMobile ? 'column' : 'row' }}>
                       <CodeAutocomplete type="cpt" value={line.cpt_code} onChange={(code, desc) => { handleLineChange(i, 'cpt_code', code); handleLineChange(i, 'cpt_description', desc); }} placeholder="Search CPT..." />
-                      <button className="btn btn-ghost btn-sm" style={{ padding: '4px 8px', fontSize: 10, whiteSpace: 'nowrap' }} onClick={() => setWizardLineIndex(i)}>Guide</button>
+                      <button className="btn btn-ghost btn-sm" style={{ padding: '4px 8px', fontSize: 10, whiteSpace: 'nowrap', alignSelf: isMobile ? 'flex-start' : 'auto' }} onClick={() => setWizardLineIndex(i)}>Guide</button>
                     </div>
                   </div>
-                  <div style={{ width: 100 }}>
+                  <div style={{ width: isMobile ? '100%' : 100 }}>
                     {i === 0 && <label style={labelStyle}>Charge ($)</label>}
                     <input value={line.charge_amount} onChange={e => handleLineChange(i, 'charge_amount', e.target.value)} placeholder="0.00" style={inputStyle} />
                   </div>
-                  <div style={{ width: 60 }}>
+                  <div style={{ width: isMobile ? '100%' : 60 }}>
                     {i === 0 && <label style={labelStyle}>Units</label>}
                     <input type="number" value={line.units} onChange={e => handleLineChange(i, 'units', parseInt(e.target.value) || 1)} min={1} style={inputStyle} />
                   </div>
-                  <div style={{ width: 70 }}>
+                  <div style={{ width: isMobile ? '100%' : 70 }}>
                     {i === 0 && <label style={labelStyle}>POS</label>}
                     <select value={line.place_of_service} onChange={e => handleLineChange(i, 'place_of_service', e.target.value)} style={inputStyle}>
                       <option value="11">11 - Office</option>
@@ -356,7 +360,7 @@ export default function ClaimCreate() {
                       <option value="81">81 - Independent Lab</option>
                     </select>
                   </div>
-                  <div style={{ width: 120 }}>
+                  <div style={{ width: isMobile ? '100%' : 120 }}>
                     {i === 0 && <label style={labelStyle}>Modifier</label>}
                     <select value={(line.modifiers || '').split(',')[0] || ''} onChange={e => handleLineChange(i, 'modifiers', e.target.value)} style={inputStyle}>
                       <option value="">None</option>
@@ -396,9 +400,9 @@ export default function ClaimCreate() {
       </div>
 
       {/* Submit bar */}
-      <div style={{ marginTop: 'var(--space-6)', display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-3)' }}>
+      <div style={{ marginTop: 'var(--space-6)', display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-3)', flexDirection: isMobile ? 'column-reverse' : 'row' }}>
         <button className="btn btn-ghost" onClick={() => navigate('/claims')}>Cancel</button>
-        <button className="btn btn-primary btn-lg" onClick={handleSubmit} disabled={createMutation.isLoading}>
+        <button className="btn btn-primary btn-lg" onClick={handleSubmit} disabled={createMutation.isLoading} style={{ width: isMobile ? '100%' : undefined }}>
           {createMutation.isLoading ? 'Creating...' : 'Create Claim'}
         </button>
       </div>

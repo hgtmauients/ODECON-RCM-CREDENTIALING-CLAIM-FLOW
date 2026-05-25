@@ -2,9 +2,11 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/auth/AuthProvider';
 import toast from 'react-hot-toast';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 export default function LoginPage() {
   const { login } = useAuth();
+  const isMobile = useIsMobile();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -32,6 +34,7 @@ export default function LoginPage() {
       background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%)',
       position: 'relative',
       overflow: 'hidden',
+      padding: isMobile ? 'var(--space-4)' : 0,
     }}>
       {/* Background decoration */}
       <div style={{
@@ -43,6 +46,7 @@ export default function LoginPage() {
         borderRadius: '50%',
         background: 'radial-gradient(circle, rgba(37,99,235,0.15) 0%, transparent 70%)',
         pointerEvents: 'none',
+        display: isMobile ? 'none' : 'block',
       }} />
       <div style={{
         position: 'absolute',
@@ -53,6 +57,7 @@ export default function LoginPage() {
         borderRadius: '50%',
         background: 'radial-gradient(circle, rgba(124,58,237,0.1) 0%, transparent 70%)',
         pointerEvents: 'none',
+        display: isMobile ? 'none' : 'block',
       }} />
 
       <form
@@ -61,10 +66,10 @@ export default function LoginPage() {
         style={{
           background: 'rgba(255,255,255,0.95)',
           backdropFilter: 'blur(20px)',
-          padding: 48,
+          padding: isMobile ? 24 : 48,
           borderRadius: 'var(--radius-2xl)',
           boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25), 0 0 0 1px rgba(255,255,255,0.1)',
-          width: 400,
+          width: 'min(400px, 100%)',
           position: 'relative',
           zIndex: 1,
         }}

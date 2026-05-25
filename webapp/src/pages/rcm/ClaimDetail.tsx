@@ -10,6 +10,7 @@ import { apiService } from '@/services/api';
 import { PremiumIcon } from '@/services/iconReplacementService';
 import { formatCurrency, formatDate } from '@/utils/formatters';
 import toast from 'react-hot-toast';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 const FINALIZED_STATES = new Set([
   'accepted', 'paid', 'partially_paid', 'denied', 'appealed', 'appeal_won', 'appeal_lost',
@@ -17,6 +18,7 @@ const FINALIZED_STATES = new Set([
 
 export default function ClaimDetail() {
   const { claimId } = useParams<{ claimId: string }>();
+  const isMobile = useIsMobile();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [correctOpen, setCorrectOpen] = useState<null | 'replacement' | 'void'>(null);
@@ -95,7 +97,7 @@ export default function ClaimDetail() {
   };
 
   return (
-    <div className="min-h-screen" style={{ background: 'var(--bg-primary)', padding: 'var(--space-6)' }}>
+    <div className="min-h-screen" style={{ background: 'var(--bg-primary)', padding: isMobile ? 'var(--space-3)' : 'var(--space-6)' }}>
       <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
         {/* Header */}
         <div style={{
@@ -106,11 +108,11 @@ export default function ClaimDetail() {
           padding: 'var(--space-6)',
           marginBottom: 'var(--space-6)'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--space-3)', flexDirection: isMobile ? 'column' : 'row' }}>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-2)' }}>
                 <h1 style={{
-                  fontSize: 'var(--font-size-3xl)',
+                  fontSize: isMobile ? 'var(--font-size-2xl)' : 'var(--font-size-3xl)',
                   fontWeight: 700,
                   background: 'var(--gradient-primary)',
                   backgroundClip: 'text',
@@ -134,7 +136,7 @@ export default function ClaimDetail() {
                 Service Date: {formatDate(claim.service_date_from)}
               </p>
             </div>
-            <div style={{ display: 'flex', gap: 'var(--space-2)' }} className="no-print">
+            <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap', width: isMobile ? '100%' : 'auto' }} className="no-print">
               {claim.state === 'draft' && (
                 <button
                   onClick={() => navigate(`/claims/${claim.id}/edit`)}
@@ -302,7 +304,7 @@ export default function ClaimDetail() {
           </div>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 'var(--space-6)' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '2fr 1fr', gap: 'var(--space-6)' }}>
           {/* Event Timeline */}
           <div style={{
             background: 'var(--surface-glass)',
