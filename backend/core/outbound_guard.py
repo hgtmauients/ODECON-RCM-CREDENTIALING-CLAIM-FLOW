@@ -65,3 +65,13 @@ def assert_safe_smtp_host(host: str, *, field_name: str = "smtp_host") -> None:
         raise HTTPException(status_code=422, detail=f"{field_name} is required")
     if _is_blocked_hostname(value) or _is_blocked_ip(value):
         raise HTTPException(status_code=422, detail=f"{field_name} points to a blocked destination")
+
+
+def assert_safe_sftp_host(host: str, *, field_name: str = "sftp_host") -> None:
+    if _allow_private_destinations():
+        return
+    value = (host or "").strip()
+    if not value:
+        raise HTTPException(status_code=422, detail=f"{field_name} is required")
+    if _is_blocked_hostname(value) or _is_blocked_ip(value):
+        raise HTTPException(status_code=422, detail=f"{field_name} points to a blocked destination")

@@ -27,6 +27,7 @@ from jwt import PyJWKClient
 
 from core.security_signal import log_security_signal
 from core.database import get_db
+from core.db_rls import set_tenant_context
 from models.user import User
 from models.tenant import Tenant
 
@@ -268,47 +269,46 @@ async def get_current_user(
             is_super_admin = any(r == "super_admin" for r in roles)
         except ValueError:
             token_email = str(payload.get("email", "")).strip().lower()
-            if ENV == "production":
-                if not token_email:
-                    log_security_signal(
-                        "auth_oidc_subject_unmapped",
-                        user_id=str(user_id),
-                        token_tenant_id=token_tenant_id,
-                        reason="missing_email_claim",
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Invalid token",
-                    )
+            if not token_email:
+                log_security_signal(
+                    "auth_oidc_subject_unmapped",
+                    user_id=str(user_id),
+                    token_tenant_id=token_tenant_id,
+                    reason="missing_email_claim",
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token",
+                )
 
-                oidc_user_result = await db.execute(
-                    select(User).where(
-                        and_(
-                            User.email == token_email,
-                            User.tenant_id == token_tenant_uuid,
-                        )
+            oidc_user_result = await db.execute(
+                select(User).where(
+                    and_(
+                        User.email == token_email,
+                        User.tenant_id == token_tenant_uuid,
                     )
                 )
-                oidc_users = oidc_user_result.scalars().all()
-                if len(oidc_users) != 1 or not oidc_users[0].is_active:
-                    log_security_signal(
-                        "auth_oidc_subject_unmapped",
-                        user_id=str(user_id),
-                        token_tenant_id=token_tenant_id,
-                        token_email=token_email,
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Invalid token",
-                    )
-                roles = list(oidc_users[0].roles or [])
-                is_super_admin = any(r == "super_admin" for r in roles)
-            else:
+            )
+            oidc_users = oidc_user_result.scalars().all()
+            if len(oidc_users) != 1 or not oidc_users[0].is_active:
                 logger.info(
-                    "Non-UUID subject accepted in %s without DB role revalidation: sub=%s",
+                    "OIDC subject rejected due to unmapped user: env=%s sub=%s email=%s",
                     ENV,
                     user_id,
+                    token_email,
                 )
+                log_security_signal(
+                    "auth_oidc_subject_unmapped",
+                    user_id=str(user_id),
+                    token_tenant_id=token_tenant_id,
+                    token_email=token_email,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token",
+                )
+            roles = list(oidc_users[0].roles or [])
+            is_super_admin = any(r == "super_admin" for r in roles)
 
     if header_tenant_id and header_tenant_id != token_tenant_id:
         if not is_super_admin:
@@ -360,6 +360,7 @@ async def get_current_user(
         )
         effective_tenant_id = header_tenant_id
 
+    await set_tenant_context(db, effective_tenant_id)
     return Principal(
         user_id=payload.get("sub", ""),
         tenant_id=effective_tenant_id,

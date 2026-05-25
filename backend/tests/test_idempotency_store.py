@@ -35,3 +35,12 @@ async def test_reserve_idempotency_key_concurrent_calls_only_allow_one():
         idempotency.reserve_idempotency_key(key),
     )
     assert sorted(results) == [False, True]
+
+
+def test_get_store_requires_redis_in_production(monkeypatch):
+    idempotency._store = None
+    monkeypatch.setattr(idempotency, "ENV", "production")
+    monkeypatch.setattr(idempotency, "REDIS_URL", "")
+
+    with pytest.raises(RuntimeError, match="REDIS_URL is required"):
+        idempotency._get_store()

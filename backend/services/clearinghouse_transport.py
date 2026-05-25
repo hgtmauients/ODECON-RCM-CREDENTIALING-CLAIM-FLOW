@@ -21,7 +21,7 @@ from models.claims import EDIFile
 from services.encryption import decrypt_credential
 from core.audit import log_credential_access
 from core.http_client import request_with_retry
-from core.outbound_guard import assert_safe_http_url
+from core.outbound_guard import assert_safe_http_url, assert_safe_sftp_host
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +60,18 @@ class SFTPTransport:
         reason: str,
     ) -> str:
         plaintext = await decrypt_credential(encrypted_value)
+        tenant_id = getattr(connection, "_resolved_tenant_id", None)
+        if tenant_id is None:
+            tenant_result = await self.db.execute(
+                select(PayerProfile.tenant_id).where(PayerProfile.id == connection.payer_id)
+            )
+            tenant_id = tenant_result.scalar_one_or_none()
+            if tenant_id is None:
+                raise ValueError(f"Unable to resolve tenant for payer_id={connection.payer_id}")
+            setattr(connection, "_resolved_tenant_id", tenant_id)
         await log_credential_access(
             self.db,
-            tenant_id=connection.tenant_id,
+            tenant_id=tenant_id,
             payer_id=connection.payer_id,
             credential_type=credential_type,
             action="viewed",
@@ -103,6 +112,7 @@ class SFTPTransport:
             
             # Connect
             logger.info(f"Connecting to SFTP: {connection.sftp_host}:{connection.sftp_port}")
+            assert_safe_sftp_host(connection.sftp_host, field_name="sftp_host")
             
             connect_kwargs = {
                 "hostname": connection.sftp_host,
@@ -186,6 +196,7 @@ class SFTPTransport:
             
             # Connect
             ssh = self._build_ssh_client()
+            assert_safe_sftp_host(connection.sftp_host, field_name="sftp_host")
             
             connect_kwargs = {
                 "hostname": connection.sftp_host,
@@ -254,6 +265,7 @@ class SFTPTransport:
                 )
             
             ssh = self._build_ssh_client()
+            assert_safe_sftp_host(connection.sftp_host, field_name="sftp_host")
             
             ssh.connect(
                 hostname=connection.sftp_host,
@@ -312,9 +324,18 @@ class APITransport:
         reason: str,
     ) -> str:
         plaintext = await decrypt_credential(encrypted_value)
+        tenant_id = getattr(connection, "_resolved_tenant_id", None)
+        if tenant_id is None:
+            tenant_result = await self.db.execute(
+                select(PayerProfile.tenant_id).where(PayerProfile.id == connection.payer_id)
+            )
+            tenant_id = tenant_result.scalar_one_or_none()
+            if tenant_id is None:
+                raise ValueError(f"Unable to resolve tenant for payer_id={connection.payer_id}")
+            setattr(connection, "_resolved_tenant_id", tenant_id)
         await log_credential_access(
             self.db,
-            tenant_id=connection.tenant_id,
+            tenant_id=tenant_id,
             payer_id=connection.payer_id,
             credential_type=credential_type,
             action="viewed",

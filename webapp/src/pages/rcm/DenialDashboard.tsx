@@ -40,7 +40,6 @@ export default function DenialDashboard() {
       if (categoryFilter) params.category = categoryFilter;
       if (priorityFilter) params.priority = priorityFilter;
       
-      // TODO: Create this endpoint
       return apiService.get('/rcm/denials/cases', { params });
     }
   );

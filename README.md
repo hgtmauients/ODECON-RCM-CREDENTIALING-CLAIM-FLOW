@@ -45,7 +45,7 @@ All models include `tenant_id` for multi-tenant isolation.
 #### Services (`backend/services/`)
 - `encryption.py` - AES-256-GCM envelope encryption
 - `email_service.py` - SMTP abstraction (dev-mode logging fallback)
-- `database_service.py` - Provider entity service
+- `credentialing_runtime.py` - Credentialing execution runtime (queue/API orchestration target)
 - `credentialing_service.py` - NPI verification, license checks, OIG/SAM
 - `smart_payer_enrollment.py` - Smart enrollment based on state licenses
 - `denial_manager.py` - Denial case management
@@ -62,6 +62,7 @@ All models include `tenant_id` for multi-tenant isolation.
 
 #### Background Jobs (`backend/jobs/`)
 - `poll_835_files.py` - Poll clearinghouse for remittances (835) and claim acknowledgments (277CA) (tenant-scoped)
+- `credentialing_queue.py` - Drains pending provider checks via scheduler worker (canonical production execution path)
 
 #### Migrations (`backend/alembic/versions/`)
 - `rcm_001` through `rcm_005` - Original schema
@@ -125,6 +126,7 @@ python -m app.main
 
 - **Auth**: JWT/OIDC with tenant_id claim
 - **Multi-tenancy**: Application-level tenant_id filtering on all queries
+- **Credentialing runtime**: Scheduler-driven queue worker is canonical in production (`CLAIMFLOW_SCHEDULER_ENABLED=true`); API only spawns direct background execution when scheduler is disabled (local/dev fallback)
 - **EDI**: Manual CSV/EDI upload by default; optional clearinghouse transport
 - **Integrations**: Zero enabled by default; feature-flagged addons
 

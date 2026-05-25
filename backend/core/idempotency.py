@@ -60,8 +60,8 @@ def _get_store():
         if REDIS_URL:
             _store = _RedisStore(REDIS_URL)
         else:
-            # Dev/test fallback. In production we still allow process-local fallback
-            # to avoid hard outages if Redis is intentionally absent in non-critical envs.
+            if ENV == "production":
+                raise RuntimeError("REDIS_URL is required for idempotency in production")
             _store = _MemoryStore()
     return _store
 

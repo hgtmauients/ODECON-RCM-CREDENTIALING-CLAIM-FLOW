@@ -5,6 +5,7 @@ Integrates with payment posting system for automated patient billing
 """
 
 import logging
+import os
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -29,8 +30,6 @@ except ImportError:
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from core.config import settings
-
 logger = logging.getLogger(__name__)
 
 
@@ -40,14 +39,21 @@ class PatientBillingService:
     """
     
     def __init__(self):
+        twilio_account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+        twilio_auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+        twilio_from_number = os.getenv("TWILIO_FROM_NUMBER")
+        sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
+        sendgrid_from_email = os.getenv("SENDGRID_FROM_EMAIL")
+        sendgrid_from_name = os.getenv("SENDGRID_FROM_NAME") or "ClaimFlow Billing"
+
         # Initialize Twilio
-        if TWILIO_AVAILABLE and hasattr(settings, 'TWILIO_ACCOUNT_SID'):
+        if TWILIO_AVAILABLE and twilio_account_sid and twilio_auth_token and twilio_from_number:
             try:
                 self.twilio_client = TwilioClient(
-                    settings.TWILIO_ACCOUNT_SID,
-                    settings.TWILIO_AUTH_TOKEN
+                    twilio_account_sid,
+                    twilio_auth_token,
                 )
-                self.twilio_from_number = settings.TWILIO_FROM_NUMBER
+                self.twilio_from_number = twilio_from_number
                 logger.info("Twilio SMS client initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize Twilio: {e}")
@@ -56,11 +62,11 @@ class PatientBillingService:
             self.twilio_client = None
             
         # Initialize SendGrid
-        if SENDGRID_AVAILABLE and hasattr(settings, 'SENDGRID_API_KEY'):
+        if SENDGRID_AVAILABLE and sendgrid_api_key and sendgrid_from_email:
             try:
-                self.sendgrid_client = SendGridAPIClient(settings.SENDGRID_API_KEY)
-                self.sendgrid_from_email = settings.SENDGRID_FROM_EMAIL
-                self.sendgrid_from_name = settings.SENDGRID_FROM_NAME or "ClaimFlow Billing"
+                self.sendgrid_client = SendGridAPIClient(sendgrid_api_key)
+                self.sendgrid_from_email = sendgrid_from_email
+                self.sendgrid_from_name = sendgrid_from_name
                 logger.info("SendGrid email client initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize SendGrid: {e}")

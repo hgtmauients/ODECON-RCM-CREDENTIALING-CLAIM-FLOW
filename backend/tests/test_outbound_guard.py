@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from core.outbound_guard import assert_safe_http_url, assert_safe_smtp_host
+from core.outbound_guard import assert_safe_http_url, assert_safe_sftp_host, assert_safe_smtp_host
 from services.clearinghouse_transport import APITransport
 
 pytestmark = pytest.mark.security
@@ -27,6 +27,15 @@ def test_assert_safe_http_url_allows_public_hostname():
 def test_assert_safe_smtp_host_rejects_private_ip():
     with pytest.raises(HTTPException):
         assert_safe_smtp_host("127.0.0.1")
+
+
+def test_assert_safe_sftp_host_rejects_private_ip():
+    with pytest.raises(HTTPException):
+        assert_safe_sftp_host("10.0.0.5")
+
+
+def test_assert_safe_sftp_host_allows_public_hostname():
+    assert_safe_sftp_host("sftp.waystar.com")
 
 
 def test_api_transport_validated_endpoint_rejects_blocked_target():

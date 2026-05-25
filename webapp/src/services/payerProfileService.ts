@@ -283,7 +283,7 @@ class PayerProfileService {
         params: { is_active: isActive }
       });
       
-      return response.data.data || [];
+      return response.data || [];
     } catch (error) {
       logger.error('Error getting payer rules', { error, payerId });
       throw error;
@@ -343,7 +343,7 @@ class PayerProfileService {
       
       const response = await apiService.get(`/rcm/payers/${payerId}/connections`);
       
-      return response.data.data || [];
+      return response.data || [];
     } catch (error) {
       logger.error('Error getting payer connections', { error, payerId });
       throw error;
@@ -405,7 +405,7 @@ class PayerProfileService {
         params: { limit }
       });
       
-      return response.data.data || [];
+      return response.data || [];
     } catch (error) {
       logger.error('Error getting version history', { error, payerId });
       throw error;

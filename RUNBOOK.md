@@ -228,6 +228,12 @@ For now, accept ~10s downtime and deploy during a low-traffic window.
 
 Use this checklist whenever deploying credentialing changes or rotating integration secrets.
 
+### Credentialing runtime mode (required)
+
+- [ ] `CLAIMFLOW_SCHEDULER_ENABLED=true` in production so `jobs/credentialing_queue` is the canonical execution path.
+- [ ] Do not rely on API-spawned direct background execution in production; API direct execution is local/dev fallback only when scheduler is disabled.
+- [ ] Confirm scheduler registered `process_credentialing_queue` and is running at expected cadence.
+
 ### Required adapter routing variables (backend)
 
 - [ ] `STATE_LICENSE_PROVIDER_URL` is set to the adapter `GET /license/verify` endpoint.

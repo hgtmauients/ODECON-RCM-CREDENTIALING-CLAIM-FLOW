@@ -3,11 +3,10 @@ Provider Credentialing API
 """
 import hashlib
 import hmac
-import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
-from typing import Dict, Any, Optional
+from typing import Any, Optional
 from datetime import datetime, timezone
 import logging
 import asyncio
@@ -22,7 +21,7 @@ from core.security_signal import log_security_signal
 from api.auth import get_current_user, Principal
 from api.schemas import ProviderCreate, ProviderUpdate, ApproveRequest, RejectRequest, ProviderSignupWebhook
 from models.credentialing import ProviderCredentialing
-from services.credentialing_service import credentialing_service
+from services.credentialing_runtime import run_credentialing_checks as execute_credentialing_checks
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/credentialing", tags=["Credentialing"])
@@ -91,9 +90,36 @@ def _spawn_background(coro, name: str) -> None:
 
     task.add_done_callback(_on_done)
 
+
+def _trigger_credentialing_execution(
+    *,
+    provider_id: str,
+    signup_data: dict[str, Any],
+    tenant_id: str,
+) -> None:
+    """
+    Execute checks immediately only when scheduler is disabled.
+
+    When scheduler is enabled, pending rows are drained by the queue worker.
+    This prevents duplicate execution (API background task + scheduled worker).
+    """
+    from core.scheduler import SCHEDULER_ENABLED
+
+    if SCHEDULER_ENABLED:
+        logger.info(
+            "Queued credentialing checks for provider_id=%s tenant_id=%s (scheduler worker will process)",
+            provider_id,
+            tenant_id,
+        )
+        return
+
+    _spawn_background(
+        run_credentialing_checks(provider_id, signup_data, tenant_id),
+        "credentialing-checks",
+    )
+
 WEBHOOK_REPLAY_WINDOW = 300  # 5 minutes
 _ACTIVE_CREDENTIALING_STATUSES = {"pending", "in_progress", "requires_review"}
-_IN_PROGRESS_STALE_MINUTES = int(os.getenv("CREDENTIALING_IN_PROGRESS_STALE_MINUTES", "30"))
 
 
 async def _verify_webhook_signature(
@@ -256,7 +282,11 @@ async def handle_provider_signup(
         db.add(credentialing)
         await db.commit()
 
-        _spawn_background(run_credentialing_checks(provider_id, signup_data, tenant_id), "credentialing-checks")
+        _trigger_credentialing_execution(
+            provider_id=provider_id,
+            signup_data=signup_data,
+            tenant_id=tenant_id,
+        )
 
         return {
             "success": True,
@@ -433,7 +463,11 @@ async def create_provider_manual(
     await db.commit()
 
     if body.run_checks:
-        _spawn_background(run_credentialing_checks(provider_id, credentialing.signup_data, current_user.tenant_id), "credentialing-checks")
+        _trigger_credentialing_execution(
+            provider_id=provider_id,
+            signup_data=credentialing.signup_data or {},
+            tenant_id=str(current_user.tenant_id),
+        )
 
     return {
         "success": True,
@@ -564,7 +598,11 @@ async def rerun_credentialing_checks(
     )
     await db.commit()
 
-    _spawn_background(run_credentialing_checks(provider_id, credentialing.signup_data or {}, current_user.tenant_id), "credentialing-checks")
+    _trigger_credentialing_execution(
+        provider_id=provider_id,
+        signup_data=credentialing.signup_data or {},
+        tenant_id=str(current_user.tenant_id),
+    )
     return {"success": True, "message": "Verification checks re-initiated"}
 
 
@@ -727,198 +765,15 @@ async def reject_provider(
 
 async def run_credentialing_checks(
     provider_id: str,
-    signup_data: Dict[str, Any],
+    signup_data: dict[str, Any],
     tenant_id: str,
     *,
     preclaimed: bool = False,
 ):
-    """Run all credentialing checks in parallel (background task)."""
-    from core.database import async_session_factory
-
-    async with async_session_factory() as db:
-        try:
-            result = await db.execute(
-                select(ProviderCredentialing)
-                .where(and_(
-                    ProviderCredentialing.provider_id == provider_id,
-                    ProviderCredentialing.tenant_id == tenant_id,
-                ))
-                .with_for_update()
-            )
-            credentialing = result.scalar_one_or_none()
-            if not credentialing:
-                return
-
-            now = _utcnow_naive()
-            if not preclaimed:
-                if credentialing.credentialing_status in ("passed", "failed"):
-                    return
-                if (
-                    credentialing.credentialing_status == "in_progress"
-                    and credentialing.started_at
-                    and (now - credentialing.started_at).total_seconds() < (_IN_PROGRESS_STALE_MINUTES * 60)
-                ):
-                    # Another worker is actively processing this provider.
-                    return
-
-                credentialing.credentialing_status = "in_progress"
-                credentialing.started_at = now
-                credentialing.completed_at = None
-                await db.commit()
-            elif credentialing.credentialing_status != "in_progress":
-                # Queue pre-claimed this row, but status changed before execution.
-                return
-
-            check_keys = []
-            check_coros = []
-
-            if signup_data.get("npi"):
-                check_keys.append("npi_verification")
-                check_coros.append(credentialing_service.verify_npi(signup_data["npi"]))
-            if signup_data.get("state_code") and signup_data.get("license_number"):
-                check_keys.append("state_license_verification")
-                check_coros.append(credentialing_service.verify_state_license(
-                    signup_data["state_code"], signup_data["license_number"],
-                    f"{signup_data.get('first_name', '')} {signup_data.get('last_name', '')}",
-                    signup_data.get("date_of_birth", ""),
-                ))
-            check_keys.append("background_check")
-            check_coros.append(credentialing_service.run_background_check(
-                signup_data.get("first_name", ""), signup_data.get("last_name", ""),
-                signup_data.get("date_of_birth", ""),
-            ))
-            if signup_data.get("npi"):
-                check_keys.append("oig_check")
-                check_coros.append(credentialing_service.check_oig_exclusion(
-                    f"{signup_data.get('first_name', '')} {signup_data.get('last_name', '')}",
-                    signup_data.get("date_of_birth", ""), signup_data["npi"],
-                ))
-            check_keys.append("sam_check")
-            check_coros.append(credentialing_service.check_sam_exclusion(
-                f"{signup_data.get('first_name', '')} {signup_data.get('last_name', '')}",
-                signup_data.get("date_of_birth", ""),
-            ))
-
-            # API-Cert: real-time state license verification (50 states, free tier)
-            from services.api_cert import get_tenant_client as get_api_cert_client, is_configured_for_tenant as api_cert_configured_for_tenant
-            if await api_cert_configured_for_tenant(db, tenant_id) and signup_data.get("state_code") and signup_data.get("last_name"):
-                tenant_api_cert = await get_api_cert_client(db, tenant_id)
-                check_keys.append("api_cert_verification")
-                check_coros.append(tenant_api_cert.verify_license(
-                    last_name=signup_data["last_name"],
-                    state=signup_data["state_code"],
-                    license_type=signup_data.get("provider_type", "MD"),
-                    first_name=signup_data.get("first_name"),
-                    license_number=signup_data.get("license_number"),
-                ))
-
-            results_list = await asyncio.gather(*check_coros, return_exceptions=True)
-            results = {}
-            for key, value in zip(check_keys, results_list):
-                results[key] = value if not isinstance(value, Exception) else {"error": str(value)}
-
-            score = credentialing_service.calculate_credentialing_score(results)
-            status = credentialing_service.determine_status(score)
-
-            credentialing.npi_verification = results.get("npi_verification")
-            credentialing.state_license_verification = results.get("state_license_verification")
-            credentialing.background_check = results.get("background_check")
-            credentialing.oig_check = results.get("oig_check")
-            credentialing.sam_check = results.get("sam_check")
-
-            # If API-Cert verified the license, upgrade state_license_verification
-            api_cert_result = results.get("api_cert_verification", {})
-            if api_cert_result.get("verified") and api_cert_result.get("status") == "ACTIVE":
-                credentialing.state_license_verification = {
-                    "verified": True,
-                    "license_number": api_cert_result.get("license_number"),
-                    "status": api_cert_result.get("status"),
-                    "expiration_date": api_cert_result.get("expiration_date"),
-                    "full_name": api_cert_result.get("full_name"),
-                    "disciplinary_flag": api_cert_result.get("disciplinary_flag"),
-                    "source": "api_cert",
-                }
-                # Also use API-Cert exclusion results if available
-                if api_cert_result.get("oig_excluded") is not None:
-                    credentialing.oig_check = {
-                        "excluded": api_cert_result["oig_excluded"],
-                        "source": "api_cert",
-                    }
-                if api_cert_result.get("sam_excluded") is not None:
-                    credentialing.sam_check = {
-                        "excluded": api_cert_result["sam_excluded"],
-                        "source": "api_cert",
-                    }
-                logger.info(f"API-Cert verified license for {provider_id} in {signup_data.get('state_code')}")
-            elif api_cert_result.get("status") == "NOT_COVERED":
-                logger.info(f"API-Cert does not cover {signup_data.get('state_code')} - using internal checks only")
-
-            # Recalculate score with potentially upgraded results
-            final_results = {
-                "npi_verification": credentialing.npi_verification,
-                "state_license_verification": credentialing.state_license_verification,
-                "background_check": credentialing.background_check,
-                "oig_check": credentialing.oig_check,
-                "sam_check": credentialing.sam_check,
-            }
-            score = credentialing_service.calculate_credentialing_score(final_results)
-            status = credentialing_service.determine_status(score)
-
-            # CAQH enrichment (if configured, as additional data source)
-            from services.caqh_proview import get_tenant_client as get_caqh_client, is_configured_for_tenant as caqh_configured_for_tenant
-            if await caqh_configured_for_tenant(db, tenant_id) and signup_data.get("npi"):
-                try:
-                    tenant_caqh = await get_caqh_client(db, tenant_id)
-                    caqh_search = await tenant_caqh.search_by_npi(signup_data["npi"])
-                    if caqh_search.get("found"):
-                        caqh_id = caqh_search["caqh_provider_id"]
-                        caqh_data = await tenant_caqh.get_provider_data(caqh_id)
-                        if caqh_data.get("success"):
-                            caqh_licenses = caqh_data.get("licenses", [])
-                            active = [l for l in caqh_licenses if l.get("status", "").upper() in ("ACTIVE", "CURRENT", "")]
-                            if active and not results.get("state_license_verification", {}).get("verified"):
-                                credentialing.state_license_verification = {
-                                    "verified": True,
-                                    "licenses": active,
-                                    "source": "caqh_proview",
-                                }
-                                score = credentialing_service.calculate_credentialing_score({
-                                    **results,
-                                    "state_license_verification": credentialing.state_license_verification,
-                                })
-                                status = credentialing_service.determine_status(score)
-                            logger.info(f"CAQH enrichment for {provider_id}: {len(caqh_licenses)} licenses found")
-                except Exception as caqh_err:
-                    logger.warning(f"CAQH enrichment failed for {provider_id}: {caqh_err}")
-
-            credentialing.overall_score = score
-            credentialing.credentialing_status = status
-            credentialing.completed_at = _utcnow_naive()
-            await db.commit()
-
-            logger.info(f"Credentialing completed for {provider_id}: {status} (score: {score})")
-        except Exception as e:
-            # On any failure mid-flight, do NOT leave the provider stuck in
-            # in_progress forever. Roll back the transaction, then in a fresh
-            # session set the status to requires_review so an operator can
-            # see the error and act on it.
-            logger.exception(f"Error running credentialing checks for {provider_id}: {e}")
-            try:
-                await db.rollback()
-            except Exception:
-                pass
-            try:
-                async with async_session_factory() as recovery_db:
-                    recovery_result = await recovery_db.execute(
-                        select(ProviderCredentialing).where(and_(
-                            ProviderCredentialing.provider_id == provider_id,
-                            ProviderCredentialing.tenant_id == tenant_id,
-                        ))
-                    )
-                    rec = recovery_result.scalar_one_or_none()
-                    if rec and rec.credentialing_status in ("pending", "in_progress"):
-                        rec.credentialing_status = "requires_review"
-                        rec.admin_notes = (rec.admin_notes or "") + f"\n[auto] verification job failed: {e}"
-                        await recovery_db.commit()
-            except Exception as recovery_err:
-                logger.error(f"Failed to set recovery status for {provider_id}: {recovery_err}")
+    """Backward-compatible wrapper for the service-layer runtime implementation."""
+    await execute_credentialing_checks(
+        provider_id=provider_id,
+        signup_data=signup_data,
+        tenant_id=tenant_id,
+        preclaimed=preclaimed,
+    )

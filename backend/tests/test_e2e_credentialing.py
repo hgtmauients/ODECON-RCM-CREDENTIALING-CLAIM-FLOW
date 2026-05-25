@@ -19,7 +19,7 @@ import json
 import time
 import hmac
 import hashlib
-from datetime import date
+from datetime import date, datetime, timezone
 from uuid import UUID, uuid4
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy import select, and_
@@ -43,6 +43,7 @@ from core.tenant_config import save_tenant_settings
 from models.base import Base
 from models.tenant import Tenant
 from models.user import User
+from models.credentialing import ProviderCredentialing
 
 TEST_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 TEST_ADMIN_EMAIL = "admin@claimflow.io"
@@ -62,6 +63,31 @@ def _signed_webhook_headers(raw_body: bytes) -> dict:
         "X-Webhook-Timestamp": timestamp,
         "X-Webhook-Signature": signature,
     }
+
+
+async def _mark_provider_ready_for_approval(provider_id: str) -> None:
+    """Force deterministic verification-complete state for approval-path tests."""
+    async with dbcore.async_session_factory() as db:
+        result = await db.execute(
+            select(ProviderCredentialing).where(and_(
+                ProviderCredentialing.provider_id == provider_id,
+                ProviderCredentialing.tenant_id == UUID(TEST_TENANT_ID),
+            ))
+        )
+        provider = result.scalar_one_or_none()
+        assert provider is not None, f"Provider not found for test setup: {provider_id}"
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        provider.started_at = now
+        provider.completed_at = now
+        provider.credentialing_status = "requires_review"
+        provider.overall_score = 95
+        provider.npi_verification = {"verified": True, "source": "test"}
+        provider.state_license_verification = {"verified": True, "status": "ACTIVE", "source": "test"}
+        provider.background_check = {"clear": True, "source": "test"}
+        provider.oig_check = {"excluded": False, "source": "test"}
+        provider.sam_check = {"excluded": False, "source": "test"}
+        await db.commit()
 
 
 @pytest.fixture(scope="module")
@@ -243,6 +269,7 @@ async def approved_provider_id(client: AsyncClient):
     create_resp = await client.post("/api/credentialing/manual", json=manual_payload)
     assert create_resp.status_code == 200, f"Manual provider create failed: {create_resp.text}"
     approved_id = create_resp.json()["provider_id"]
+    await _mark_provider_ready_for_approval(approved_id)
 
     approve_resp = await client.post(f"/api/credentialing/{approved_id}/approve", json={
         "notes": "Approved in E2E deterministic flow",
@@ -314,6 +341,7 @@ async def test_approve_idempotency_key_rejects_duplicate(client: AsyncClient):
     create_resp = await client.post("/api/credentialing/manual", json=payload)
     assert create_resp.status_code == 200, f"Manual provider create failed: {create_resp.text}"
     provider_id = create_resp.json()["provider_id"]
+    await _mark_provider_ready_for_approval(provider_id)
 
     idem_headers = {"Idempotency-Key": "e2e-approve-idem-key-1"}
     first = await client.post(

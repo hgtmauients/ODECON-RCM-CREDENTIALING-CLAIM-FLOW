@@ -10,9 +10,9 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import and_, select
 
-from api.credentialing import run_credentialing_checks
 from core.database import async_session_factory
 from models.credentialing import ProviderCredentialing
+from services.credentialing_runtime import run_credentialing_checks
 
 logger = logging.getLogger(__name__)
 

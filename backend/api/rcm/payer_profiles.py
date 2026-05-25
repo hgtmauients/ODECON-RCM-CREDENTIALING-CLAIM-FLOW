@@ -16,7 +16,7 @@ import os
 
 from core.database import get_db
 from core.audit import log_audit_event
-from core.outbound_guard import assert_safe_http_url
+from core.outbound_guard import assert_safe_http_url, assert_safe_sftp_host
 from models.rcm import (
     PayerProfile,
     PayerRule,
@@ -726,6 +726,9 @@ async def create_payer_connection(
         api_endpoint = str(connection_data.get("api_endpoint") or "").strip()
         if api_endpoint:
             assert_safe_http_url(api_endpoint, field_name="api_endpoint")
+        sftp_host = str(connection_data.get("sftp_host") or "").strip()
+        if sftp_host:
+            assert_safe_sftp_host(sftp_host, field_name="sftp_host")
         # Encrypt sensitive fields before storage.
         for raw_key, enc_key in (
             ("sftp_password", "sftp_password_encrypted"),

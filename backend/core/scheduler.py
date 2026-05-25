@@ -24,6 +24,7 @@ scheduler = AsyncIOScheduler()
 ENV = os.getenv("ENV", "development").lower()
 _default_scheduler_enabled = "true" if ENV == "production" else "false"
 SCHEDULER_ENABLED = os.getenv("CLAIMFLOW_SCHEDULER_ENABLED", _default_scheduler_enabled).lower() == "true"
+APP_BASE_URL = os.getenv("APP_BASE_URL", "https://noodledoc.com").rstrip("/")
 
 # Stable lock IDs (any 64-bit signed int). Different jobs use different IDs.
 _LOCK_ID_835_POLL = 0x1F00_835A_AAAA_0001
@@ -227,7 +228,7 @@ async def _run_expiration_check():
                                 f"Tenant: {tenant.name}\n"
                                 f"{title}.\n\n"
                                 f"Sign in and open the Credentialing queue to review:\n"
-                                f"https://noodledoc.com/credentialing\n"
+                                f"{APP_BASE_URL}/credentialing\n"
                             ),
                             recipients=recipients,
                         )

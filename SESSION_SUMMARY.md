@@ -40,7 +40,8 @@ Backend (FastAPI + SQLAlchemy async + asyncpg)
   ├── 60+ API endpoints
   ├── JWT auth with Principal (user_id, tenant_id, email, roles)
   ├── Services: EDI, rules engine, denial manager, encryption, email
-  ├── Background scheduler (APScheduler, disabled by default)
+  ├── Background scheduler (APScheduler, disabled by default in dev)
+  │   └── Canonical production credentialing execution via jobs/credentialing_queue
   └── External integrations: NPPES (live), OIG (live), SAM (live), API-Cert, CAQH (ready)
 
 Database (PostgreSQL 16)
@@ -77,7 +78,7 @@ backend/
 │   ├── integrations.py            # Feature flags
 │   ├── logging_config.py          # JSON structured logging
 │   ├── rate_limit.py              # In-memory rate limiting middleware
-│   ├── scheduler.py               # APScheduler (835 polling, expiration checks)
+│   ├── scheduler.py               # APScheduler (835/277 polling, expiration checks, credentialing queue)
 │   └── storage.py                 # Local/S3 storage abstraction
 ├── models/
 │   ├── base.py                    # Shared DeclarativeBase
@@ -100,13 +101,14 @@ backend/
 │   ├── caqh_proview.py            # CAQH ProView client (needs org credentials)
 │   ├── encryption.py              # AES-256-GCM credential encryption
 │   ├── email_service.py           # SMTP abstraction
+│   ├── credentialing_runtime.py   # Canonical credentialing execution runtime
 │   ├── fee_schedule_service.py    # Fee schedule calculations
-│   └── credentialing_rcm_integration.py  # Legacy enrollment case creator
+│   └── patient_billing.py         # Optional patient billing communications
 ├── jobs/poll_835_files.py         # Background 835/277 poller (tenant-scoped)
 ├── scripts/seed_carc_rarc.py      # CARC/RARC reference code seeder
 ├── tests/
 │   ├── test_e2e_claim_lifecycle.py      # 7 tests: full claim lifecycle
-│   ├── test_e2e_credentialing.py        # 10 tests: full credentialing lifecycle
+│   ├── test_e2e_credentialing.py        # 14 tests: full credentialing lifecycle
 │   ├── test_tenant_isolation.py         # Principal + encryption tests
 │   ├── test_integration.py              # Rate limiting + claim tests
 │   └── test_fee_schedule_service.py     # Fee schedule tests

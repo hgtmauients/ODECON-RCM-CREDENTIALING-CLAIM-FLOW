@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from core.db_rls import set_rls_bypass, set_tenant_context
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -36,6 +37,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency that yields a scoped async session."""
     async with async_session_factory() as session:
         try:
+            # Request sessions should never bypass tenant RLS by default.
+            await set_rls_bypass(session, enabled=False)
+            await set_tenant_context(session, tenant_id=None)
             yield session
         finally:
             await session.close()
@@ -45,6 +49,9 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     """Generator for background jobs (non-FastAPI contexts)."""
     async with async_session_factory() as session:
         try:
+            # Background workers iterate across tenants and use explicit app-layer filters.
+            await set_rls_bypass(session, enabled=True)
+            await set_tenant_context(session, tenant_id=None)
             yield session
         finally:
             await session.close()

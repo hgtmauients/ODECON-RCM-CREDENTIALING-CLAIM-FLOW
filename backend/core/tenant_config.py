@@ -46,11 +46,9 @@ def _storage_key(key: str) -> str:
 
 
 # Settings whose env-var fallback represents a CROSS-TENANT secret. For these
-# we deliberately refuse the env fallback so one tenant cannot inherit
-# another tenant\'s integration secret simply by leaving its own slot blank.
-# webhook_secret is the canonical example: it gates an unauthenticated
-# webhook, and the env-var has historically been shared across tenants.
-TENANT_SCOPED_KEYS = frozenset({"webhook_secret"})
+# we deliberately refuse env fallback so one tenant cannot inherit another
+# tenant's integration secret simply by leaving its own slot blank.
+TENANT_SCOPED_KEYS = SENSITIVE_KEYS
 
 
 async def get_tenant_setting(
