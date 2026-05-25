@@ -18,6 +18,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 from datetime import datetime, timezone
@@ -44,21 +45,27 @@ def _run(cmd: List[str], *, cwd: Path | None = None, capture_output: bool = Fals
 def _run_security_gate(repo_root: Path) -> None:
     gate = _run(
         [
-            "py",
-            "-3",
+            sys.executable,
             "-m",
             "pytest",
+            "backend/tests/test_tenant_isolation_http.py",
+            "backend/tests/test_tenant_escape_vectors.py",
             "backend/tests/test_startup_checks.py",
             "backend/tests/test_csv_export.py",
             "backend/tests/test_auth_error_messages.py",
             "backend/tests/test_auth_revalidation.py",
             "backend/tests/test_security_signal_logging.py",
+            "backend/tests/test_rate_limit_keying.py",
             "backend/tests/test_rate_limit_security_signal_flow.py",
             "backend/tests/test_provider_adapter.py",
             "backend/tests/test_outbound_guard.py",
             "backend/tests/test_payer_role_gates.py",
             "backend/tests/test_audit_helper.py",
             "backend/tests/test_cors_runtime_policy.py",
+            "backend/tests/test_verify_production_canary.py",
+            "backend/tests/test_change_password_tenant_scope.py",
+            "backend/tests/test_secondary_service_tenant_scope.py",
+            "backend/tests/test_rules_engine_tenant_scope.py",
             "-v",
         ],
         cwd=repo_root,
@@ -196,6 +203,30 @@ def _ensure_git_clean(repo_root: Path) -> None:
         raise RuntimeError("Working tree is dirty. Commit/stash changes or use --allow-dirty.")
 
 
+def _ensure_release_ref_integrity(repo_root: Path) -> None:
+    branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, capture_output=True)
+    if branch.returncode != 0:
+        raise RuntimeError(f"git rev-parse --abbrev-ref failed:\n{branch.stderr}")
+    current_branch = (branch.stdout or "").strip()
+    if current_branch != "main":
+        raise RuntimeError(
+            f"Releases must run from local main; current branch is '{current_branch}'."
+        )
+
+    head = _run(["git", "rev-parse", "HEAD"], cwd=repo_root, capture_output=True)
+    main = _run(["git", "rev-parse", "main"], cwd=repo_root, capture_output=True)
+    if head.returncode != 0 or main.returncode != 0:
+        raise RuntimeError("Unable to resolve git refs for release integrity check")
+
+    head_sha = (head.stdout or "").strip()
+    main_sha = (main.stdout or "").strip()
+    if not head_sha or not main_sha or head_sha != main_sha:
+        raise RuntimeError(
+            "Release ref integrity failed: HEAD does not match local main. "
+            "Checkout/update main before releasing."
+        )
+
+
 def _git_push(repo_root: Path) -> None:
     push = _run(["git", "push", "origin", "main"], cwd=repo_root)
     if push.returncode != 0:
@@ -315,18 +346,38 @@ def main() -> int:
         "error_rate_guard": None,
         "slo_review_gate": None,
         "canary": None,
+        "partial": False,
         "go": False,
     }
 
     try:
+        if args.allow_dirty and not args.skip_hetzner:
+            raise RuntimeError(
+                "--allow-dirty cannot be used when deploying backend. "
+                "Commit or stash local changes first."
+            )
         if not args.allow_dirty:
             _ensure_git_clean(repo_root)
+        if not args.skip_git_push or not args.skip_hetzner:
+            _ensure_release_ref_integrity(repo_root)
 
         if not args.skip_security_gate:
             _run_security_gate(repo_root)
             report["security_gate"] = "ok"
         else:
             report["security_gate"] = "skipped"
+
+        if not args.skip_slo_review_gate:
+            slo_gate = _run_slo_review_gate(
+                repo_root,
+                attestation_path=args.slo_attestation_path,
+                max_age_days=max(1, args.slo_max_age_days),
+            )
+            report["slo_review_gate"] = slo_gate
+            if not slo_gate.get("ok"):
+                raise RuntimeError("SLO review gate failed")
+        else:
+            report["slo_review_gate"] = "skipped"
 
         if not args.skip_git_push:
             _git_push(repo_root)
@@ -375,25 +426,15 @@ def main() -> int:
         else:
             report["error_rate_guard"] = "skipped"
 
-        if not args.skip_slo_review_gate:
-            slo_gate = _run_slo_review_gate(
-                repo_root,
-                attestation_path=args.slo_attestation_path,
-                max_age_days=max(1, args.slo_max_age_days),
-            )
-            report["slo_review_gate"] = slo_gate
-            if not slo_gate.get("ok"):
-                raise RuntimeError("SLO review gate failed")
-        else:
-            report["slo_review_gate"] = "skipped"
-
         if not args.skip_canary:
             canary_json = _run_canary(server=args.server, tenant=args.tenant)
             report["canary"] = canary_json
+            report["partial"] = False
             report["go"] = bool(canary_json.get("go") is True)
         else:
             report["canary"] = "skipped"
-            report["go"] = True
+            report["partial"] = True
+            report["go"] = False
 
     except Exception as exc:
         report["error"] = str(exc)

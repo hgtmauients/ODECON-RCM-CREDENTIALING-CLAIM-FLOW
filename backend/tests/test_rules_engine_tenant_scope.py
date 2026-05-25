@@ -55,6 +55,21 @@ async def test_validate_claim_scopes_rules_query_to_tenant():
 
 
 @pytest.mark.asyncio
+async def test_validate_claim_requires_tenant_id():
+    db = MagicMock()
+    db.commit = AsyncMock()
+    db.add = MagicMock()
+    db.execute = AsyncMock()
+
+    engine = RulesEngine(db)
+    result = await engine.validate_claim(42, tenant_id="")
+
+    assert result["passed"] is False
+    assert "tenant_id is required" in result["errors"][0]
+    db.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_rules_summary_scopes_to_tenant_when_provided():
     db = MagicMock()
     db.execute = AsyncMock(side_effect=[_scalars_result([])])
@@ -67,3 +82,16 @@ async def test_get_rules_summary_scopes_to_tenant_when_provided():
     sql = str(summary_stmt)
     assert "JOIN payer_profiles" in sql
     assert "payer_profiles.tenant_id" in sql
+
+
+@pytest.mark.asyncio
+async def test_get_rules_summary_requires_tenant_id():
+    db = MagicMock()
+    db.execute = AsyncMock()
+
+    engine = RulesEngine(db)
+    result = await engine.get_applicable_rules_summary(7, tenant_id=None)
+
+    assert result["total_rules"] == 0
+    assert "tenant_id is required" in result["error"]
+    db.execute.assert_not_called()

@@ -19,6 +19,7 @@ import secrets
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from uuid import UUID, uuid4
 
 import httpx
 import jwt
@@ -26,6 +27,7 @@ from sqlalchemy import and_, select, text
 
 from core.database import async_session_factory
 from models.claims import Claim
+from models.user import User
 
 
 DEFAULT_API_BASE = "http://127.0.0.1:8000/api"
@@ -39,11 +41,21 @@ class Resources:
     patient_ids: List[int] = field(default_factory=list)
     claim_ids: List[int] = field(default_factory=list)
     edi_file_ids: List[int] = field(default_factory=list)
+    user_ids: List[str] = field(default_factory=list)
 
 
-def _tenant_token(*, tenant_id: str, email: str, jwt_secret: str, jwt_audience: str) -> str:
+def _tenant_token(
+    *,
+    user_id: str,
+    tenant_id: str,
+    email: str,
+    jwt_audience: str,
+    jwt_algorithm: str,
+    jwt_secret: str = "",
+    jwt_private_key: str = "",
+) -> str:
     payload = {
-        "sub": f"canary-{secrets.token_hex(8)}",
+        "sub": user_id,
         "email": email,
         "tenant_id": tenant_id,
         "roles": ["super_admin", "admin", "billing", "credentialing"],
@@ -51,7 +63,42 @@ def _tenant_token(*, tenant_id: str, email: str, jwt_secret: str, jwt_audience: 
         "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(hours=1),
     }
+    algo = (jwt_algorithm or "HS256").upper()
+    if algo == "RS256":
+        if not jwt_private_key:
+            raise ValueError("JWT private key is required when jwt_algorithm=RS256")
+        return jwt.encode(payload, jwt_private_key, algorithm="RS256")
+    if not jwt_secret:
+        raise ValueError("JWT secret is required when jwt_algorithm=HS256")
     return jwt.encode(payload, jwt_secret, algorithm="HS256")
+
+
+async def _ensure_canary_user(*, tenant_id: str, email: str) -> str:
+    tenant_uuid = UUID(str(tenant_id))
+    normalized_email = email.strip().lower()
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(User).where(and_(User.tenant_id == tenant_uuid, User.email == normalized_email))
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            user = User(
+                id=uuid4(),
+                tenant_id=tenant_uuid,
+                email=normalized_email,
+                full_name="Production Canary User",
+                roles=["super_admin", "admin", "billing", "credentialing"],
+                is_active=True,
+                created_by="verify_production_canary",
+            )
+            db.add(user)
+        else:
+            user.roles = ["super_admin", "admin", "billing", "credentialing"]
+            user.is_active = True
+            if not user.full_name:
+                user.full_name = "Production Canary User"
+        await db.commit()
+        return str(user.id)
 
 
 async def _api_json(
@@ -127,6 +174,9 @@ async def _cleanup(resources: Resources) -> None:
         for patient_id in resources.patient_ids:
             await db.execute(text("DELETE FROM patients WHERE id = :id"), {"id": patient_id})
 
+        for user_id in resources.user_ids:
+            await db.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+
         for connection_id in resources.connection_ids:
             await db.execute(text("DELETE FROM trading_partner_connections WHERE id = :id"), {"id": connection_id})
 
@@ -137,22 +187,65 @@ async def _cleanup(resources: Resources) -> None:
         await db.commit()
 
 
+def _compute_go(report: Dict[str, Any]) -> bool:
+    go_conditions = [
+        report.get("health_ok") is True,
+        report.get("validate_passed") is True,
+        report.get("submit_success") is True,
+        report.get("upload_277_success") is True,
+        int((report.get("upload_277_parse") or {}).get("claims_updated", 0)) >= 1,
+        report.get("upload_835_success") is True,
+        report.get("claim_final_state") in {"denied", "paid", "partially_paid", "adjudicated"},
+        "277ca_received" in report.get("event_types", []),
+        any(e in report.get("event_types", []) for e in ("denial_processed", "payment_posted")),
+    ]
+    return all(go_conditions)
+
+
 async def _run(args: argparse.Namespace) -> int:
     run_id = secrets.token_hex(6)
     resources = Resources(run_id=run_id)
     report: Dict[str, Any] = {"run_id": run_id}
 
+    jwt_algorithm = (args.jwt_algorithm or os.getenv("JWT_ALGORITHM", "HS256")).upper()
     jwt_secret = args.jwt_secret or os.getenv("JWT_SECRET", "")
+    jwt_private_key = args.jwt_private_key or os.getenv("JWT_PRIVATE_KEY", "")
     jwt_audience = args.jwt_audience or os.getenv("JWT_AUDIENCE", "claimflow")
-    if not jwt_secret:
+    report["jwt_algorithm"] = jwt_algorithm
+    if jwt_algorithm == "HS256" and not jwt_secret:
         print(json.dumps({"go": False, "error": "JWT secret missing", "hint": "--jwt-secret or JWT_SECRET env"}, indent=2))
         return 2
+    if jwt_algorithm == "RS256" and not jwt_private_key:
+        print(
+            json.dumps(
+                {
+                    "go": False,
+                    "error": "JWT private key missing for RS256 canary token minting",
+                    "hint": "--jwt-private-key or JWT_PRIVATE_KEY env",
+                },
+                indent=2,
+            )
+        )
+        return 2
+
+    if "@" in args.canary_email:
+        local_part, domain = args.canary_email.split("@", 1)
+        canary_email = f"{local_part}+{run_id}@{domain}"
+    else:
+        canary_email = f"canary.{run_id}@noodledoc.local"
+    canary_user_id = await _ensure_canary_user(tenant_id=args.tenant, email=canary_email)
+    resources.user_ids.append(canary_user_id)
+    report["canary_user_id"] = canary_user_id
+    report["canary_user_email"] = canary_email
 
     token = _tenant_token(
+        user_id=canary_user_id,
         tenant_id=args.tenant,
-        email=args.canary_email,
-        jwt_secret=jwt_secret,
+        email=canary_email,
         jwt_audience=jwt_audience,
+        jwt_algorithm=jwt_algorithm,
+        jwt_secret=jwt_secret,
+        jwt_private_key=jwt_private_key,
     )
 
     try:
@@ -373,17 +466,7 @@ async def _run(args: argparse.Namespace) -> int:
             report["events_status"] = code
             report["event_types"] = [e.get("event_type") for e in events.get("data", [])] if isinstance(events, dict) else []
 
-            go_conditions = [
-                report.get("health_ok") is True,
-                report.get("submit_success") is True,
-                report.get("upload_277_success") is True,
-                int((report.get("upload_277_parse") or {}).get("claims_updated", 0)) >= 1,
-                report.get("upload_835_success") is True,
-                report.get("claim_final_state") in {"denied", "paid", "partially_paid", "adjudicated"},
-                "277ca_received" in report.get("event_types", []),
-                any(e in report.get("event_types", []) for e in ("denial_processed", "payment_posted")),
-            ]
-            report["go"] = all(go_conditions)
+            report["go"] = _compute_go(report)
 
     except Exception as e:
         report["go"] = False
@@ -405,7 +488,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run ClaimFlow production canary and return strict GO/NO-GO")
     parser.add_argument("--tenant", required=True, help="Tenant UUID for canary run")
     parser.add_argument("--api-base", default=DEFAULT_API_BASE, help="API base URL")
+    parser.add_argument("--jwt-algorithm", default="", help="JWT algorithm override (HS256 or RS256)")
     parser.add_argument("--jwt-secret", default="", help="JWT signing secret (defaults to JWT_SECRET env)")
+    parser.add_argument("--jwt-private-key", default="", help="JWT RS256 private key PEM (defaults to JWT_PRIVATE_KEY env)")
     parser.add_argument("--jwt-audience", default="", help="JWT audience (defaults to JWT_AUDIENCE env)")
     parser.add_argument("--canary-email", default="canary.rcm+prod@noodledoc.com", help="Email claim for token/audit")
     parser.add_argument("--canary-api-endpoint", default="https://httpbin.org/anything", help="Canary clearinghouse API endpoint")

@@ -39,15 +39,18 @@ async def create_smart_payer_enrollment_cases(
     Returns:
         Dict with cases created, organized by state
     """
+    if not tenant_id:
+        return {"success": False, "cases_created": 0, "error": "tenant_id is required"}
     try:
         from models.payer_credentialing import PayerCredentialingCase
         from models.rcm import PayerProfile
         from models.credentialing import ProviderCredentialing
         
         # Get provider credentialing record for license data
-        cred_query = select(ProviderCredentialing).where(ProviderCredentialing.provider_id == provider_id)
-        if tenant_id:
-            cred_query = cred_query.where(ProviderCredentialing.tenant_id == tenant_id)
+        cred_query = select(ProviderCredentialing).where(and_(
+            ProviderCredentialing.provider_id == provider_id,
+            ProviderCredentialing.tenant_id == tenant_id,
+        ))
         cred_result = await db.execute(cred_query)
         provider_cred = cred_result.scalar_one_or_none()
         
@@ -84,8 +87,7 @@ async def create_smart_payer_enrollment_cases(
             PayerProfile.is_active == True,
             PayerProfile.is_draft == False
         ))
-        if tenant_id:
-            payer_query = payer_query.where(PayerProfile.tenant_id == tenant_id)
+        payer_query = payer_query.where(PayerProfile.tenant_id == tenant_id)
         payers_result = await db.execute(payer_query)
         payers = payers_result.scalars().all()
         
@@ -115,11 +117,8 @@ async def create_smart_payer_enrollment_cases(
             existing_query = select(PayerCredentialingCase).where(and_(
                 PayerCredentialingCase.provider_id == provider_id,
                 PayerCredentialingCase.payer_id == payer.id,
+                PayerCredentialingCase.tenant_id == tenant_id,
             ))
-            if tenant_id:
-                existing_query = existing_query.where(
-                    PayerCredentialingCase.tenant_id == tenant_id
-                )
             existing_result = await db.execute(existing_query)
             existing_case = existing_result.scalar_one_or_none()
             
@@ -132,7 +131,7 @@ async def create_smart_payer_enrollment_cases(
             
             # Create payer credentialing case
             new_case = PayerCredentialingCase(
-                tenant_id=tenant_id or str(provider_cred.tenant_id),
+                tenant_id=tenant_id,
                 provider_id=provider_id,
                 payer_id=payer.id,
                 status="draft",
@@ -378,14 +377,17 @@ async def get_provider_eligible_payers(provider_id: str, db: AsyncSession, tenan
             "ineligible_payers": [payers provider can't enroll with yet]
         }
     """
+    if not tenant_id:
+        return {"success": False, "error": "tenant_id is required"}
     try:
         from models.credentialing import ProviderCredentialing
         from models.rcm import PayerProfile
         
         # Get provider credentials
-        cred_query = select(ProviderCredentialing).where(ProviderCredentialing.provider_id == provider_id)
-        if tenant_id:
-            cred_query = cred_query.where(ProviderCredentialing.tenant_id == tenant_id)
+        cred_query = select(ProviderCredentialing).where(and_(
+            ProviderCredentialing.provider_id == provider_id,
+            ProviderCredentialing.tenant_id == tenant_id,
+        ))
         cred_result = await db.execute(cred_query)
         provider_cred = cred_result.scalar_one_or_none()
         
@@ -409,9 +411,10 @@ async def get_provider_eligible_payers(provider_id: str, db: AsyncSession, tenan
             licensed_states.append(primary_state)
         
         # Get all payers (tenant-scoped)
-        payer_query = select(PayerProfile).where(PayerProfile.is_active == True)
-        if tenant_id:
-            payer_query = payer_query.where(PayerProfile.tenant_id == tenant_id)
+        payer_query = select(PayerProfile).where(and_(
+            PayerProfile.is_active == True,
+            PayerProfile.tenant_id == tenant_id,
+        ))
         payers_result = await db.execute(payer_query)
         payers = payers_result.scalars().all()
         

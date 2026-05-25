@@ -31,6 +31,7 @@ from api.auth import JWT_SECRET, JWT_ALGORITHM, get_current_user, Principal
 from core.audit import log_audit_event
 from core.database import get_db
 from core.password import verify_password, hash_password, needs_rehash
+from models.tenant import Tenant
 from models.user import User
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,11 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     if req.tenant_id:
         filters.append(User.tenant_id == req.tenant_id)
 
-    result = await db.execute(select(User).where(and_(*filters)))
+    result = await db.execute(
+        select(User)
+        .join(Tenant, Tenant.id == User.tenant_id)
+        .where(and_(*filters, Tenant.is_active.is_(True)))
+    )
     matches = result.scalars().all()
 
     if len(matches) != 1 or not matches[0].password_hash:
@@ -153,7 +158,12 @@ async def change_password(
         # the users table — they cannot change their password here.
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    res = await db.execute(select(User).where(User.id == user_uuid))
+    res = await db.execute(
+        select(User).where(and_(
+            User.id == user_uuid,
+            User.tenant_id == current_user.tenant_id,
+        ))
+    )
     user = res.scalar_one_or_none()
     if not user or not user.is_active or not user.password_hash:
         raise HTTPException(status_code=401, detail="Invalid credentials")

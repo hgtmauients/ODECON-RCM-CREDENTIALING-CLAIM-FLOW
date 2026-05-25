@@ -26,16 +26,19 @@ class RulesEngine:
     def __init__(self, db: AsyncSession):
         self.db = db
     
-    async def validate_claim(self, claim_id: int, tenant_id: str = None) -> Dict[str, Any]:
+    async def validate_claim(self, claim_id: int, tenant_id: str, *, auto_commit: bool = True) -> Dict[str, Any]:
         """
         Main entry point: Validate claim against all payer rules
         Returns validation results with errors, warnings, and actions taken
         """
         try:
+            if not tenant_id:
+                raise ValueError("tenant_id is required for validate_claim")
             # Get claim with relationships (tenant-scoped)
-            claim_query = select(Claim).where(Claim.id == claim_id)
-            if tenant_id:
-                claim_query = claim_query.where(Claim.tenant_id == tenant_id)
+            claim_query = select(Claim).where(and_(
+                Claim.id == claim_id,
+                Claim.tenant_id == tenant_id,
+            ))
             claim_result = await self.db.execute(claim_query)
             claim = claim_result.scalar_one_or_none()
             
@@ -51,8 +54,7 @@ class RulesEngine:
                     PayerRule.is_active == True,
                 ))
             )
-            if tenant_id:
-                rules_query = rules_query.where(PayerProfile.tenant_id == tenant_id)
+            rules_query = rules_query.where(PayerProfile.tenant_id == tenant_id)
             rules_result = await self.db.execute(rules_query.order_by(PayerRule.priority.desc()))
             rules = rules_result.scalars().all()
             
@@ -111,7 +113,10 @@ class RulesEngine:
                 modifiers_added=validation_results["modifiers_added"]
             )
             self.db.add(validation_record)
-            await self.db.commit()
+            if auto_commit:
+                await self.db.commit()
+            else:
+                await self.db.flush()
             
             logger.info(f"Claim validation complete", extra={
                 "claim_id": claim_id,
@@ -290,6 +295,8 @@ class RulesEngine:
         Get summary of all active rules for a payer
         Useful for displaying what will happen during validation
         """
+        if not tenant_id:
+            return {"total_rules": 0, "rules": [], "error": "tenant_id is required"}
         try:
             summary_query = (
                 select(PayerRule)
@@ -299,8 +306,7 @@ class RulesEngine:
                     PayerRule.is_active == True,
                 ))
             )
-            if tenant_id:
-                summary_query = summary_query.where(PayerProfile.tenant_id == tenant_id)
+            summary_query = summary_query.where(PayerProfile.tenant_id == tenant_id)
             rules_result = await self.db.execute(summary_query.order_by(PayerRule.priority.desc()))
             rules = rules_result.scalars().all()
             

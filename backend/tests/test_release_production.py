@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -82,6 +83,13 @@ def test_run_security_gate_includes_hardening_regression_suites(monkeypatch):
     assert "test_payer_role_gates.py" in cmd
     assert "test_audit_helper.py" in cmd
     assert "test_cors_runtime_policy.py" in cmd
+    assert "test_tenant_isolation_http.py" in cmd
+    assert "test_tenant_escape_vectors.py" in cmd
+    assert "test_rate_limit_keying.py" in cmd
+    assert "test_verify_production_canary.py" in cmd
+    assert "test_change_password_tenant_scope.py" in cmd
+    assert "test_secondary_service_tenant_scope.py" in cmd
+    assert "test_rules_engine_tenant_scope.py" in cmd
 
 
 def test_slo_review_gate_passes_with_fresh_attestation(tmp_path):
@@ -124,3 +132,109 @@ def test_slo_review_gate_fails_when_attestation_is_stale(tmp_path):
         max_age_days=14,
     )
     assert out["ok"] is False
+
+
+def test_ensure_release_ref_integrity_rejects_non_main_branch(monkeypatch):
+    def fake_run(cmd, *, cwd=None, capture_output=False):
+        if cmd[:4] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return _cp(0, stdout="feature/tenant-fix\n")
+        return _cp(0, stdout="abc123\n")
+
+    monkeypatch.setattr(rp, "_run", fake_run)
+    try:
+        rp._ensure_release_ref_integrity(Path("C:/tmp"))
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "local main" in str(exc)
+
+
+def test_ensure_release_ref_integrity_rejects_head_mismatch(monkeypatch):
+    def fake_run(cmd, *, cwd=None, capture_output=False):
+        if cmd[:4] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return _cp(0, stdout="main\n")
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return _cp(0, stdout="111\n")
+        if cmd == ["git", "rev-parse", "main"]:
+            return _cp(0, stdout="222\n")
+        return _cp(1, stderr="unexpected command")
+
+    monkeypatch.setattr(rp, "_run", fake_run)
+    try:
+        rp._ensure_release_ref_integrity(Path("C:/tmp"))
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "does not match local main" in str(exc)
+
+
+def test_main_runs_slo_gate_before_deploy(monkeypatch, tmp_path):
+    order: list[str] = []
+    monkeypatch.setattr(rp, "_repo_root_from_script", lambda: tmp_path)
+    (tmp_path / "webapp").mkdir()
+    monkeypatch.setattr(rp, "_ensure_git_clean", lambda _repo: order.append("clean"))
+    monkeypatch.setattr(rp, "_ensure_release_ref_integrity", lambda _repo: order.append("ref"))
+    monkeypatch.setattr(rp, "_run_security_gate", lambda _repo: order.append("security"))
+    monkeypatch.setattr(
+        rp,
+        "_run_slo_review_gate",
+        lambda *_args, **_kwargs: (order.append("slo"), {"ok": True})[1],
+    )
+    monkeypatch.setattr(rp, "_create_deploy_archive", lambda _repo: (order.append("archive"), tmp_path / "bundle.tar.gz")[1])
+    monkeypatch.setattr(rp, "_upload_and_extract_archive", lambda *_args, **_kwargs: order.append("upload"))
+    monkeypatch.setattr(rp, "_deploy_backend", lambda **_kwargs: order.append("deploy"))
+    monkeypatch.setattr(rp, "_run_post_deploy_smoke", lambda _server: {"ok": True})
+    monkeypatch.setattr(rp, "_run_route_smoke", lambda _server: {"ok": True, "checks": []})
+    monkeypatch.setattr(rp, "_run_error_rate_guard", lambda *_args, **_kwargs: {"ok": True, "error_lines": 0})
+    monkeypatch.setattr(rp, "_run_canary", lambda **_kwargs: {"go": True})
+    monkeypatch.setattr(sys, "argv", ["release_production.py", "--skip-git-push", "--skip-vercel"])
+
+    rc = rp.main()
+    assert rc == 0
+    assert order.index("slo") < order.index("deploy")
+
+
+def test_main_skip_canary_marks_partial_and_returns_no_go(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(rp, "_repo_root_from_script", lambda: tmp_path)
+    (tmp_path / "webapp").mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_production.py",
+            "--allow-dirty",
+            "--skip-git-push",
+            "--skip-vercel",
+            "--skip-hetzner",
+            "--skip-security-gate",
+            "--skip-post-smoke",
+            "--skip-route-smoke",
+            "--skip-error-rate-guard",
+            "--skip-slo-review-gate",
+            "--skip-canary",
+        ],
+    )
+
+    rc = rp.main()
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 10
+    assert payload["partial"] is True
+    assert payload["go"] is False
+
+
+def test_main_rejects_allow_dirty_when_backend_deploy_enabled(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(rp, "_repo_root_from_script", lambda: tmp_path)
+    (tmp_path / "webapp").mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_production.py",
+            "--allow-dirty",
+            "--skip-git-push",
+            "--skip-vercel",
+        ],
+    )
+
+    rc = rp.main()
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 10
+    assert "allow-dirty" in payload["error"]

@@ -28,6 +28,7 @@ from jwt import PyJWKClient
 from core.security_signal import log_security_signal
 from core.database import get_db
 from models.user import User
+from models.tenant import Tenant
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,32 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token does not contain a tenant_id claim",
         )
+    try:
+        token_tenant_uuid = UUID(str(token_tenant_id))
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token tenant_id claim is invalid",
+        )
+
+    tenant_result = await db.execute(
+        select(Tenant.id).where(
+            and_(
+                Tenant.id == token_tenant_uuid,
+                Tenant.is_active.is_(True),
+            )
+        )
+    )
+    if not tenant_result.scalar_one_or_none():
+        log_security_signal(
+            "auth_tenant_inactive_or_missing",
+            user_id=payload.get("sub", ""),
+            token_tenant_id=token_tenant_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tenant is inactive",
+        )
 
     token_roles = payload.get("roles", []) or []
     roles = list(token_roles)
@@ -221,7 +248,7 @@ async def get_current_user(
                 select(User).where(
                     and_(
                         User.id == user_uuid,
-                        User.tenant_id == token_tenant_id,
+                        User.tenant_id == token_tenant_uuid,
                     )
                 )
             )
@@ -240,8 +267,48 @@ async def get_current_user(
             roles = list(user_row.roles or [])
             is_super_admin = any(r == "super_admin" for r in roles)
         except ValueError:
-            # Non-UUID subjects can come from external IdPs; keep JWT claims path.
-            pass
+            token_email = str(payload.get("email", "")).strip().lower()
+            if ENV == "production":
+                if not token_email:
+                    log_security_signal(
+                        "auth_oidc_subject_unmapped",
+                        user_id=str(user_id),
+                        token_tenant_id=token_tenant_id,
+                        reason="missing_email_claim",
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid token",
+                    )
+
+                oidc_user_result = await db.execute(
+                    select(User).where(
+                        and_(
+                            User.email == token_email,
+                            User.tenant_id == token_tenant_uuid,
+                        )
+                    )
+                )
+                oidc_users = oidc_user_result.scalars().all()
+                if len(oidc_users) != 1 or not oidc_users[0].is_active:
+                    log_security_signal(
+                        "auth_oidc_subject_unmapped",
+                        user_id=str(user_id),
+                        token_tenant_id=token_tenant_id,
+                        token_email=token_email,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid token",
+                    )
+                roles = list(oidc_users[0].roles or [])
+                is_super_admin = any(r == "super_admin" for r in roles)
+            else:
+                logger.info(
+                    "Non-UUID subject accepted in %s without DB role revalidation: sub=%s",
+                    ENV,
+                    user_id,
+                )
 
     if header_tenant_id and header_tenant_id != token_tenant_id:
         if not is_super_admin:
@@ -254,6 +321,32 @@ async def get_current_user(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="X-Tenant-ID override requires super_admin role",
+            )
+        try:
+            requested_tenant_uuid = UUID(str(header_tenant_id))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="X-Tenant-ID must be a valid tenant UUID",
+            )
+        requested_tenant_result = await db.execute(
+            select(Tenant.id).where(
+                and_(
+                    Tenant.id == requested_tenant_uuid,
+                    Tenant.is_active.is_(True),
+                )
+            )
+        )
+        if not requested_tenant_result.scalar_one_or_none():
+            log_security_signal(
+                "tenant_override_target_inactive_or_missing",
+                user_id=payload.get("sub", ""),
+                token_tenant_id=token_tenant_id,
+                requested_tenant_id=header_tenant_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="X-Tenant-ID target tenant is inactive or missing",
             )
         logger.info(
             "Super-admin tenant override: user=%s token_tenant=%s acting_as=%s",

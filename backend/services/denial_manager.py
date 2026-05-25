@@ -29,7 +29,7 @@ class DenialManager:
     def __init__(self, db: AsyncSession):
         self.db = db
     
-    async def process_835_denials(self, edi_file_id: int, denials_data: List[Dict[str, Any]], tenant_id: str = None) -> Dict[str, Any]:
+    async def process_835_denials(self, edi_file_id: int, denials_data: List[Dict[str, Any]], tenant_id: str) -> Dict[str, Any]:
         """
         Process denials from 835 file
         Auto-creates DenialCases, assigns playbooks, routes to queues
@@ -47,6 +47,8 @@ class DenialManager:
                 }]
         """
         try:
+            if not tenant_id:
+                raise ValueError("tenant_id is required for process_835_denials")
             results = {
                 "denials_processed": 0,
                 "cases_created": 0,
@@ -74,9 +76,10 @@ class DenialManager:
                         continue
 
                     # Find claim (tenant-scoped)
-                    claim_query = select(Claim).where(Claim.claim_number == claim_number)
-                    if tenant_id:
-                        claim_query = claim_query.where(Claim.tenant_id == tenant_id)
+                    claim_query = select(Claim).where(and_(
+                        Claim.claim_number == claim_number,
+                        Claim.tenant_id == tenant_id,
+                    ))
                     claim_result = await self.db.execute(claim_query)
                     claim = claim_result.scalar_one_or_none()
 
@@ -94,7 +97,7 @@ class DenialManager:
                     category = carc.category if carc else "uncategorized"
                     
                     # Find appropriate playbook (tenant-scoped via _find_playbook update below)
-                    playbook = await self._find_playbook(carc_code_only, denial.get("rarc"), category, tenant_id=tenant_id or str(claim.tenant_id))
+                    playbook = await self._find_playbook(carc_code_only, denial.get("rarc"), category, tenant_id=tenant_id)
 
                     # Get payer for appeal window calculation (tenant-scoped)
                     payer = None
@@ -117,7 +120,7 @@ class DenialManager:
                     # cases when the same 835 is reprocessed/reuploaded.
                     existing_case_result = await self.db.execute(
                         select(DenialCase.id).where(and_(
-                            DenialCase.tenant_id == (tenant_id or str(claim.tenant_id)),
+                            DenialCase.tenant_id == tenant_id,
                             DenialCase.claim_id == claim.id,
                             DenialCase.claim_line_id == denial.get("line_id"),
                             DenialCase.carc_code == carc_code_only,
@@ -135,7 +138,7 @@ class DenialManager:
 
                     # Create denial case
                     denial_case = DenialCase(
-                        tenant_id=tenant_id or str(claim.tenant_id),
+                        tenant_id=tenant_id,
                         claim_id=claim.id,
                         claim_line_id=denial.get("line_id"),
                         carc_code=carc_code_only,
@@ -199,7 +202,7 @@ class DenialManager:
             logger.error(f"Error processing 835 denials: {e}")
             raise
     
-    async def generate_appeal(self, denial_case_id: int, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+    async def generate_appeal(self, denial_case_id: int, tenant_id: str) -> Dict[str, Any]:
         """
         Generate appeal packet from template
         Returns appeal letter with merge fields filled
@@ -208,9 +211,12 @@ class DenialManager:
         authenticated principal to prevent cross-tenant data leakage.
         """
         try:
-            denial_query = select(DenialCase).where(DenialCase.id == denial_case_id)
-            if tenant_id:
-                denial_query = denial_query.where(DenialCase.tenant_id == tenant_id)
+            if not tenant_id:
+                raise ValueError("tenant_id is required for generate_appeal")
+            denial_query = select(DenialCase).where(and_(
+                DenialCase.id == denial_case_id,
+                DenialCase.tenant_id == tenant_id,
+            ))
             denial_result = await self.db.execute(denial_query)
             denial_case = denial_result.scalar_one_or_none()
 
@@ -220,8 +226,7 @@ class DenialManager:
             if not denial_case.playbook_id:
                 raise ValueError("No playbook assigned to this denial")
 
-            # Tenant comes from the case (already validated above) for downstream lookups
-            scoped_tenant_id = tenant_id or str(denial_case.tenant_id)
+            scoped_tenant_id = tenant_id
 
             playbook_result = await self.db.execute(
                 select(DenialPlaybook).where(and_(
@@ -297,6 +302,7 @@ class DenialManager:
     
     async def analyze_denial_trends(
         self,
+        tenant_id: str,
         payer_id: Optional[int] = None,
         date_range: Optional[tuple] = None,
         limit: int = 10
@@ -306,12 +312,17 @@ class DenialManager:
         Identifies patterns and recommends rule updates
         """
         try:
+            if not tenant_id:
+                raise ValueError("tenant_id is required for analyze_denial_trends")
             # Build query
-            query = select(DenialCase)
+            query = select(DenialCase).where(DenialCase.tenant_id == tenant_id)
             
             if payer_id:
                 # Join with claims to filter by payer
-                query = query.join(Claim).where(Claim.payer_id == payer_id)
+                query = query.join(Claim).where(and_(
+                    Claim.payer_id == payer_id,
+                    Claim.tenant_id == tenant_id,
+                ))
             
             if date_range:
                 query = query.where(and_(
@@ -343,13 +354,12 @@ class DenialManager:
         carc: str,
         rarc: Optional[str],
         category: str,
-        tenant_id: Optional[str] = None,
+        tenant_id: str,
     ) -> Optional[DenialPlaybook]:
         """Find best matching playbook for denial codes (tenant-scoped)."""
         try:
-            tenant_filter = []
-            if tenant_id:
-                tenant_filter.append(DenialPlaybook.tenant_id == tenant_id)
+            if not tenant_id:
+                raise ValueError("tenant_id is required for _find_playbook")
 
             if rarc:
                 result = await self.db.execute(
@@ -357,7 +367,7 @@ class DenialManager:
                         DenialPlaybook.carc_code == carc,
                         DenialPlaybook.rarc_code == rarc,
                         DenialPlaybook.is_active == True,
-                        *tenant_filter,
+                        DenialPlaybook.tenant_id == tenant_id,
                     ))
                 )
                 playbook = result.scalar_one_or_none()
@@ -368,7 +378,7 @@ class DenialManager:
                 select(DenialPlaybook).where(and_(
                     DenialPlaybook.carc_code == carc,
                     DenialPlaybook.is_active == True,
-                    *tenant_filter,
+                    DenialPlaybook.tenant_id == tenant_id,
                 ))
             )
             playbook = result.scalar_one_or_none()
@@ -379,7 +389,7 @@ class DenialManager:
                 select(DenialPlaybook).where(and_(
                     DenialPlaybook.denial_category == category,
                     DenialPlaybook.is_active == True,
-                    *tenant_filter,
+                    DenialPlaybook.tenant_id == tenant_id,
                 ))
             )
             playbook = result.scalar_one_or_none()
@@ -490,7 +500,7 @@ class AutoPostingEngine:
     def __init__(self, db: AsyncSession):
         self.db = db
     
-    async def auto_post_835(self, edi_file_id: int, payments_data: List[Dict[str, Any]], tenant_id: str = None) -> Dict[str, Any]:
+    async def auto_post_835(self, edi_file_id: int, payments_data: List[Dict[str, Any]], tenant_id: str) -> Dict[str, Any]:
         """
         Auto-post payments from 835 file
         
@@ -508,6 +518,8 @@ class AutoPostingEngine:
                 }]
         """
         try:
+            if not tenant_id:
+                raise ValueError("tenant_id is required for auto_post_835")
             results = {
                 "claims_posted": 0,
                 "total_paid": 0.0,
@@ -518,9 +530,10 @@ class AutoPostingEngine:
             for payment in payments_data:
                 try:
                     # Find claim (tenant-scoped)
-                    claim_query = select(Claim).where(Claim.claim_number == payment["claim_number"])
-                    if tenant_id:
-                        claim_query = claim_query.where(Claim.tenant_id == tenant_id)
+                    claim_query = select(Claim).where(and_(
+                        Claim.claim_number == payment["claim_number"],
+                        Claim.tenant_id == tenant_id,
+                    ))
                     claim_result = await self.db.execute(claim_query)
                     claim = claim_result.scalar_one_or_none()
                     

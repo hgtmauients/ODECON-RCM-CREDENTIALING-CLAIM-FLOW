@@ -125,6 +125,42 @@ class TestClaimLifecycle:
         assert resp["success"] is True
         rules_engine_instance.validate_claim.assert_awaited_once_with(123, tenant_id=TENANT_ID)
 
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_batch_validate_uses_non_committing_rules_engine_path(self):
+        from api.rcm.claims import batch_validate_claims_alias
+
+        mock_db = MagicMock()
+        claim_row = MagicMock()
+        claim_row.id = 1
+        claim_row.tenant_id = TENANT_ID
+        claim_result = MagicMock()
+        claim_result.scalar_one_or_none.return_value = claim_row
+        mock_db.execute = AsyncMock(return_value=claim_result)
+        nested_tx = MagicMock()
+        nested_tx.__aenter__ = AsyncMock(return_value=None)
+        nested_tx.__aexit__ = AsyncMock(return_value=False)
+        mock_db.begin_nested = MagicMock(return_value=nested_tx)
+        mock_db.add = MagicMock()
+        mock_db.commit = AsyncMock()
+        mock_db.rollback = AsyncMock()
+
+        principal = make_principal()
+        with patch("api.rcm.claims.RulesEngine") as rules_engine_cls:
+            rules_engine_instance = rules_engine_cls.return_value
+            rules_engine_instance.validate_claim = AsyncMock(return_value={"passed": True, "errors": [], "rules_matched": 1})
+
+            resp = await batch_validate_claims_alias(
+                body={"claim_ids": [1]},
+                request=MagicMock(),
+                db=mock_db,
+                current_user=principal,
+            )
+
+        assert resp["success"] is True
+        rules_engine_instance.validate_claim.assert_awaited_once_with(1, tenant_id=TENANT_ID, auto_commit=False)
+        mock_db.rollback.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_submit_batch_rejects_already_submitted_claim(self):
         from api.rcm.claims import submit_claim_batch
@@ -409,6 +445,50 @@ class TestEDIProcessor:
         assert result["duplicate_upload_id"] == 99
         assert edi_file.status == "duplicate"
         mock_db.commit.assert_awaited_once()
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_parse_835_requires_tenant_id(self):
+        from services.edi_processor import EDIProcessor
+
+        mock_db = AsyncMock()
+        processor = EDIProcessor(mock_db)
+
+        with pytest.raises(ValueError, match="tenant_id is required to parse 835"):
+            await processor.parse_835("/tmp/inbound.835", tenant_id=None)
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_generate_270_requires_tenant_id(self):
+        from services.edi_processor import EDIProcessor
+
+        mock_db = AsyncMock()
+        processor = EDIProcessor(mock_db)
+
+        with pytest.raises(ValueError, match="tenant_id is required to generate 270"):
+            await processor.generate_270(patient_id=1, payer_id=1, tenant_id=None)
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_get_submission_batch_status_requires_tenant_id(self):
+        from services.edi_processor import EDIProcessor
+
+        mock_db = AsyncMock()
+        processor = EDIProcessor(mock_db)
+
+        with pytest.raises(ValueError, match="tenant_id is required to get submission batch status"):
+            await processor.get_submission_batch_status(batch_id="batch-1", tenant_id=None)
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_parse_271_requires_tenant_id(self):
+        from services.edi_processor import EDIProcessor
+
+        mock_db = AsyncMock()
+        processor = EDIProcessor(mock_db)
+
+        with pytest.raises(ValueError, match="tenant_id is required to parse 271"):
+            await processor.parse_271("/tmp/inbound.271", tenant_id=None)
 
 
 class TestClearinghousePolling:

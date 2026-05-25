@@ -408,6 +408,33 @@ async def update_draft_claim(
                 detail=f"Cannot edit claim in state '{claim.state}' — only draft claims are editable. Use the corrected-claim flow instead.",
             )
 
+        async def _require_tenant_fk(entity_name: str, model, raw_id: Any):
+            """Reject cross-tenant or malformed FK references before draft update."""
+            if raw_id is None:
+                return
+            try:
+                entity_id = int(raw_id)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail=f"{entity_name}_id must be an integer")
+            if entity_id <= 0:
+                raise HTTPException(status_code=422, detail=f"{entity_name}_id must be positive")
+
+            exists = await db.execute(
+                select(model.id).where(and_(
+                    model.id == entity_id,
+                    model.tenant_id == current_user.tenant_id,
+                ))
+            )
+            if not exists.scalar_one_or_none():
+                raise HTTPException(status_code=422, detail=f"{entity_name}_id {entity_id} not in tenant")
+
+        if "patient_id" in updates:
+            await _require_tenant_fk("patient", Patient, updates.get("patient_id"))
+        if "payer_id" in updates:
+            await _require_tenant_fk("payer", PayerProfile, updates.get("payer_id"))
+        if "provider_id" in updates:
+            await _require_tenant_fk("provider", ProviderCredentialing, updates.get("provider_id"))
+
         # total_charges is derived from line items, not user-set, so it's
         # excluded from the editable set (closes v9-M4: desync risk).
         editable = {
@@ -466,35 +493,35 @@ async def batch_validate_claims_alias(
 
     for cid in claim_ids:
         try:
-            check = await db.execute(
-                select(Claim).where(and_(
-                    Claim.id == cid,
-                    Claim.tenant_id == current_user.tenant_id,
-                ))
-            )
-            claim = check.scalar_one_or_none()
-            if not claim:
-                results.append({"claim_id": cid, "ok": False, "error": "Claim not found"})
-                failed += 1
-                continue
+            async with db.begin_nested():
+                check = await db.execute(
+                    select(Claim).where(and_(
+                        Claim.id == cid,
+                        Claim.tenant_id == current_user.tenant_id,
+                    ))
+                )
+                claim = check.scalar_one_or_none()
+                if not claim:
+                    results.append({"claim_id": cid, "ok": False, "error": "Claim not found"})
+                    failed += 1
+                    continue
 
-            r = await rules_engine.validate_claim(cid, tenant_id=current_user.tenant_id)
-            ok = bool(r.get("passed"))
-            if ok:
-                claim.state = "validated"
-                claim.validated_date = _utcnow()
-                claim.current_queue = "ready_to_submit"
-                passed += 1
-            else:
-                failed += 1
-            results.append({
-                "claim_id": cid,
-                "ok": ok,
-                "rules_matched": r.get("rules_matched"),
-                "errors": r.get("errors", []),
-            })
+                r = await rules_engine.validate_claim(cid, tenant_id=current_user.tenant_id, auto_commit=False)
+                ok = bool(r.get("passed"))
+                if ok:
+                    claim.state = "validated"
+                    claim.validated_date = _utcnow()
+                    claim.current_queue = "ready_to_submit"
+                    passed += 1
+                else:
+                    failed += 1
+                results.append({
+                    "claim_id": cid,
+                    "ok": ok,
+                    "rules_matched": r.get("rules_matched"),
+                    "errors": r.get("errors", []),
+                })
         except Exception as e:
-            await db.rollback()
             results.append({"claim_id": cid, "ok": False, "error": str(e)})
             failed += 1
 

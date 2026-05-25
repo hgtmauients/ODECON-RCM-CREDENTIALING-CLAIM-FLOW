@@ -253,6 +253,114 @@ async def test_idor_cross_tenant_foreign_keys_blocked_on_claim_create(setup_db):
 
 
 @pytest.mark.asyncio(loop_scope="module")
+async def test_idor_cross_tenant_foreign_keys_blocked_on_claim_update(setup_db):
+    """
+    Exploit attempt: tenant B updates its draft claim to point at tenant A
+    patient/payer IDs. Expectation: 422 validation error.
+    """
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        headers_a = await _auth_headers(ac, TENANT_A_EMAIL, TENANT_A_ID)
+        headers_b = await _auth_headers(ac, TENANT_B_EMAIL, TENANT_B_ID)
+
+        payer_a_resp = await ac.post(
+            "/api/rcm/payers",
+            headers=headers_a,
+            json={
+                "name": "Escape Update Payer A",
+                "payer_id": f"ESUPA{uuid4().hex[:8].upper()}",
+                "format_837_type": "837P",
+                "filing_limit_days": 365,
+                "supports_270_271": True,
+                "supports_276_277": True,
+                "supports_835_era": True,
+                "connection_method": "sftp",
+            },
+        )
+        assert payer_a_resp.status_code == 200, payer_a_resp.text
+        payer_a_id = payer_a_resp.json()["data"]["id"]
+
+        patient_a_resp = await ac.post(
+            "/api/rcm/patients",
+            headers=headers_a,
+            json={
+                "first_name": "Victim",
+                "last_name": "UpdateA",
+                "date_of_birth": "1985-01-01",
+                "gender": "F",
+                "address_line_1": "100 Test Street",
+                "city": "Honolulu",
+                "state": "HI",
+                "zip_code": "96801",
+                "member_id": f"ESCAPE-UPD-A-{uuid4().hex[:8]}",
+                "payer_id": payer_a_id,
+                "relationship_to_subscriber": "18",
+            },
+        )
+        assert patient_a_resp.status_code == 200, patient_a_resp.text
+        patient_a_id = patient_a_resp.json()["data"]["id"]
+
+        payer_b_resp = await ac.post(
+            "/api/rcm/payers",
+            headers=headers_b,
+            json={
+                "name": "Escape Update Payer B",
+                "payer_id": f"ESUPB{uuid4().hex[:8].upper()}",
+                "format_837_type": "837P",
+                "filing_limit_days": 365,
+                "supports_270_271": True,
+                "supports_276_277": True,
+                "supports_835_era": True,
+                "connection_method": "sftp",
+            },
+        )
+        assert payer_b_resp.status_code == 200, payer_b_resp.text
+        payer_b_id = payer_b_resp.json()["data"]["id"]
+
+        patient_b_resp = await ac.post(
+            "/api/rcm/patients",
+            headers=headers_b,
+            json={
+                "first_name": "Owner",
+                "last_name": "UpdateB",
+                "date_of_birth": "1985-01-01",
+                "gender": "F",
+                "address_line_1": "100 Test Street",
+                "city": "Honolulu",
+                "state": "HI",
+                "zip_code": "96801",
+                "member_id": f"ESCAPE-UPD-B-{uuid4().hex[:8]}",
+                "payer_id": payer_b_id,
+                "relationship_to_subscriber": "18",
+            },
+        )
+        assert patient_b_resp.status_code == 200, patient_b_resp.text
+        patient_b_id = patient_b_resp.json()["data"]["id"]
+
+        claim_b_resp = await ac.post(
+            "/api/rcm/claims",
+            headers=headers_b,
+            json={
+                "patient_id": patient_b_id,
+                "payer_id": payer_b_id,
+                "service_date_from": str(date.today()),
+                "total_charges": 95.00,
+                "claim_type": "professional",
+            },
+        )
+        assert claim_b_resp.status_code == 200, claim_b_resp.text
+        claim_b_id = claim_b_resp.json()["data"]["id"]
+
+        update_attack = await ac.put(
+            f"/api/rcm/claims/{claim_b_id}",
+            headers=headers_b,
+            json={"patient_id": patient_a_id, "payer_id": payer_a_id},
+        )
+        assert update_attack.status_code == 422
+        assert "not in tenant" in update_attack.text
+
+
+@pytest.mark.asyncio(loop_scope="module")
 async def test_super_admin_impersonation_audit_keeps_original_token_tenant(setup_db):
     """
     Exploit-style verification:

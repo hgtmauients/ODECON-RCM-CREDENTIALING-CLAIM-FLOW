@@ -701,6 +701,8 @@ class EDIProcessor:
         Idempotency: computes SHA-256 of file content. If a (tenant_id, hash) row
         already exists in edi_files, returns is_duplicate=True without re-processing.
         """
+        if not tenant_id:
+            raise ValueError("tenant_id is required to parse 835")
         try:
             import hashlib
 
@@ -805,8 +807,15 @@ class EDIProcessor:
 
     async def generate_270(self, patient_id: int, payer_id: int, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Generate 270 Eligibility Request."""
+        if not tenant_id:
+            raise ValueError("tenant_id is required to generate 270")
         try:
-            payer_result = await self.db.execute(select(PayerProfile).where(PayerProfile.id == payer_id))
+            payer_result = await self.db.execute(
+                select(PayerProfile).where(and_(
+                    PayerProfile.id == payer_id,
+                    PayerProfile.tenant_id == tenant_id,
+                ))
+            )
             payer = payer_result.scalar_one_or_none()
             if not payer or not payer.supports_270_271:
                 raise ValueError("Payer does not support 270/271 eligibility")
@@ -815,7 +824,7 @@ class EDIProcessor:
             edi_content = f"ISA*...*270*{icn}~\n"
 
             filename = f"eligibility_{datetime.now().strftime('%Y%m%d_%H%M%S')}.270"
-            outbound_dir = Path(EDI_STORAGE_PATH) / (tenant_id or "default") / "outbound"
+            outbound_dir = Path(EDI_STORAGE_PATH) / tenant_id / "outbound"
             outbound_dir.mkdir(parents=True, exist_ok=True)
             file_path = str(outbound_dir / filename)
 
@@ -845,6 +854,8 @@ class EDIProcessor:
 
     async def parse_271(self, file_path: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Parse 271 Eligibility Response."""
+        if not tenant_id:
+            raise ValueError("tenant_id is required to parse 271")
         try:
             logger.info(f"Parsing 271 file: {file_path}")
             edi_file = EDIFile(
@@ -891,10 +902,13 @@ class EDIProcessor:
 
     async def get_submission_batch_status(self, batch_id: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Get status of all claims in a submission batch."""
+        if not tenant_id:
+            raise ValueError("tenant_id is required to get submission batch status")
         try:
-            query = select(Claim).where(Claim.batch_id == batch_id)
-            if tenant_id:
-                query = query.where(Claim.tenant_id == tenant_id)
+            query = select(Claim).where(and_(
+                Claim.batch_id == batch_id,
+                Claim.tenant_id == tenant_id,
+            ))
 
             result = await self.db.execute(query)
             claims = result.scalars().all()

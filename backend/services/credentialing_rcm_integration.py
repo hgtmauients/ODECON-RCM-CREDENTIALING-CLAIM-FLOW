@@ -31,9 +31,8 @@ async def create_payer_enrollment_cases(provider_id: str, db: AsyncSession, tena
         query = select(PayerProfile).where(and_(
             PayerProfile.is_active == True,
             PayerProfile.is_draft == False,
+            PayerProfile.tenant_id == tenant_id,
         ))
-        if tenant_id:
-            query = query.where(PayerProfile.tenant_id == tenant_id)
 
         payers_result = await db.execute(query)
         payers = payers_result.scalars().all()
@@ -46,7 +45,8 @@ async def create_payer_enrollment_cases(provider_id: str, db: AsyncSession, tena
             existing_result = await db.execute(
                 select(PayerCredentialingCase).where(and_(
                     PayerCredentialingCase.provider_id == provider_id,
-                    PayerCredentialingCase.payer_id == payer.id
+                    PayerCredentialingCase.payer_id == payer.id,
+                    PayerCredentialingCase.tenant_id == tenant_id,
                 ))
             )
             existing_case = existing_result.scalar_one_or_none()
