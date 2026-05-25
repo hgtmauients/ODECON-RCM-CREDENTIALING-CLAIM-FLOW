@@ -6,7 +6,7 @@
 
 import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation } from 'react-query';
 import { payerProfileService, type PayerRule } from '@/services/payerProfileService';
 import { PremiumIcon } from '@/services/iconReplacementService';
 import { logger } from '@/utils/logger';
@@ -15,7 +15,6 @@ import toast from 'react-hot-toast';
 export default function RuleBuilder() {
   const { payerId } = useParams<{ payerId: string }>();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const [showNewRuleModal, setShowNewRuleModal] = useState(false);
   const [editingRule, setEditingRule] = useState<PayerRule | null>(null);
 
@@ -483,7 +482,7 @@ interface RuleEditorModalProps {
   isSaving: boolean;
 }
 
-const RuleEditorModal: React.FC<RuleEditorModalProps> = ({ payerId, existingRule, onClose, onSave, isSaving }) => {
+const RuleEditorModal: React.FC<RuleEditorModalProps> = ({ existingRule, onClose, onSave, isSaving }) => {
   const [ruleName, setRuleName] = useState(existingRule?.rule_name || '');
   const [description, setDescription] = useState(existingRule?.description || '');
   const [priority, setPriority] = useState(existingRule?.priority || 0);

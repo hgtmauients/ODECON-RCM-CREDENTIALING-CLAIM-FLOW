@@ -184,6 +184,7 @@ async def test_super_admin_override_rejects_inactive_target_tenant():
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
     db = _FakeDB([
         SimpleNamespace(id=uuid.uuid4()),      # token tenant active check
+        SimpleNamespace(),  # set_tenant_context side effect query
         SimpleNamespace(is_active=True, roles=["super_admin"]),  # user revalidation
         None,  # requested tenant active check fails
     ])

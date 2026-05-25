@@ -41,10 +41,10 @@ describe('AuthProvider session behavior', () => {
       tenant_id: 'tenant-a',
       roles: ['admin'],
     });
+    vi.mocked(apiService.post).mockResolvedValue({ success: true } as any);
   });
 
   it('rehydrates from sessionStorage and clears legacy localStorage keys', async () => {
-    sessionStorage.setItem('claimflow_token', 'session-token');
     sessionStorage.setItem(
       'claimflow_user',
       JSON.stringify({ email: 'u@example.com', tenant_id: 'tenant-a', roles: ['admin'] })
@@ -62,7 +62,6 @@ describe('AuthProvider session behavior', () => {
       expect(screen.getByTestId('auth-state')).toHaveTextContent('yes');
     });
     expect(screen.getByTestId('tenant')).toHaveTextContent('tenant-a');
-    expect(apiService.setAuthToken).toHaveBeenCalledWith('session-token');
     expect(apiService.setTenantId).toHaveBeenCalledWith('tenant-a');
     expect(localStorage.getItem('claimflow_token')).toBeNull();
     expect(localStorage.getItem('claimflow_user')).toBeNull();
@@ -70,7 +69,6 @@ describe('AuthProvider session behavior', () => {
 
   it('stores login session in sessionStorage and clears on logout', async () => {
     vi.mocked(apiService.post).mockResolvedValue({
-      access_token: 'new-token',
       user: {
         email: 'user@example.com',
         tenant_id: 'tenant-b',
@@ -91,7 +89,7 @@ describe('AuthProvider session behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('auth-state')).toHaveTextContent('yes');
     });
-    expect(sessionStorage.getItem('claimflow_token')).toBe('new-token');
+    expect(sessionStorage.getItem('claimflow_token')).toBeNull();
     expect(sessionStorage.getItem('claimflow_user')).toContain('"tenant_id":"tenant-b"');
 
     await act(async () => {
@@ -100,12 +98,10 @@ describe('AuthProvider session behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('auth-state')).toHaveTextContent('no');
     });
-    expect(sessionStorage.getItem('claimflow_token')).toBeNull();
     expect(sessionStorage.getItem('claimflow_user')).toBeNull();
   });
 
   it('clears invalid session payloads on boot', async () => {
-    sessionStorage.setItem('claimflow_token', 'bad-token');
     sessionStorage.setItem('claimflow_user', '{not-json');
 
     render(
@@ -117,12 +113,10 @@ describe('AuthProvider session behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('auth-state')).toHaveTextContent('no');
     });
-    expect(sessionStorage.getItem('claimflow_token')).toBeNull();
     expect(sessionStorage.getItem('claimflow_user')).toBeNull();
   });
 
   it('setTenant only applies for super_admin users', async () => {
-    sessionStorage.setItem('claimflow_token', 'session-token');
     sessionStorage.setItem(
       'claimflow_user',
       JSON.stringify({ email: 'u@example.com', tenant_id: 'tenant-a', roles: ['super_admin'] })
@@ -170,12 +164,10 @@ describe('AuthProvider session behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('auth-state')).toHaveTextContent('no');
     });
-    expect(sessionStorage.getItem('claimflow_token')).toBeNull();
     expect(sessionStorage.getItem('claimflow_user')).toBeNull();
   });
 
   it('logout removes legacy localStorage session keys too', async () => {
-    sessionStorage.setItem('claimflow_token', 'session-token');
     sessionStorage.setItem(
       'claimflow_user',
       JSON.stringify({ email: 'u@example.com', tenant_id: 'tenant-a', roles: ['admin'] })

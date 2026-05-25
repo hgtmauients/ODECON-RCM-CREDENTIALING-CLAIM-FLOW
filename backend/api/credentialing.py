@@ -15,6 +15,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from core.database import get_db
+from core.db_rls import set_tenant_context
 from core.audit import log_audit_event
 from core.idempotency import reserve_idempotency_key
 from core.security_signal import log_security_signal
@@ -215,6 +216,7 @@ async def handle_provider_signup(
     )
     if not tenant_result.scalar_one_or_none():
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
+    await set_tenant_context(db, tenant_id)
 
     from core.tenant_config import get_tenant_setting
     webhook_secret = await get_tenant_setting(

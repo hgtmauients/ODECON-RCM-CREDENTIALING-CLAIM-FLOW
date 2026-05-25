@@ -23,12 +23,13 @@ import time
 from uuid import UUID, uuid4
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
+import redis.asyncio as redis
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import JWT_SECRET, JWT_ALGORITHM, get_current_user, Principal
+from api.auth import AUTH_COOKIE_NAME, JWT_SECRET, JWT_ALGORITHM, get_current_user, Principal
 from core.audit import log_audit_event
 from core.database import get_db
 from core.password import verify_password, hash_password, needs_rehash
@@ -42,6 +43,8 @@ LOGIN_ATTEMPT_WINDOW_SECONDS = int(os.getenv("LOGIN_ATTEMPT_WINDOW_SECONDS", "90
 LOGIN_ATTEMPT_LIMIT = int(os.getenv("LOGIN_ATTEMPT_LIMIT", "8"))
 ACCESS_TOKEN_TTL_SECONDS = int(os.getenv("ACCESS_TOKEN_TTL_SECONDS", "3600"))
 _failed_login_attempts: dict[str, list[float]] = {}
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
+_redis_client: redis.Redis | None = None
 
 
 def _password_login_enabled() -> bool:
@@ -69,7 +72,27 @@ def _login_attempt_key(*, email: str, client_ip: str) -> str:
     return f"{email}|{client_ip}"
 
 
-def _enforce_login_throttle(*, email: str, client_ip: str) -> None:
+def _login_attempt_redis_key(*, email: str, client_ip: str) -> str:
+    return f"auth:login-throttle:{email}|{client_ip}"
+
+
+async def _get_redis() -> redis.Redis | None:
+    global _redis_client
+    if not REDIS_URL:
+        return None
+    if _redis_client is None:
+        _redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    return _redis_client
+
+
+async def _enforce_login_throttle(*, email: str, client_ip: str) -> None:
+    redis_client = await _get_redis()
+    if redis_client:
+        key = _login_attempt_redis_key(email=email, client_ip=client_ip)
+        count = await redis_client.get(key)
+        if count and int(count) >= LOGIN_ATTEMPT_LIMIT:
+            raise HTTPException(status_code=429, detail="Too many failed login attempts. Try again later.")
+        return
     now = time.time()
     key = _login_attempt_key(email=email, client_ip=client_ip)
     attempts = _prune_attempts(_failed_login_attempts.get(key, []), now)
@@ -78,7 +101,14 @@ def _enforce_login_throttle(*, email: str, client_ip: str) -> None:
         raise HTTPException(status_code=429, detail="Too many failed login attempts. Try again later.")
 
 
-def _record_failed_login(*, email: str, client_ip: str) -> None:
+async def _record_failed_login(*, email: str, client_ip: str) -> None:
+    redis_client = await _get_redis()
+    if redis_client:
+        key = _login_attempt_redis_key(email=email, client_ip=client_ip)
+        failures = await redis_client.incr(key)
+        if failures == 1:
+            await redis_client.expire(key, LOGIN_ATTEMPT_WINDOW_SECONDS)
+        return
     now = time.time()
     key = _login_attempt_key(email=email, client_ip=client_ip)
     attempts = _prune_attempts(_failed_login_attempts.get(key, []), now)
@@ -86,13 +116,23 @@ def _record_failed_login(*, email: str, client_ip: str) -> None:
     _failed_login_attempts[key] = attempts
 
 
-def _clear_failed_login(*, email: str, client_ip: str) -> None:
+async def _clear_failed_login(*, email: str, client_ip: str) -> None:
+    redis_client = await _get_redis()
+    if redis_client:
+        key = _login_attempt_redis_key(email=email, client_ip=client_ip)
+        await redis_client.delete(key)
+        return
     key = _login_attempt_key(email=email, client_ip=client_ip)
     _failed_login_attempts.pop(key, None)
 
 
 @router.post("/login")
-async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
+async def login(
+    req: LoginRequest,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
     """Validate email + password against the users table and return a JWT.
 
     Generic 401 response for every failure mode (wrong password, missing user,
@@ -104,7 +144,7 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
 
     email = req.email.strip().lower()
     client_ip = request.client.host if request.client else "unknown"
-    _enforce_login_throttle(email=email, client_ip=client_ip)
+    await _enforce_login_throttle(email=email, client_ip=client_ip)
 
     filters = [User.email == email, User.is_active.is_(True)]
     if req.tenant_id:
@@ -118,14 +158,14 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
     matches = result.scalars().all()
 
     if len(matches) != 1 or not matches[0].password_hash:
-        _record_failed_login(email=email, client_ip=client_ip)
+        await _record_failed_login(email=email, client_ip=client_ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     user = matches[0]
     if not verify_password(req.password, user.password_hash):
-        _record_failed_login(email=email, client_ip=client_ip)
+        await _record_failed_login(email=email, client_ip=client_ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    _clear_failed_login(email=email, client_ip=client_ip)
+    await _clear_failed_login(email=email, client_ip=client_ip)
 
     # Refresh the hash if Argon2 parameters have moved on.
     if needs_rehash(user.password_hash):
@@ -148,6 +188,15 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
         "jti": str(uuid4()),
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=os.getenv("ENV", "development") == "production",
+        samesite="lax",
+        max_age=ACCESS_TOKEN_TTL_SECONDS,
+        path="/",
+    )
 
     return {
         "access_token": token,
@@ -160,6 +209,19 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
             "full_name": user.full_name,
         },
     }
+
+
+@router.post("/logout")
+async def logout(
+    response: Response,
+    current_user: Principal = Depends(get_current_user),
+):
+    await revoke_token_jti(
+        current_user.raw_claims.get("jti") if isinstance(current_user.raw_claims, dict) else None,
+        exp=current_user.raw_claims.get("exp") if isinstance(current_user.raw_claims, dict) else None,
+    )
+    response.delete_cookie(key=AUTH_COOKIE_NAME, path="/")
+    return {"success": True}
 
 
 @router.get("/me")

@@ -12,7 +12,7 @@ interface AuthContextType {
     full_name?: string | null;
   } | null;
   login: (email: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   setTenant: (tenantId: string) => void;
 }
 
@@ -21,7 +21,7 @@ const AuthContext = createContext<AuthContextType>({
   isAuthenticated: false,
   user: null,
   login: async () => {},
-  logout: () => {},
+  logout: async () => {},
   setTenant: () => {},
 });
 
@@ -45,13 +45,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let mounted = true;
     (async () => {
       try {
-        const token = sessionStorage.getItem(TOKEN_KEY);
         const storedUser = sessionStorage.getItem(USER_KEY);
-        // Security hardening: avoid persisting auth tokens across browser restarts.
+        // Security hardening: avoid persisting auth tokens in browser storage.
+        sessionStorage.removeItem(TOKEN_KEY);
         clearLegacyLocalSession();
-        if (token && storedUser) {
+        if (storedUser) {
           try {
-            apiService.setAuthToken(token);
             const parsed = JSON.parse(storedUser);
             // Revalidate server-side before trusting rehydrated session state.
             const me = await apiService.get('/auth/me');
@@ -63,7 +62,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
             sessionStorage.setItem(USER_KEY, JSON.stringify(mergedUser));
           } catch {
-            sessionStorage.removeItem(TOKEN_KEY);
             sessionStorage.removeItem(USER_KEY);
             apiService.setAuthToken(null);
             apiService.setTenantId(null);
@@ -80,16 +78,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const response = await apiService.post('/auth/login', { email, password });
-    const { access_token, user: userData } = response;
-    sessionStorage.setItem(TOKEN_KEY, access_token);
+    const { user: userData } = response;
     sessionStorage.setItem(USER_KEY, JSON.stringify(userData));
-    apiService.setAuthToken(access_token);
+    apiService.setAuthToken(null);
     apiService.setTenantId(userData.tenant_id);
     setUser(userData);
   }, []);
 
-  const logout = useCallback(() => {
-    sessionStorage.removeItem(TOKEN_KEY);
+  const logout = useCallback(async () => {
+    try {
+      await apiService.post('/auth/logout');
+    } catch {
+      // If logout endpoint fails we still clear client state.
+    }
     sessionStorage.removeItem(USER_KEY);
     clearLegacyLocalSession();
     apiService.setAuthToken(null);

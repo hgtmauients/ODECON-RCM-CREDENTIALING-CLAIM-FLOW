@@ -77,6 +77,7 @@ if ENV == "production" and JWT_ALGORITHM == "RS256" and not JWT_JWKS_URL:
 _jwks_client: Optional[PyJWKClient] = None
 
 security_scheme = HTTPBearer(auto_error=False)
+AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "claimflow_access_token")
 
 ROLES = {
     "super_admin": ["super_admin", "admin", "billing", "credentialing", "readonly"],
@@ -182,13 +183,16 @@ async def get_current_user(
     2. The X-Tenant-ID header is only honored when the principal has super_admin role
        (allows cross-tenant operations like support / impersonation).
     """
-    if credentials is None:
+    token: str | None = credentials.credentials if credentials else None
+    if not token:
+        token = request.cookies.get(AUTH_COOKIE_NAME)
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing authorization header",
         )
 
-    payload = _decode_token(credentials.credentials)
+    payload = _decode_token(token)
 
     # Tenant resolution: support both a top-level claim and a namespaced claim
     # (some IdPs add custom claims under a URL prefix). If both are present
@@ -235,6 +239,9 @@ async def get_current_user(
             detail="Tenant is inactive",
         )
 
+    # Set tenant context before touching tenant-scoped tables like users.
+    await set_tenant_context(db, token_tenant_id)
+
     token_roles = payload.get("roles", []) or []
     roles = list(token_roles)
     is_super_admin = any(r == "super_admin" for r in roles)
@@ -243,6 +250,11 @@ async def get_current_user(
     effective_tenant_id = token_tenant_id
 
     user_id = payload.get("sub", "")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
     if user_id:
         try:
             user_uuid = UUID(str(user_id))

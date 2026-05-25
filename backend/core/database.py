@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from core.db_rls import set_rls_bypass, set_tenant_context
+from core.db_rls import reset_rls_context, set_rls_bypass, set_tenant_context
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +40,12 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency that yields a scoped async session."""
     async with async_session_factory() as session:
         try:
-            # Request sessions get tenant context in auth.get_current_user once
-            # token validation succeeds. Avoid forcing a DB connection here so
-            # invalid-token requests can fail fast before touching the DB.
             yield session
         finally:
+            try:
+                await reset_rls_context(session)
+            except Exception:
+                logger.debug("Skipped RLS context reset on request session teardown", exc_info=True)
             await session.close()
 
 
@@ -59,4 +60,5 @@ async def get_async_session(*, allow_rls_bypass: bool = False) -> AsyncGenerator
             await set_tenant_context(session, tenant_id=None)
             yield session
         finally:
+            await reset_rls_context(session)
             await session.close()

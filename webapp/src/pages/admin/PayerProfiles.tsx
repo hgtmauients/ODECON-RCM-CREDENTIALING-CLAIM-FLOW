@@ -7,7 +7,7 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { useNavigate } from 'react-router-dom';
-import { payerProfileService, type PayerProfile } from '@/services/payerProfileService';
+import { payerProfileService } from '@/services/payerProfileService';
 import { PremiumIcon } from '@/services/iconReplacementService';
 import { logger } from '@/utils/logger';
 import toast from 'react-hot-toast';

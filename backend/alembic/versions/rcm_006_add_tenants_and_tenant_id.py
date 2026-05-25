@@ -55,7 +55,10 @@ def upgrade() -> None:
     op.create_index('ix_claims_tenant_state', 'claims', ['tenant_id', 'state'])
     op.create_index('ix_claims_tenant_service_date', 'claims', ['tenant_id', 'service_date_from'])
     # Replace global unique on claim_number with tenant-scoped unique
-    op.drop_constraint('claims_claim_number_key', 'claims', type_='unique')
+    # Historical schemas may represent this uniqueness as either a constraint
+    # or an index depending on creation path; drop both variants defensively.
+    op.execute('ALTER TABLE claims DROP CONSTRAINT IF EXISTS claims_claim_number_key')
+    op.execute('DROP INDEX IF EXISTS ix_claims_claim_number')
     op.create_index('ix_claims_tenant_claim_number', 'claims', ['tenant_id', 'claim_number'], unique=True)
 
     # --- Add tenant_id to edi_files ---
@@ -69,7 +72,8 @@ def upgrade() -> None:
     op.execute(f"UPDATE claim_queues SET tenant_id = '{DEFAULT_TENANT_ID}' WHERE tenant_id IS NULL")
     op.alter_column('claim_queues', 'tenant_id', nullable=False)
     op.create_index('ix_claim_queues_tenant_id', 'claim_queues', ['tenant_id'])
-    op.drop_constraint('claim_queues_name_key', 'claim_queues', type_='unique')
+    op.execute('ALTER TABLE claim_queues DROP CONSTRAINT IF EXISTS claim_queues_name_key')
+    op.execute('DROP INDEX IF EXISTS ix_claim_queues_name')
     op.create_index('ix_claim_queues_tenant_name', 'claim_queues', ['tenant_id', 'name'], unique=True)
 
     # --- Add tenant_id to payer_profiles ---
@@ -128,7 +132,8 @@ def upgrade() -> None:
     op.execute(f"UPDATE provider_credentialing SET tenant_id = '{DEFAULT_TENANT_ID}' WHERE tenant_id IS NULL")
     op.alter_column('provider_credentialing', 'tenant_id', nullable=False)
     op.create_index('ix_provider_credentialing_tenant_id', 'provider_credentialing', ['tenant_id'])
-    op.drop_constraint('provider_credentialing_provider_id_key', 'provider_credentialing', type_='unique')
+    op.execute('ALTER TABLE provider_credentialing DROP CONSTRAINT IF EXISTS provider_credentialing_provider_id_key')
+    op.execute('DROP INDEX IF EXISTS ix_provider_credentialing_provider_id')
     op.create_index('ix_provider_cred_tenant_provider', 'provider_credentialing', ['tenant_id', 'provider_id'], unique=True)
 
     # --- Add tenant_id to credentialing_verification_log ---
@@ -167,9 +172,9 @@ def downgrade() -> None:
     for table in tables_with_tenant:
         op.drop_column(table, 'tenant_id')
 
-    # Restore original unique constraints
-    op.create_unique_constraint('claims_claim_number_key', 'claims', ['claim_number'])
-    op.create_unique_constraint('claim_queues_name_key', 'claim_queues', ['name'])
-    op.create_unique_constraint('provider_credentialing_provider_id_key', 'provider_credentialing', ['provider_id'])
+    # Restore original unique indexes as defined in prior revisions.
+    op.create_index('ix_claims_claim_number', 'claims', ['claim_number'], unique=True)
+    op.create_index('ix_claim_queues_name', 'claim_queues', ['name'], unique=True)
+    op.create_index('ix_provider_credentialing_provider_id', 'provider_credentialing', ['provider_id'], unique=True)
 
     op.drop_table('tenants')

@@ -191,7 +191,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: webapp
-        run: npm ci || npm install
+        run: npm ci
 
       - name: ESLint
         working-directory: webapp
@@ -210,7 +210,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: webapp
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Run frontend tests
         working-directory: webapp
@@ -229,7 +229,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: webapp
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Type check
         working-directory: webapp
@@ -269,7 +269,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: webapp
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Run frontend next-10 subset
         working-directory: webapp
@@ -302,8 +302,8 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: webapp
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Frontend dependency audit
         working-directory: webapp
-        run: npm audit --audit-level=high
+        run: npm audit --audit-level=moderate

@@ -4,10 +4,10 @@
  * Ops can configure everything here - credentials entered directly on page
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
-import { payerProfileService, type PayerProfile, type TradingPartnerConnection } from '@/services/payerProfileService';
+import { payerProfileService, type PayerProfile } from '@/services/payerProfileService';
 import { PremiumIcon } from '@/services/iconReplacementService';
 import { logger } from '@/utils/logger';
 import toast from 'react-hot-toast';
@@ -51,7 +51,7 @@ export default function PayerProfileEditor() {
   });
 
   // Fetch existing payer if editing
-  const { data: existingPayer, isLoading, isError, error: loadError } = useQuery(
+  const { isLoading, isError, error: loadError } = useQuery(
     ['payer-profile', payerId],
     () => payerProfileService.getPayerProfile(Number(payerId)),
     {

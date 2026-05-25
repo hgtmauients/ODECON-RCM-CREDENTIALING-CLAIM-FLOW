@@ -68,6 +68,17 @@ def _validate_cors_origins(raw_origins: str) -> list[str]:
     return errors
 
 
+def _validate_redis_url_security(raw_url: str) -> list[str]:
+    if not raw_url:
+        return ["REDIS_URL is required in production"]
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in {"redis", "rediss"} or not parsed.hostname:
+        return ["REDIS_URL must be a valid redis:// or rediss:// URL"]
+    if parsed.password is None or not parsed.password.strip():
+        return ["REDIS_URL must include a password in production"]
+    return []
+
+
 def validate_api_startup_security(env: Mapping[str, str] | None = None) -> None:
     config = env or {}
     if (config.get("ENV") or "development") != "production":
@@ -86,6 +97,7 @@ def validate_api_startup_security(env: Mapping[str, str] | None = None) -> None:
 
     errors.extend(_validate_encryption_key(config.get("CLAIMFLOW_ENCRYPTION_KEY") or ""))
     errors.extend(_validate_cors_origins(config.get("CORS_ORIGINS") or ""))
+    errors.extend(_validate_redis_url_security(config.get("REDIS_URL") or ""))
     errors.extend(_validate_cidrs(config.get("TRUSTED_PROXY_CIDRS") or "", env_key="TRUSTED_PROXY_CIDRS"))
     if _as_bool(config.get("ALLOW_PRIVATE_OUTBOUND_DESTINATIONS"), default=False):
         errors.append("ALLOW_PRIVATE_OUTBOUND_DESTINATIONS=true is not allowed in production")

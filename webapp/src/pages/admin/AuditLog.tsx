@@ -29,8 +29,6 @@ interface AuditRow {
   error_message: string | null;
 }
 
-const isoToInputValue = (iso: string) => iso.slice(0, 16); // YYYY-MM-DDTHH:mm
-
 export default function AuditLog() {
   const [action, setAction] = useState('');
   const [resourceType, setResourceType] = useState('');

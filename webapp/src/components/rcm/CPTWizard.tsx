@@ -54,7 +54,6 @@ export default function CPTWizard({ onSelect, onCancel }: CPTWizardProps) {
   const back = (targetStep: Step) => setStep(targetStep);
 
   const cardStyle: React.CSSProperties = { padding: '12px 16px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-md)', cursor: 'pointer', transition: 'all 0.15s', fontSize: 'var(--font-size-sm)' };
-  const selectedStyle: React.CSSProperties = { ...cardStyle, borderColor: 'var(--brand-primary)', background: 'var(--brand-primary-light)' };
 
   const Option = ({ label, description, onClick }: { label: string; description?: string; onClick: () => void }) => (
     <div style={cardStyle} onClick={onClick} onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--brand-primary)'; e.currentTarget.style.background = 'var(--bg-secondary)'; }} onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-light)'; e.currentTarget.style.background = 'transparent'; }}>
@@ -67,7 +66,9 @@ export default function CPTWizard({ onSelect, onCancel }: CPTWizardProps) {
   const buildResult = (): WizardResult => {
     let cpt = '', desc = '', addon = '', addonDesc = '';
     let pos = '11', posDesc = 'Office';
-    let modifiers: string[] = [], modDescs: string[] = [], warnings: string[] = [];
+    const modifiers: string[] = [];
+    const modDescs: string[] = [];
+    const warnings: string[] = [];
 
     // POS from telehealth
     if (state.telehealth === 'yes_home') { pos = '10'; posDesc = 'Telehealth (Patient Home)'; }

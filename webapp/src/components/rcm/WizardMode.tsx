@@ -8,7 +8,6 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation } from 'react-query';
 import { payerProfileService } from '@/services/payerProfileService';
-import { PremiumIcon } from '@/services/iconReplacementService';
 import toast from 'react-hot-toast';
 
 interface WizardModeProps {

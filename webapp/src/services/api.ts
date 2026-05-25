@@ -98,7 +98,7 @@ async function get<T = any>(path: string, paramsInput?: ParamsInput): Promise<T>
     const qsStr = qs.toString();
     if (qsStr) url += `?${qsStr}`;
   }
-  const resp = await fetch(url, { method: 'GET', headers: buildHeaders() });
+  const resp = await fetch(url, { method: 'GET', headers: buildHeaders(), credentials: 'include' });
   return handleResponse<T>(resp);
 }
 
@@ -109,6 +109,7 @@ async function post<T = any>(path: string, body?: any, options?: { headers?: Rec
   const resp = await fetch(`${BASE_URL}${path}`, {
     method: 'POST',
     headers: buildHeaders(options?.headers),
+    credentials: 'include',
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   return handleResponse<T>(resp);
@@ -118,6 +119,7 @@ async function put<T = any>(path: string, body?: any): Promise<T> {
   const resp = await fetch(`${BASE_URL}${path}`, {
     method: 'PUT',
     headers: buildHeaders(),
+    credentials: 'include',
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   return handleResponse<T>(resp);
@@ -127,13 +129,14 @@ async function patch<T = any>(path: string, body?: any): Promise<T> {
   const resp = await fetch(`${BASE_URL}${path}`, {
     method: 'PATCH',
     headers: buildHeaders(),
+    credentials: 'include',
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   return handleResponse<T>(resp);
 }
 
 async function del<T = any>(path: string): Promise<T> {
-  const resp = await fetch(`${BASE_URL}${path}`, { method: 'DELETE', headers: buildHeaders() });
+  const resp = await fetch(`${BASE_URL}${path}`, { method: 'DELETE', headers: buildHeaders(), credentials: 'include' });
   return handleResponse<T>(resp);
 }
 
@@ -141,6 +144,7 @@ async function upload<T = any>(path: string, formData: FormData): Promise<T> {
   const resp = await fetch(`${BASE_URL}${path}`, {
     method: 'POST',
     headers: authHeaders(),
+    credentials: 'include',
     body: formData,
   });
   return handleResponse<T>(resp);
@@ -150,6 +154,7 @@ async function downloadBlob(path: string): Promise<Blob> {
   const resp = await fetch(`${BASE_URL}${path}`, {
     method: 'GET',
     headers: authHeaders(),
+    credentials: 'include',
   });
   if (!resp.ok) {
     const errorBody = await resp.json().catch(() => ({ detail: resp.statusText }));
@@ -180,7 +185,7 @@ async function downloadFile(path: string, fallback: string, query?: ParamsInput)
     if (qsStr) url += `?${qsStr}`;
   }
 
-  const resp = await fetch(url, { method: 'GET', headers: authHeaders() });
+  const resp = await fetch(url, { method: 'GET', headers: authHeaders(), credentials: 'include' });
   if (!resp.ok) {
     const errorBody = await resp.json().catch(() => ({ detail: resp.statusText }));
     const error: any = new Error(errorBody.detail || `HTTP ${resp.status}`);

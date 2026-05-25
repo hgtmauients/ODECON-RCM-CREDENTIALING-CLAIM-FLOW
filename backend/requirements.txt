@@ -1,23 +1,23 @@
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
-sqlalchemy[asyncio]>=2.0.25
-asyncpg>=0.29.0
-alembic>=1.13.0
-pyjwt[crypto]>=2.8.0
-cryptography>=42.0.0
-python-multipart>=0.0.6
-pydantic>=2.5.0
-httpx>=0.26.0
-python-dotenv>=1.0.0
-paramiko>=3.4.0
-apscheduler>=3.10.0
-redis>=5.0.0
-email-validator>=2.0.0
-sentry-sdk[fastapi]>=2.0.0
+fastapi==0.136.3
+uvicorn[standard]==0.48.0
+sqlalchemy[asyncio]==2.0.50
+asyncpg==0.31.0
+alembic==1.18.4
+pyjwt[crypto]==2.13.0
+cryptography==48.0.0
+python-multipart==0.0.29
+pydantic==2.13.4
+httpx==0.28.1
+python-dotenv==1.2.2
+paramiko==5.0.0
+apscheduler==3.11.2
+redis==7.4.0
+email-validator==2.3.0
+sentry-sdk[fastapi]==2.60.0
 # Argon2 password hashing for the User table (api/admin/users + dev_login)
-argon2-cffi>=23.1.0
+argon2-cffi==25.1.0
 
 # Dev/test
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
-pytest-cov>=4.1.0
+pytest==9.0.3
+pytest-asyncio==1.3.0
+pytest-cov==7.1.0
