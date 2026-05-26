@@ -180,7 +180,7 @@ export default function CredentialingQueue() {
         </div>
         <div className="quick-action-group">
           <button className="btn btn-ghost btn-lg touch-target" onClick={() => setSelectedStatus('requires_review')}>Focus review queue</button>
-          <button className="btn btn-primary btn-lg touch-target" onClick={() => setShowAddModal(true)}>
+          <button data-testid="add-provider-open-btn" className="btn btn-primary btn-lg touch-target" onClick={() => setShowAddModal(true)}>
             Add Provider
           </button>
         </div>
@@ -570,9 +570,9 @@ export default function CredentialingQueue() {
             {/* Basic Info */}
             <h3 style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 'var(--space-2)', marginTop: 'var(--space-2)' }}>Basic Information</h3>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-2)', marginBottom: 'var(--space-4)' }}>
-              <div><label style={labelStyle}>First Name *</label><input style={inputStyle} value={form.first_name || ''} onChange={e => setForm({ first_name: e.target.value })} /></div>
-              <div><label style={labelStyle}>Last Name *</label><input style={inputStyle} value={form.last_name || ''} onChange={e => setForm({ last_name: e.target.value })} /></div>
-              <div><label style={labelStyle}>NPI *</label><input style={inputStyle} value={form.npi || ''} onChange={e => setForm({ npi: e.target.value })} maxLength={10} /></div>
+              <div><label style={labelStyle}>First Name *</label><input data-testid="add-provider-first-name" style={inputStyle} value={form.first_name || ''} onChange={e => setForm({ first_name: e.target.value })} /></div>
+              <div><label style={labelStyle}>Last Name *</label><input data-testid="add-provider-last-name" style={inputStyle} value={form.last_name || ''} onChange={e => setForm({ last_name: e.target.value })} /></div>
+              <div><label style={labelStyle}>NPI *</label><input data-testid="add-provider-npi" style={inputStyle} value={form.npi || ''} onChange={e => setForm({ npi: e.target.value })} maxLength={10} /></div>
               <div><label style={labelStyle}>Provider Type</label>
                 <select style={selectStyle} value={form.provider_type || 'MD'} onChange={e => setForm({ provider_type: e.target.value })}>
                   <option value="MD">MD - Doctor of Medicine</option>
@@ -697,8 +697,25 @@ export default function CredentialingQueue() {
                   {updateMutation.isLoading ? 'Saving...' : 'Save Changes'}
                 </button>
               ) : (
-                <button className="btn btn-primary" disabled={createMutation.isLoading || !form.first_name || !form.last_name || !form.npi} onClick={() => {
-                  createMutation.mutate(form);
+                <button data-testid="add-provider-submit-btn" className="btn btn-primary" disabled={createMutation.isLoading || !form.first_name || !form.last_name || !form.npi} onClick={() => {
+                  const normalizeOptional = (value: any) => {
+                    if (typeof value === 'string' && value.trim() === '') return undefined;
+                    return value;
+                  };
+                  const payload = {
+                    ...form,
+                    email: normalizeOptional(form.email),
+                    phone: normalizeOptional(form.phone),
+                    specialty: normalizeOptional(form.specialty),
+                    state_code: normalizeOptional(form.state_code),
+                    license_number: normalizeOptional(form.license_number),
+                    date_of_birth: normalizeOptional(form.date_of_birth),
+                    licenses: (form.licenses || []).filter((lic: any) => lic?.state && lic?.license_number),
+                    specialties: (form.specialties || []).filter((spec: any) => spec?.specialty),
+                    dea_certificates: (form.dea_certificates || []).filter((dea: any) => dea?.dea_number),
+                    cned_certificates: (form.cned_certificates || []).filter((cned: any) => cned?.state && cned?.certificate_number),
+                  };
+                  createMutation.mutate(payload);
                 }}>
                   {createMutation.isLoading ? 'Creating...' : 'Add Provider'}
                 </button>

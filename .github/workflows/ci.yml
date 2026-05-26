@@ -214,7 +214,163 @@ jobs:
 
       - name: Run frontend tests
         working-directory: webapp
-        run: npm run test -- --run
+        run: npm run test:coverage
+
+  frontend-coverage-all-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install dependencies
+        working-directory: webapp
+        run: npm ci
+
+      - name: Run all-files coverage baseline (ratcheting stage)
+        working-directory: webapp
+        run: npm run test:coverage:all
+
+  frontend-e2e-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install dependencies
+        working-directory: webapp
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: webapp
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright smoke tests
+        working-directory: webapp
+        run: npm run e2e:smoke
+
+      - name: Upload Playwright report (if failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: webapp/playwright-report
+          if-no-files-found: ignore
+
+  frontend-e2e-fullstack:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: claimflow
+          POSTGRES_PASSWORD: claimflow
+          POSTGRES_DB: claimflow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          pip install --require-hashes --no-deps -r requirements.lock
+
+      - name: Run migrations + seed e2e user
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://claimflow:claimflow@localhost:5432/claimflow_test
+          JWT_SECRET: ci-test-secret-must-be-at-least-32-characters-long
+          CLAIMFLOW_ENCRYPTION_KEY: aWRlbnRpY2FsLWtleS1mb3ItY2ktcnVucy1vbmx5LTEyMzQ=
+          ENV: test
+          AUTH_LOGIN_INCLUDE_TOKEN: "false"
+        run: |
+          alembic upgrade head
+          python -m scripts.seed_ci_e2e_user --email ci.e2e.fullstack@noodledoc.com --password admin
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: webapp
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: webapp
+        run: npx playwright install --with-deps chromium
+
+      - name: Run full-stack Playwright flow (real backend)
+        working-directory: webapp
+        env:
+          DATABASE_URL: postgresql+asyncpg://claimflow:claimflow@localhost:5432/claimflow_test
+          JWT_SECRET: ci-test-secret-must-be-at-least-32-characters-long
+          CLAIMFLOW_ENCRYPTION_KEY: aWRlbnRpY2FsLWtleS1mb3ItY2ktcnVucy1vbmx5LTEyMzQ=
+          ENV: test
+          AUTH_LOGIN_INCLUDE_TOKEN: "false"
+          E2E_ADMIN_EMAIL: ci.e2e.fullstack@noodledoc.com
+          E2E_ADMIN_PASSWORD: admin
+        run: npm run e2e:fullstack
+
+      - name: Upload full-stack Playwright report (if failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-fullstack-report
+          path: webapp/playwright-report
+          if-no-files-found: ignore
+
+  frontend-visual-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install dependencies
+        working-directory: webapp
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: webapp
+        run: npx playwright install --with-deps chromium
+
+      - name: Run visual regression suite
+        working-directory: webapp
+        run: npm run e2e:visual
+
+      - name: Upload visual Playwright report (if failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-visual-report
+          path: webapp/playwright-report
+          if-no-files-found: ignore
 
   frontend-build:
     runs-on: ubuntu-latest
@@ -233,11 +389,15 @@ jobs:
 
       - name: Type check
         working-directory: webapp
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Build
         working-directory: webapp
         run: npm run build
+
+      - name: Bundle budget gate
+        working-directory: webapp
+        run: npm run check:bundle-budget
 
   next10-test-subset:
     runs-on: ubuntu-latest

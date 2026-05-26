@@ -7,9 +7,18 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test": "vitest",
-    "test:ui": "vitest --ui"
+    "test:run": "vitest --run",
+    "test:coverage": "vitest --run --coverage",
+    "test:coverage:all": "cross-env VITEST_COVERAGE_ALL=true vitest --run --coverage",
+    "test:ui": "vitest --ui",
+    "e2e:smoke": "playwright test --config=playwright.config.ts --grep-invert \"@visual|@fullstack\"",
+    "e2e:visual": "playwright test --config=playwright.config.ts --grep @visual",
+    "e2e:visual:update": "playwright test --config=playwright.config.ts --grep @visual --update-snapshots",
+    "e2e:fullstack": "playwright test --config=playwright.fullstack.config.ts e2e/fullstack-credentialing.spec.ts",
+    "check:bundle-budget": "node ./scripts/check-bundle-budget.mjs"
   },
   "dependencies": {
     "@sentry/react": "^8.55.1",
@@ -20,6 +29,8 @@
     "react-router-dom": "^6.22.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.3",
+    "@playwright/test": "^1.60.0",
     "@testing-library/jest-dom": "^6.4.0",
     "@testing-library/react": "^14.2.0",
     "@testing-library/user-event": "^14.5.0",
@@ -28,6 +39,8 @@
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "@vitejs/plugin-react": "^6.0.2",
+    "@vitest/coverage-v8": "^4.1.7",
+    "cross-env": "^10.1.0",
     "eslint": "^8.57.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "jsdom": "^24.0.0",
