@@ -8,7 +8,7 @@ import logging
 import asyncio
 import os
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 import paramiko
 import httpx
 from pathlib import Path
@@ -22,6 +22,7 @@ from services.encryption import decrypt_credential
 from core.audit import log_credential_access
 from core.http_client import request_with_retry
 from core.outbound_guard import assert_safe_http_url, assert_safe_sftp_host
+from core.storage import sanitize_component, safe_filename
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,34 @@ class SFTPTransport:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    async def _resolve_connection_tenant_id(self, connection: TradingPartnerConnection) -> str:
+        """Resolve and cache tenant id for this connection."""
+        tenant_id = getattr(connection, "_resolved_tenant_id", None)
+        if tenant_id is None:
+            tenant_result = await self.db.execute(
+                select(PayerProfile.tenant_id).where(PayerProfile.id == connection.payer_id)
+            )
+            tenant_id = tenant_result.scalar_one_or_none()
+            if tenant_id is None:
+                raise ValueError(f"Unable to resolve tenant for payer_id={connection.payer_id}")
+            setattr(connection, "_resolved_tenant_id", tenant_id)
+        return str(tenant_id)
+
+    @staticmethod
+    def _safe_download_root(tenant_id: str) -> Path:
+        """
+        Build a tenant-scoped local download root and enforce containment.
+        """
+        base_root = Path(os.getenv("EDI_DOWNLOAD_PATH", "/tmp/edi_downloads")).resolve()
+        tenant_segment = sanitize_component(tenant_id, label="tenant_id")
+        tenant_root = (base_root / tenant_segment).resolve()
+        try:
+            tenant_root.relative_to(base_root)
+        except ValueError as exc:
+            raise ValueError(f"Resolved tenant download path escapes base root: {tenant_root}") from exc
+        tenant_root.mkdir(parents=True, exist_ok=True)
+        return tenant_root
 
     @staticmethod
     def _build_ssh_client() -> paramiko.SSHClient:
@@ -60,15 +89,7 @@ class SFTPTransport:
         reason: str,
     ) -> str:
         plaintext = await decrypt_credential(encrypted_value)
-        tenant_id = getattr(connection, "_resolved_tenant_id", None)
-        if tenant_id is None:
-            tenant_result = await self.db.execute(
-                select(PayerProfile.tenant_id).where(PayerProfile.id == connection.payer_id)
-            )
-            tenant_id = tenant_result.scalar_one_or_none()
-            if tenant_id is None:
-                raise ValueError(f"Unable to resolve tenant for payer_id={connection.payer_id}")
-            setattr(connection, "_resolved_tenant_id", tenant_id)
+        tenant_id = await self._resolve_connection_tenant_id(connection)
         await log_credential_access(
             self.db,
             tenant_id=tenant_id,
@@ -157,7 +178,7 @@ class SFTPTransport:
                 "success": True,
                 "remote_path": remote_full_path,
                 "file_size": file_stat.st_size,
-                "uploaded_at": datetime.utcnow().isoformat()
+                "uploaded_at": datetime.now(timezone.utc).isoformat()
             }
             
         except Exception as e:
@@ -216,6 +237,8 @@ class SFTPTransport:
             logger.info(f"Polling SFTP directory: {inbound_path} for pattern {file_pattern}")
             
             files = sftp.listdir(inbound_path)
+            tenant_id = await self._resolve_connection_tenant_id(connection)
+            download_root = self._safe_download_root(tenant_id)
             
             downloaded_files = []
             
@@ -223,19 +246,21 @@ class SFTPTransport:
                 if file_pattern.replace("*", "") in filename:
                     # Download file
                     remote_path = f"{inbound_path}/{filename}"
-                    local_path = f"/tmp/edi_downloads/{filename}"
-                    
-                    # Create local directory if doesn't exist
-                    Path("/tmp/edi_downloads").mkdir(parents=True, exist_ok=True)
+                    local_name = safe_filename(filename, fallback="downloaded.edi")
+                    local_path = (download_root / local_name).resolve()
+                    try:
+                        local_path.relative_to(download_root)
+                    except ValueError as exc:
+                        raise ValueError(f"Refusing to write outside download root: {local_path}") from exc
                     
                     logger.info(f"Downloading {filename}...")
-                    sftp.get(remote_path, local_path)
+                    sftp.get(remote_path, str(local_path))
                     
                     downloaded_files.append({
                         "filename": filename,
-                        "local_path": local_path,
+                        "local_path": str(local_path),
                         "remote_path": remote_path,
-                        "downloaded_at": datetime.utcnow().isoformat()
+                        "downloaded_at": datetime.now(timezone.utc).isoformat()
                     })
             
             sftp.close()

@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 os.environ["ENV"] = "development"
 os.environ["JWT_SECRET"] = os.getenv("JWT_SECRET", "dev-secret-for-local-only-min32ch")
 os.environ["JWT_AUDIENCE"] = os.getenv("JWT_AUDIENCE", "claimflow")
+os.environ["AUTH_LOGIN_INCLUDE_TOKEN"] = os.getenv("AUTH_LOGIN_INCLUDE_TOKEN", "true")
 os.environ["DATABASE_URL"] = os.getenv(
     "DATABASE_URL",
     os.getenv(

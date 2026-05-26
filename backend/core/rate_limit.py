@@ -19,14 +19,14 @@ Production-grade design:
 import os
 import time
 import logging
-import ipaddress
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple, Set, Union
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from core.client_ip import get_client_ip, parse_trusted_proxy_cidrs
 from core.security_signal import log_security_signal
 
 logger = logging.getLogger(__name__)
@@ -45,51 +45,6 @@ BYPASS_PATHS = ("/health", "/docs", "/openapi.json", "/redoc")
 
 # OPTIONS preflights are cheap and should not be limited.
 BYPASS_METHODS = ("OPTIONS",)
-
-
-IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
-
-
-def _parse_trusted_proxy_cidrs(raw: str) -> Set[IPNetwork]:
-    """Parse comma-delimited CIDRs used to trust forwarding headers."""
-    cidrs: Set[IPNetwork] = set()
-    for part in (raw or "").split(","):
-        token = part.strip()
-        if not token:
-            continue
-        try:
-            cidrs.add(ipaddress.ip_network(token, strict=False))
-        except ValueError:
-            logger.warning("Ignoring invalid TRUSTED_PROXY_CIDRS entry: %r", token)
-    return cidrs
-
-
-def _is_trusted_proxy(peer_ip: str, trusted_proxy_cidrs: Set[IPNetwork]) -> bool:
-    if not trusted_proxy_cidrs:
-        return False
-    try:
-        addr = ipaddress.ip_address(peer_ip)
-    except ValueError:
-        return False
-    return any(addr in net for net in trusted_proxy_cidrs)
-
-
-def _client_ip(request: Request, trusted_proxy_cidrs: Set[IPNetwork]) -> str:
-    """
-    Best-effort client IP extraction.
-    Uses X-Forwarded-For (first hop) ONLY when the immediate socket peer is in
-    TRUSTED_PROXY_CIDRS. Otherwise ignores forwarding headers and uses socket
-    peer address. This prevents direct clients from spoofing XFF to rotate
-    rate-limit buckets.
-    """
-    peer_ip = request.client.host if request.client else "unknown"
-    if _is_trusted_proxy(peer_ip, trusted_proxy_cidrs):
-        xff = request.headers.get("X-Forwarded-For", "")
-        if xff:
-            first_hop = xff.split(",")[0].strip()
-            if first_hop:
-                return first_hop
-    return peer_ip
 
 
 class _InMemoryStore:
@@ -178,7 +133,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.limit = requests_per_window
         self.window = window_seconds
         self._memory_store = _InMemoryStore()
-        self._trusted_proxy_cidrs = _parse_trusted_proxy_cidrs(os.getenv("TRUSTED_PROXY_CIDRS", ""))
+        self._trusted_proxy_cidrs = parse_trusted_proxy_cidrs(os.getenv("TRUSTED_PROXY_CIDRS", ""))
         self._redis_store: Optional[_RedisStore] = None
         if ENV == "production" and not REDIS_URL:
             raise RuntimeError("REDIS_URL required in production for multi-worker-safe rate limiting")
@@ -196,7 +151,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # tenant header — that would let unauth callers bypass the limit by
         # rotating UUIDs. X-Forwarded-For is only trusted when the immediate
         # socket peer is a configured trusted proxy.
-        return f"rl:ip:{_client_ip(request, self._trusted_proxy_cidrs)}"
+        return f"rl:ip:{get_client_ip(request, self._trusted_proxy_cidrs)}"
 
     async def dispatch(self, request: Request, call_next):
         if request.method in BYPASS_METHODS or any(request.url.path.startswith(p) for p in BYPASS_PATHS):

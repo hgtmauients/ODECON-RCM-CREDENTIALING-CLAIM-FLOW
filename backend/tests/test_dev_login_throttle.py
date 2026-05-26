@@ -33,3 +33,11 @@ async def test_login_throttle_clears_after_success(monkeypatch):
 
     # Should not raise once attempts are cleared.
     await dev_login._enforce_login_throttle(email="user@example.com", client_ip="1.2.3.4")
+
+
+def test_login_body_token_is_opt_in(monkeypatch):
+    monkeypatch.delenv("AUTH_LOGIN_INCLUDE_TOKEN", raising=False)
+    assert dev_login._include_token_in_login_response() is False
+
+    monkeypatch.setenv("AUTH_LOGIN_INCLUDE_TOKEN", "true")
+    assert dev_login._include_token_in_login_response() is True

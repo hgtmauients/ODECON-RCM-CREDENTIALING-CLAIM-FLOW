@@ -39,6 +39,7 @@ from api.auth import (
     Principal,
 )
 from core.audit import log_audit_event
+from core.client_ip import get_client_ip
 from core.database import get_db
 from core.password import verify_password, hash_password, needs_rehash
 from core.token_revocation import revoke_token_jti, revoke_user_tokens
@@ -60,6 +61,14 @@ def _password_login_enabled() -> bool:
     if env != "production":
         return True
     return os.getenv("ALLOW_PASSWORD_LOGIN", "").lower() in ("1", "true", "yes")
+
+
+def _include_token_in_login_response() -> bool:
+    """
+    Opt-in compatibility switch for legacy clients that still read the JWT from
+    the login response body. Cookie-based auth remains the default.
+    """
+    return os.getenv("AUTH_LOGIN_INCLUDE_TOKEN", "").lower() in ("1", "true", "yes")
 
 
 class LoginRequest(BaseModel):
@@ -151,7 +160,7 @@ async def login(
         raise HTTPException(status_code=404, detail="Not found")
 
     email = req.email.strip().lower()
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     await _enforce_login_throttle(email=email, client_ip=client_ip)
 
     filters = [User.email == email, User.is_active.is_(True)]
@@ -216,9 +225,7 @@ async def login(
         path="/",
     )
 
-    return {
-        "access_token": token,
-        "token_type": "bearer",
+    body = {
         "user": {
             "email": user.email,
             "user_id": str(user.id),
@@ -227,6 +234,10 @@ async def login(
             "full_name": user.full_name,
         },
     }
+    if _include_token_in_login_response():
+        body["access_token"] = token
+        body["token_type"] = "bearer"
+    return body
 
 
 @router.post("/logout")
