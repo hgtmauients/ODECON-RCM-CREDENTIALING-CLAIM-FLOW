@@ -6,6 +6,7 @@ import { Pagination } from '@/components/Pagination';
 import { formatDate } from '@/utils/formatters';
 import toast from 'react-hot-toast';
 import { getStateLicenseFormat, validateLicenseNumber } from '@/utils/stateLicenseFormats';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 const PAGE_SIZE = 100;
 
@@ -32,6 +33,7 @@ interface CredentialingRecord {
 }
 
 export default function CredentialingQueue() {
+  const isMobile = useIsMobile();
   const [selectedStatus, setSelectedStatus] = useState<string>('');
   const [selectedProvider, setSelectedProvider] = useState<CredentialingRecord | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
@@ -143,6 +145,12 @@ export default function CredentialingQueue() {
 
   const records: CredentialingRecord[] = data?.data || [];
   const total: number = data?.total ?? records.length;
+  const reviewCount = records.filter((r) => r.credentialing_status === 'requires_review').length;
+  const pendingCount = records.filter((r) => r.credentialing_status === 'pending').length;
+  const passedCount = records.filter((r) => r.credentialing_status === 'passed').length;
+  const avgScore = records.length
+    ? Math.round(records.reduce((sum, r) => sum + (r.overall_score || 0), 0) / records.length)
+    : 0;
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -161,28 +169,48 @@ export default function CredentialingQueue() {
   };
 
   return (
-    <div style={{ padding: 'var(--space-6)' }}>
-      <div style={{ marginBottom: 'var(--space-6)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+    <div className="premium-page">
+      <div className="premium-page-inner">
+      <div className="premium-hero-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-3)' }}>
         <div>
-          <h1 style={{ fontSize: 'var(--font-size-3xl)', fontWeight: 800, marginBottom: 'var(--space-2)' }}>
-            Provider Credentialing Queue
-          </h1>
+          <h1 className="premium-hero-title">Provider Credentialing Queue</h1>
           <p style={{ color: 'var(--text-secondary)' }}>
             Review and approve provider credentialing applications
           </p>
         </div>
-        <button className="btn btn-primary btn-lg" onClick={() => setShowAddModal(true)}>
-          Add Provider
-        </button>
+        <div className="quick-action-group">
+          <button className="btn btn-ghost btn-lg touch-target" onClick={() => setSelectedStatus('requires_review')}>Focus review queue</button>
+          <button className="btn btn-primary btn-lg touch-target" onClick={() => setShowAddModal(true)}>
+            Add Provider
+          </button>
+        </div>
+      </div>
+
+      <div className="summary-grid">
+        <div className="summary-card">
+          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total records on page</div>
+          <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 800 }}>{records.length.toLocaleString()}</div>
+        </div>
+        <div className="summary-card">
+          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Needs review</div>
+          <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 800, color: reviewCount > 0 ? 'var(--brand-warning)' : 'var(--text-primary)' }}>{reviewCount.toLocaleString()}</div>
+        </div>
+        <div className="summary-card">
+          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>In-progress checks</div>
+          <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 800 }}>{pendingCount.toLocaleString()}</div>
+        </div>
+        <div className="summary-card">
+          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Passed</div>
+          <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 800, color: 'var(--brand-success)' }}>{passedCount.toLocaleString()}</div>
+        </div>
+        <div className="summary-card">
+          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Average score</div>
+          <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 800 }}>{avgScore}</div>
+        </div>
       </div>
 
       {/* Filters */}
-      <div style={{ 
-        display: 'flex', 
-        gap: 'var(--space-3)', 
-        marginBottom: 'var(--space-6)',
-        flexWrap: 'wrap'
-      }}>
+      <div className="toolbar-card" style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
         <button
           onClick={() => setSelectedStatus('')}
           style={{
@@ -191,7 +219,8 @@ export default function CredentialingQueue() {
             border: selectedStatus === '' ? '2px solid var(--color-primary)' : '1px solid var(--border-primary)',
             background: selectedStatus === '' ? 'var(--color-primary)' : 'transparent',
             color: selectedStatus === '' ? 'white' : 'var(--text-primary)',
-            cursor: 'pointer'
+            cursor: 'pointer',
+            minHeight: 44,
           }}
         >
           All ({selectedStatus === '' ? total.toLocaleString() : '…'})
@@ -204,7 +233,8 @@ export default function CredentialingQueue() {
             border: selectedStatus === 'requires_review' ? '2px solid #F98A33' : '1px solid var(--border-primary)',
             background: selectedStatus === 'requires_review' ? '#F98A33' : 'transparent',
             color: selectedStatus === 'requires_review' ? 'white' : 'var(--text-primary)',
-            cursor: 'pointer'
+            cursor: 'pointer',
+            minHeight: 44,
           }}
         >
           Review ({records.filter(r => r.credentialing_status === 'requires_review').length})
@@ -217,7 +247,8 @@ export default function CredentialingQueue() {
             border: selectedStatus === 'pending' ? '2px solid #6b7280' : '1px solid var(--border-primary)',
             background: selectedStatus === 'pending' ? '#6b7280' : 'transparent',
             color: selectedStatus === 'pending' ? 'white' : 'var(--text-primary)',
-            cursor: 'pointer'
+            cursor: 'pointer',
+            minHeight: 44,
           }}
         >
           Pending ({records.filter(r => r.credentialing_status === 'pending').length})
@@ -260,7 +291,7 @@ export default function CredentialingQueue() {
               style={{
                 background: 'var(--surface-glass)',
                 borderRadius: 'var(--radius-xl)',
-                padding: 'var(--space-6)',
+                padding: isMobile ? 'var(--space-4)' : 'var(--space-6)',
                 border: selectedProvider?.provider_id === record.provider_id 
                   ? '2px solid var(--color-primary)' 
                   : '1px solid var(--border-primary)',
@@ -268,7 +299,7 @@ export default function CredentialingQueue() {
                 transition: 'all 0.2s'
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: 'var(--space-3)', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
                 <div>
                   <h3 style={{ fontSize: 'var(--font-size-xl)', fontWeight: 700, marginBottom: 'var(--space-2)' }}>
                     {record.signup_data.first_name} {record.signup_data.last_name}
@@ -288,7 +319,7 @@ export default function CredentialingQueue() {
                     Signed up: {formatDate(record.signup_date)}
                   </div>
                 </div>
-                <div style={{ textAlign: 'right' }}>
+                <div style={{ textAlign: isMobile ? 'left' : 'right', width: isMobile ? '100%' : 'auto' }}>
                   <div
                     style={{
                       padding: 'var(--space-2) var(--space-4)',
@@ -343,7 +374,7 @@ export default function CredentialingQueue() {
             alignItems: 'center',
             justifyContent: 'center',
             zIndex: 1000,
-            padding: 'var(--space-6)'
+            padding: isMobile ? 'var(--space-3)' : 'var(--space-6)'
           }}
           onClick={() => setSelectedProvider(null)}
         >
@@ -352,7 +383,7 @@ export default function CredentialingQueue() {
             style={{
               background: 'var(--surface-elevated)',
               borderRadius: 'var(--radius-2xl)',
-              padding: 'var(--space-8)',
+              padding: isMobile ? 'var(--space-4)' : 'var(--space-8)',
               maxWidth: '800px',
               width: '100%',
               maxHeight: '90vh',
@@ -439,18 +470,18 @@ export default function CredentialingQueue() {
                       rows={3}
                     />
                   </div>
-                  <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+                  <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
                     <button
                       onClick={() => approveMutation.mutate({ providerId: selectedProvider.provider_id, notes: approvalNotes })}
                       disabled={approveMutation.isLoading || isRunning}
-                      style={{ flex: 1, padding: 'var(--space-4)', borderRadius: 'var(--radius-lg)', background: '#25D366', color: 'white', border: 'none', cursor: (approveMutation.isLoading || isRunning) ? 'not-allowed' : 'pointer', opacity: (approveMutation.isLoading || isRunning) ? 0.5 : 1 }}
+                      style={{ flex: 1, minWidth: isMobile ? '100%' : undefined, minHeight: 44, padding: 'var(--space-4)', borderRadius: 'var(--radius-lg)', background: '#25D366', color: 'white', border: 'none', cursor: (approveMutation.isLoading || isRunning) ? 'not-allowed' : 'pointer', opacity: (approveMutation.isLoading || isRunning) ? 0.5 : 1 }}
                     >
                       Approve Provider
                     </button>
                     <button
                       onClick={() => rejectMutation.mutate({ providerId: selectedProvider.provider_id, reason: rejectionReason })}
                       disabled={rejectMutation.isLoading || !rejectionReason || isRunning}
-                      style={{ flex: 1, padding: 'var(--space-4)', borderRadius: 'var(--radius-lg)', background: '#ef4444', color: 'white', border: 'none', cursor: (rejectMutation.isLoading || !rejectionReason || isRunning) ? 'not-allowed' : 'pointer', opacity: (rejectMutation.isLoading || !rejectionReason || isRunning) ? 0.5 : 1 }}
+                      style={{ flex: 1, minWidth: isMobile ? '100%' : undefined, minHeight: 44, padding: 'var(--space-4)', borderRadius: 'var(--radius-lg)', background: '#ef4444', color: 'white', border: 'none', cursor: (rejectMutation.isLoading || !rejectionReason || isRunning) ? 'not-allowed' : 'pointer', opacity: (rejectMutation.isLoading || !rejectionReason || isRunning) ? 0.5 : 1 }}
                     >
                       Reject Provider
                     </button>
@@ -460,28 +491,28 @@ export default function CredentialingQueue() {
             })()}
 
             {/* Action buttons */}
-            <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-6)', borderTop: '1px solid var(--border-light)', paddingTop: 'var(--space-4)' }}>
-              <button className="btn btn-ghost btn-sm" onClick={() => { setEditingProvider(selectedProvider); setShowAddModal(true); setSelectedProvider(null); }}>
+            <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: isMobile ? 'wrap' : 'nowrap', marginTop: 'var(--space-6)', borderTop: '1px solid var(--border-light)', paddingTop: 'var(--space-4)' }}>
+              <button className="btn btn-ghost btn-sm touch-target" onClick={() => { setEditingProvider(selectedProvider); setShowAddModal(true); setSelectedProvider(null); }}>
                 Edit
               </button>
               <button
-                className="btn btn-ghost btn-sm"
+                className="btn btn-ghost btn-sm touch-target"
                 disabled={selectedProvider.credentialing_status === 'in_progress' || rerunMutation.isLoading}
                 onClick={() => rerunMutation.mutate(selectedProvider.provider_id)}
                 title={selectedProvider.credentialing_status === 'in_progress' ? 'Already running' : 'Re-run all verification checks'}
               >
                 {rerunMutation.isLoading ? 'Re-running...' : selectedProvider.credentialing_status === 'in_progress' ? 'Running...' : 'Re-run Checks'}
               </button>
-              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--brand-error)' }} onClick={() => {
+              <button className="btn btn-ghost btn-sm touch-target" style={{ color: 'var(--brand-error)' }} onClick={() => {
                 if (confirm('Delete this provider? This cannot be undone.')) {
                   deleteMutation.mutate(selectedProvider.provider_id);
                 }
               }}>
                 Delete
               </button>
-              <div style={{ flex: 1 }} />
+              <div style={{ flex: isMobile ? '0 0 100%' : 1 }} />
               <button
-                className="btn btn-ghost btn-sm"
+                className="btn btn-ghost btn-sm touch-target"
                 onClick={() => setSelectedProvider(null)}
               >
                 Close
@@ -530,8 +561,8 @@ export default function CredentialingQueue() {
         );
 
         return (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'flex-start', paddingTop: 40, zIndex: 100, overflowY: 'auto' }} onClick={() => { setShowAddModal(false); setEditingProvider(null); }}>
-          <div style={{ background: 'var(--surface-primary)', borderRadius: 'var(--radius-xl)', padding: 'var(--space-6)', width: 640, marginBottom: 40 }} onClick={e => e.stopPropagation()}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'flex-start', paddingTop: isMobile ? 16 : 40, zIndex: 100, overflowY: 'auto' }} onClick={() => { setShowAddModal(false); setEditingProvider(null); }}>
+          <div style={{ background: 'var(--surface-primary)', borderRadius: 'var(--radius-xl)', padding: isMobile ? 'var(--space-4)' : 'var(--space-6)', width: isMobile ? 'calc(100% - 16px)' : 640, marginBottom: 40 }} onClick={e => e.stopPropagation()}>
             <h2 style={{ fontSize: 'var(--font-size-xl)', fontWeight: 700, marginBottom: 'var(--space-4)' }}>
               {editingProvider ? 'Edit Provider' : 'Add Provider'}
             </h2>
@@ -677,6 +708,7 @@ export default function CredentialingQueue() {
         </div>
         );
       })()}
+    </div>
     </div>
   );
 }

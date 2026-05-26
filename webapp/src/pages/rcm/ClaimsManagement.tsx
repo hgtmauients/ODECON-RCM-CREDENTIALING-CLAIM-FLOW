@@ -11,6 +11,7 @@ import { apiService } from '@/services/api';
 import { PremiumIcon } from '@/services/iconReplacementService';
 import { formatCurrency, formatDate } from '@/utils/formatters';
 import { Pagination } from '@/components/Pagination';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 100;
@@ -31,8 +32,12 @@ interface Claim {
 
 export default function ClaimsManagement() {
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const queryClient = useQueryClient();
-  const [stateFilter, setStateFilter] = useState<string>('');
+  const [stateFilter, setStateFilter] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('state') || '';
+  });
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedClaims, setSelectedClaims] = useState<number[]>([]);
   const [offset, setOffset] = useState(0);
@@ -62,6 +67,11 @@ export default function ClaimsManagement() {
         (c.payer_claim_id || '').toLowerCase().includes(searchQuery.toLowerCase())
       )
     : allClaims;
+  const readyToSubmitCount = allClaims.filter((c) => c.state === 'ready_to_submit').length;
+  const draftCount = allClaims.filter((c) => c.state === 'draft').length;
+  const deniedCount = allClaims.filter((c) => c.state === 'denied').length;
+  const totalCharges = allClaims.reduce((sum, c) => sum + (c.total_charges || 0), 0);
+  const cellPadding = isMobile ? '10px 8px' : 'var(--space-3)';
 
   // Validate claims mutation
   const validateMutation = useMutation(
@@ -240,35 +250,18 @@ export default function ClaimsManagement() {
   };
 
   return (
-    <div className="min-h-screen" style={{ background: 'var(--bg-primary)', padding: 'var(--space-6)' }}>
-      <div style={{ maxWidth: '1600px', margin: '0 auto' }}>
+    <div className="premium-page">
+      <div className="premium-page-inner">
         {/* Header */}
-        <div style={{
-          background: 'var(--surface-glass)',
-          backdropFilter: 'var(--glass-blur)',
-          border: '1px solid var(--glass-border)',
-          borderRadius: 'var(--radius-xl)',
-          padding: 'var(--space-6)',
-          marginBottom: 'var(--space-6)'
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div className="premium-hero-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-3)' }}>
             <div>
-              <h1 style={{
-                fontSize: 'var(--font-size-3xl)',
-                fontWeight: 700,
-                marginBottom: 'var(--space-2)',
-                background: 'var(--gradient-primary)',
-                backgroundClip: 'text',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent'
-              }}>
-                Claims Management
-              </h1>
+              <h1 className="premium-hero-title">Claims Management</h1>
               <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--font-size-base)' }}>
-                Create, validate, and submit insurance claims
+                Create, validate, and submit insurance claims with fewer clicks
               </p>
             </div>
-            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+            <div className="quick-action-group">
               {selectedClaims.length > 0 && (
                 <>
                   <button
@@ -278,7 +271,7 @@ export default function ClaimsManagement() {
                       }
                     }}
                     disabled={batchValidateMutation.isLoading}
-                    className="btn btn-ghost"
+                    className="btn btn-ghost touch-target"
                     title="Run validation rules across the selected claims"
                   >
                     {batchValidateMutation.isLoading ? 'Validating…' : `Validate ${selectedClaims.length}`}
@@ -286,12 +279,12 @@ export default function ClaimsManagement() {
                   <button
                     onClick={handleSubmitBatch}
                     disabled={submitBatchMutation.isLoading}
-                    className="btn btn-success"
+                    className="btn btn-success touch-target"
                   >
                     {submitBatchMutation.isLoading ? 'Submitting...' : `Submit ${selectedClaims.length}`}
                   </button>
                   <button
-                    className="btn btn-ghost"
+                    className="btn btn-ghost touch-target"
                     style={{ color: 'var(--brand-error)' }}
                     onClick={() => {
                       if (confirm(`Delete ${selectedClaims.length} selected claim(s)? Only draft/void claims will be deleted.`)) {
@@ -301,14 +294,14 @@ export default function ClaimsManagement() {
                   >
                     Delete {selectedClaims.length}
                   </button>
-                  <button className="btn btn-ghost" onClick={() => setSelectedClaims([])}>
+                  <button className="btn btn-ghost touch-target" onClick={() => setSelectedClaims([])}>
                     Clear Selection
                   </button>
                 </>
               )}
               <button
                 onClick={() => csvFileInputRef.current?.click()}
-                className="btn btn-ghost btn-lg"
+                className="btn btn-ghost btn-lg touch-target"
                 disabled={csvImportMutation.isLoading}
                 title="Import claims from a CSV file"
               >
@@ -322,7 +315,7 @@ export default function ClaimsManagement() {
                     .downloadFile('/rcm/claims/export.csv', 'claims.csv', params)
                     .catch((err: any) => toast.error(err?.message || 'Export failed'));
                 }}
-                className="btn btn-ghost btn-lg"
+                className="btn btn-ghost btn-lg touch-target"
                 title="Download claims as CSV"
               >
                 Export CSV
@@ -336,7 +329,7 @@ export default function ClaimsManagement() {
               />
               <button
                 onClick={() => navigate('/claims/new')}
-                className="btn btn-primary btn-lg"
+                className="btn btn-primary btn-lg touch-target"
               >
                 + New Claim
               </button>
@@ -344,33 +337,45 @@ export default function ClaimsManagement() {
           </div>
         </div>
 
+        <div className="summary-grid">
+          <div className="summary-card">
+            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Claims on this page</div>
+            <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 800 }}>{allClaims.length.toLocaleString()}</div>
+          </div>
+          <div className="summary-card">
+            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Ready to submit</div>
+            <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 800, color: readyToSubmitCount > 0 ? 'var(--brand-success)' : 'var(--text-primary)' }}>{readyToSubmitCount.toLocaleString()}</div>
+          </div>
+          <div className="summary-card">
+            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Drafts needing validation</div>
+            <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 800, color: draftCount > 0 ? 'var(--brand-warning)' : 'var(--text-primary)' }}>{draftCount.toLocaleString()}</div>
+          </div>
+          <div className="summary-card">
+            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Denied on this page</div>
+            <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 800, color: deniedCount > 0 ? 'var(--brand-error)' : 'var(--text-primary)' }}>{deniedCount.toLocaleString()}</div>
+          </div>
+          <div className="summary-card">
+            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Page charge volume</div>
+            <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 800 }}>{formatCurrency(totalCharges)}</div>
+          </div>
+        </div>
+
         {/* Search + Filters */}
-        <div style={{
-          background: 'var(--surface-glass)',
-          backdropFilter: 'var(--glass-blur)',
-          border: '1px solid var(--glass-border)',
-          borderRadius: 'var(--radius-lg)',
-          padding: 'var(--space-4)',
-          marginBottom: 'var(--space-6)',
-          display: 'flex',
-          gap: 'var(--space-3)',
-          flexWrap: 'wrap',
-          alignItems: 'center',
-        }}>
+        <div className="toolbar-card" style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap', alignItems: 'center' }}>
           <input
             type="text"
             placeholder="Search by claim number, date, or payer ID..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="input"
-            style={{ flex: 1, minWidth: 200 }}
+            style={{ flex: 1, minWidth: isMobile ? '100%' : 200 }}
           />
 
           <select
             value={stateFilter}
             onChange={(e) => setStateFilter(e.target.value)}
             className="input"
-            style={{ width: 180 }}
+            style={{ width: isMobile ? '100%' : 180 }}
           >
             <option value="">Claim Status: All</option>
             <option value="draft">Draft</option>
@@ -387,7 +392,7 @@ export default function ClaimsManagement() {
 
           {(stateFilter || searchQuery) && (
             <button
-              className="btn btn-ghost btn-sm"
+              className="btn btn-ghost btn-sm touch-target"
               onClick={() => { setStateFilter(''); setSearchQuery(''); }}
             >
               Clear
@@ -402,16 +407,10 @@ export default function ClaimsManagement() {
         </div>
 
         {/* Claims Table */}
-        <div style={{
-          background: 'var(--surface-glass)',
-          backdropFilter: 'var(--glass-blur)',
-          border: '1px solid var(--glass-border)',
-          borderRadius: 'var(--radius-lg)',
-          overflow: 'hidden'
-        }}>
+        <div className="table-shell">
           {isLoading ? (
             <div style={{ padding: 'var(--space-8)', textAlign: 'center' }}>
-              <PremiumIcon name="spinner" spin size="xl" />
+              <div className="loading-spinner" />
             </div>
           ) : error ? (
             <div style={{ padding: 'var(--space-8)', textAlign: 'center', color: 'var(--brand-error)' }}>
@@ -444,6 +443,7 @@ export default function ClaimsManagement() {
               </button>
             </div>
           ) : (
+            <div className="mobile-table-scroll">
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead style={{
                 position: 'sticky',
@@ -453,7 +453,7 @@ export default function ClaimsManagement() {
                 zIndex: 10
               }}>
                 <tr>
-                  <th style={{ padding: 'var(--space-3)' }}>
+                  <th style={{ padding: cellPadding }}>
                     <input
                       type="checkbox"
                       checked={selectedClaims.length === claims.length && claims.length > 0}
@@ -466,22 +466,22 @@ export default function ClaimsManagement() {
                       }}
                     />
                   </th>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'left', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'left', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     Claim Number
                   </th>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'left', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'left', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     Service Date
                   </th>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'center', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'center', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     Status
                   </th>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'right', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'right', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     Charges
                   </th>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'right', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'right', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     Paid
                   </th>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'right', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'right', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     Actions
                   </th>
                 </tr>
@@ -499,20 +499,20 @@ export default function ClaimsManagement() {
                     onMouseEnter={(e) => e.currentTarget.style.background = selectedClaims.includes(claim.id) ? 'rgba(59, 130, 246, 0.1)' : 'var(--surface-hover)'}
                     onMouseLeave={(e) => e.currentTarget.style.background = selectedClaims.includes(claim.id) ? 'rgba(59, 130, 246, 0.05)' : 'transparent'}
                   >
-                    <td style={{ padding: 'var(--space-3)' }} onClick={(e) => e.stopPropagation()}>
+                    <td style={{ padding: cellPadding }} onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={selectedClaims.includes(claim.id)}
                         onChange={() => handleSelectClaim(claim.id)}
                       />
                     </td>
-                    <td style={{ padding: 'var(--space-3)', fontFamily: 'monospace', fontWeight: 700, color: 'var(--brand-primary)' }}>
+                    <td style={{ padding: cellPadding, fontFamily: 'monospace', fontWeight: 700, color: 'var(--brand-primary)' }}>
                       {claim.claim_number}
                     </td>
-                    <td style={{ padding: 'var(--space-3)', color: 'var(--text-secondary)' }}>
+                    <td style={{ padding: cellPadding, color: 'var(--text-secondary)' }}>
                       {formatDate(claim.service_date_from)}
                     </td>
-                    <td style={{ padding: 'var(--space-3)', textAlign: 'center' }}>
+                    <td style={{ padding: cellPadding, textAlign: 'center' }}>
                       <span style={{
                         padding: 'var(--space-1) var(--space-2)',
                         background: getStateColor(claim.state),
@@ -524,27 +524,28 @@ export default function ClaimsManagement() {
                         {claim.state.toUpperCase().replace('_', ' ')}
                       </span>
                     </td>
-                    <td style={{ padding: 'var(--space-3)', textAlign: 'right', color: 'var(--text-primary)', fontWeight: 600 }}>
+                    <td style={{ padding: cellPadding, textAlign: 'right', color: 'var(--text-primary)', fontWeight: 600 }}>
                       {formatCurrency(claim.total_charges)}
                     </td>
-                    <td style={{ padding: 'var(--space-3)', textAlign: 'right', color: claim.total_paid ? 'var(--text-success)' : 'var(--text-secondary)', fontWeight: 600 }}>
-                      {claim.total_paid ? formatCurrency(claim.total_paid) : '—'}
+                    <td style={{ padding: cellPadding, textAlign: 'right', color: claim.total_paid ? 'var(--text-success)' : 'var(--text-secondary)', fontWeight: 600 }}>
+                      {claim.total_paid ? formatCurrency(claim.total_paid) : '--'}
                     </td>
-                    <td style={{ padding: 'var(--space-3)', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
-                      <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
+                    <td style={{ padding: cellPadding, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
+                      <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
                         {claim.state === 'draft' && (
                           <button
                             onClick={() => validateMutation.mutate(claim.id)}
                             disabled={validateMutation.isLoading}
                             style={{
-                              padding: 'var(--space-2) var(--space-3)',
+                              padding: isMobile ? '8px 10px' : 'var(--space-2) var(--space-3)',
                               background: '#009DDD',
                               border: 'none',
                               borderRadius: 'var(--radius-sm)',
                               color: 'white',
                               fontSize: 'var(--font-size-xs)',
                               fontWeight: 600,
-                              cursor: validateMutation.isLoading ? 'not-allowed' : 'pointer'
+                              cursor: validateMutation.isLoading ? 'not-allowed' : 'pointer',
+                              minHeight: isMobile ? 34 : undefined,
                             }}
                           >
                             Validate
@@ -553,14 +554,15 @@ export default function ClaimsManagement() {
                         <button
                           onClick={() => navigate(`/claims/${claim.id}`)}
                           style={{
-                            padding: 'var(--space-2) var(--space-3)',
+                            padding: isMobile ? '8px 10px' : 'var(--space-2) var(--space-3)',
                             background: 'var(--gradient-primary)',
                             border: 'none',
                             borderRadius: 'var(--radius-sm)',
                             color: 'white',
                             fontSize: 'var(--font-size-xs)',
                             fontWeight: 600,
-                            cursor: 'pointer'
+                            cursor: 'pointer',
+                            minHeight: isMobile ? 34 : undefined,
                           }}
                         >
                           Details
@@ -569,7 +571,7 @@ export default function ClaimsManagement() {
                           <button
                             onClick={() => { if (confirm('Void this claim?')) voidMutation.mutate(claim.id); }}
                             className="btn btn-ghost btn-sm"
-                            style={{ color: 'var(--brand-error)', fontSize: 'var(--font-size-xs)', padding: 'var(--space-1) var(--space-2)' }}
+                            style={{ color: 'var(--brand-error)', fontSize: 'var(--font-size-xs)', padding: isMobile ? '6px 8px' : 'var(--space-1) var(--space-2)', minHeight: isMobile ? 32 : undefined }}
                           >
                             Void
                           </button>
@@ -580,6 +582,7 @@ export default function ClaimsManagement() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
 
           {!isLoading && !error && total > 0 && (
@@ -595,19 +598,11 @@ export default function ClaimsManagement() {
         </div>
 
         {/* Help Text */}
-        <div style={{
-          background: 'rgba(59, 130, 246, 0.1)',
-          border: '1px solid #009DDD',
-          borderRadius: 'var(--radius-lg)',
-          padding: 'var(--space-4)',
-          display: 'flex',
-          gap: 'var(--space-3)',
-          alignItems: 'flex-start'
-        }}>
+        <div className="workflow-callout" style={{ background: 'rgba(59, 130, 246, 0.1)', border: '1px solid #009DDD' }}>
           <PremiumIcon name="info" style={{ color: '#009DDD', marginTop: 'var(--space-1)' }} />
           <div>
             <h3 style={{ fontSize: 'var(--font-size-base)', fontWeight: 600, marginBottom: 'var(--space-2)', color: 'var(--text-primary)' }}>
-              Claims Workflow
+              Recommended claims workflow
             </h3>
             <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)', lineHeight: 1.8 }}>
               <strong>1. Create</strong> - Enter claim manually, import CSV, or create from visit<br />

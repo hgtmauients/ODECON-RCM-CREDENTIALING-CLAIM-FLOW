@@ -202,11 +202,32 @@ export default function Dashboard() {
     if (!safePath) return;
     navigate(safePath);
   };
+  const prioritizedWorkQueues = [...(summary?.work_queues ?? [])].sort((a, b) => b.count - a.count);
+  const focusItems = [
+    {
+      label: 'Open denials to resolve',
+      count: summary?.denials.open ?? 0,
+      tone: (summary?.denials.open ?? 0) > 0 ? 'high' : 'low',
+      link: '/denials',
+    },
+    {
+      label: 'Credentials expiring in 30 days',
+      count: summary?.enrollment.expiring_30d ?? 0,
+      tone: (summary?.enrollment.expiring_30d ?? 0) > 0 ? 'medium' : 'low',
+      link: '/payer-enrollment',
+    },
+    {
+      label: 'Claims ready for follow-up',
+      count: prioritizedWorkQueues[0]?.count || 0,
+      tone: (prioritizedWorkQueues[0]?.count || 0) > 0 ? 'medium' : 'low',
+      link: prioritizedWorkQueues[0]?.link || '/claims',
+    },
+  ] as const;
 
   if (isLoading) {
     return (
       <div style={{ padding: 'var(--space-12)', textAlign: 'center' }}>
-        <div style={{ width: 24, height: 24, margin: '0 auto', border: '3px solid var(--border-light)', borderTopColor: 'var(--brand-primary)', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} />
+        <div className="spin" style={{ width: 24, height: 24, margin: '0 auto', border: '3px solid var(--border-light)', borderTopColor: 'var(--brand-primary)', borderRadius: '50%' }} />
       </div>
     );
   }
@@ -220,32 +241,41 @@ export default function Dashboard() {
 
   return (
     <div>
-      <div style={{ marginBottom: 'var(--space-6)' }}>
-        <h1 className="page-title">Hello, {greeting}</h1>
-        <p className="page-subtitle">
-          As of {new Date(summary.as_of).toLocaleString()}
-        </p>
+      <div className="dashboard-hero">
+        <div>
+          <h1 className="page-title">Hello, {greeting}</h1>
+          <p className="page-subtitle">
+            Last synced {new Date(summary.as_of).toLocaleString()}
+          </p>
+        </div>
+        <div className="dashboard-hero-actions">
+          <button className="btn btn-primary" onClick={() => navigate('/claims/new')}>Create claim</button>
+          <button className="btn btn-ghost" onClick={() => navigate('/denials')}>Review denials</button>
+          <button className="btn btn-ghost" onClick={() => navigate('/credentialing')}>Open credentialing queue</button>
+        </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 'var(--space-4)', marginBottom: 'var(--space-6)' }}>
-        <KPI label="Total claims" value={summary.claims.total.toLocaleString()} onClick={() => navigate('/claims')} />
-        <KPI label="AR outstanding" value={fmtCurrency(summary.ar.total)} accent="var(--brand-primary)" onClick={() => navigate('/claims?state=submitted')} />
-        <KPI label="Open denials" value={summary.denials.open.toLocaleString()} accent={summary.denials.open > 0 ? 'var(--brand-error)' : undefined} onClick={() => navigate('/denials')} />
-        <KPI label="Expiring credentials (≤30d)" value={summary.enrollment.expiring_30d.toLocaleString()} accent={summary.enrollment.expiring_30d > 0 ? 'var(--brand-warning, #f59e0b)' : undefined} onClick={() => navigate('/payer-enrollment')} />
+      <div className="kpi-grid">
+        <KPI label="Total claims" value={summary.claims.total.toLocaleString()} hint="Current in lifecycle" onClick={() => navigate('/claims')} />
+        <KPI label="AR outstanding" value={fmtCurrency(summary.ar.total)} hint="Unresolved receivables" accent="var(--brand-primary)" onClick={() => navigate('/claims?state=submitted')} />
+        <KPI label="Open denials" value={summary.denials.open.toLocaleString()} hint="Needs immediate attention" priority={summary.denials.open > 0 ? 'high' : 'low'} accent={summary.denials.open > 0 ? 'var(--brand-error)' : undefined} onClick={() => navigate('/denials')} />
+        <KPI label="Expiring credentials (≤30d)" value={summary.enrollment.expiring_30d.toLocaleString()} hint="Prevent enrollment lapses" priority={summary.enrollment.expiring_30d > 0 ? 'medium' : 'low'} accent={summary.enrollment.expiring_30d > 0 ? 'var(--brand-warning, #f59e0b)' : undefined} onClick={() => navigate('/payer-enrollment')} />
       </div>
 
       {(summary.month_to_date || summary.year_to_date) && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 'var(--space-4)', marginBottom: 'var(--space-6)' }}>
+        <div className="kpi-grid">
           {summary.month_to_date && (
             <>
               <KPI
                 label="Claims this month"
                 value={summary.month_to_date.claims_created.toLocaleString()}
+                hint="Month-to-date volume"
               />
               <KPI
                 label="Revenue this month"
                 value={fmtCurrency(summary.month_to_date.paid)}
                 accent="var(--brand-success)"
+                hint="Paid month-to-date"
               />
             </>
           )}
@@ -254,11 +284,13 @@ export default function Dashboard() {
               <KPI
                 label="Denial rate (YTD)"
                 value={`${summary.year_to_date.denial_rate_pct}%`}
+                priority={summary.year_to_date.denial_rate_pct >= 10 ? 'high' : 'low'}
                 accent={summary.year_to_date.denial_rate_pct >= 10 ? 'var(--brand-error)' : 'var(--text-primary)'}
               />
               <KPI
                 label="Collection rate (YTD)"
                 value={`${summary.year_to_date.collection_rate_pct}%`}
+                priority={summary.year_to_date.collection_rate_pct >= 90 ? 'low' : 'medium'}
                 accent={summary.year_to_date.collection_rate_pct >= 90 ? 'var(--brand-success)' : 'var(--brand-primary)'}
               />
             </>
@@ -266,11 +298,17 @@ export default function Dashboard() {
         </div>
       )}
 
+      <div className="section-header">
+        <div>
+          <p className="section-title">Today&apos;s operational focus</p>
+          <p className="section-subtitle">Prioritized queues and cashflow exposure</p>
+        </div>
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1fr) minmax(0, 1fr)', gap: 'var(--space-6)', marginBottom: 'var(--space-6)' }}>
         {/* Work queues */}
         <Card title="Work queues" subtitle="Counts of actionable items right now">
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            {summary.work_queues.map((q) => (
+            {prioritizedWorkQueues.map((q) => (
               <button
                 key={q.key}
                 onClick={() => navigateIfSafe(q.link)}
@@ -278,60 +316,101 @@ export default function Dashboard() {
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
-                  padding: 'var(--space-3) var(--space-2)',
+                  padding: 'var(--space-3)',
                   border: 'none',
                   borderBottom: '1px solid var(--border-primary)',
-                  background: 'transparent',
+                  borderRadius: 'var(--radius-md)',
+                  background: q.count > 0 ? 'rgba(37, 99, 235, 0.04)' : 'transparent',
                   cursor: 'pointer',
                   textAlign: 'left',
                 }}
               >
-                <span style={{ fontSize: 'var(--font-size-sm)' }}>{q.label}</span>
-                <span style={{
-                  fontSize: 'var(--font-size-base)',
-                  fontWeight: 700,
-                  minWidth: 36,
-                  textAlign: 'right',
-                  color: q.count > 0 ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                }}>
-                  {q.count.toLocaleString()}
-                </span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>{q.label}</span>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)' }}>
+                    {q.count > 0 ? 'Requires follow-up' : 'No pending items'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{
+                    fontSize: 'var(--font-size-base)',
+                    fontWeight: 700,
+                    minWidth: 36,
+                    textAlign: 'right',
+                    color: q.count > 0 ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                  }}>
+                    {q.count.toLocaleString()}
+                  </span>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)' }}>View</span>
+                </div>
               </button>
             ))}
           </div>
         </Card>
 
-        {/* AR aging */}
-        <Card title="AR aging" subtitle="Outstanding balance by days since submitted">
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                <th style={tableHeadCell}>Bucket</th>
-                <th style={{ ...tableHeadCell, textAlign: 'right' }}>Claims</th>
-                <th style={{ ...tableHeadCell, textAlign: 'right' }}>Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary.ar.buckets.map((b) => (
-                <tr key={b.bucket} style={{ borderTop: '1px solid var(--border-primary)' }}>
-                  <td style={{ padding: 'var(--space-2)', fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>{b.bucket} days</td>
-                  <td style={{ padding: 'var(--space-2)', textAlign: 'right', fontSize: 'var(--font-size-sm)' }}>{b.count.toLocaleString()}</td>
-                  <td style={{ padding: 'var(--space-2)', textAlign: 'right', fontSize: 'var(--font-size-sm)', fontFamily: 'monospace' }}>
-                    {fmtCurrency(b.amount)}
-                  </td>
-                </tr>
-              ))}
-              <tr style={{ borderTop: '2px solid var(--border-primary)' }}>
-                <td style={{ padding: 'var(--space-2)', fontSize: 'var(--font-size-sm)', fontWeight: 700 }}>Total</td>
-                <td />
-                <td style={{ padding: 'var(--space-2)', textAlign: 'right', fontSize: 'var(--font-size-sm)', fontFamily: 'monospace', fontWeight: 700 }}>
-                  {fmtCurrency(summary.ar.total)}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+        <Card title="Priority checklist" subtitle="What to tackle first this shift">
+          <div style={{ display: 'grid', gap: 'var(--space-3)' }}>
+            {focusItems.map((item) => (
+              <button
+                key={item.label}
+                onClick={() => navigateIfSafe(item.link)}
+                style={{
+                  border: '1px solid var(--border-primary)',
+                  borderRadius: 'var(--radius-lg)',
+                  background: 'var(--surface-secondary)',
+                  padding: 'var(--space-3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>{item.label}</div>
+                  <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)' }}>Click to open queue</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontWeight: 800, fontSize: 'var(--font-size-xl)' }}>{item.count.toLocaleString()}</span>
+                  <span className={`priority-chip ${item.tone}`}>{item.tone === 'high' ? 'Urgent' : item.tone === 'medium' ? 'Watch' : 'Stable'}</span>
+                </div>
+              </button>
+            ))}
+          </div>
         </Card>
       </div>
+
+      <Card title="AR aging" subtitle="Outstanding balance by days since submitted">
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={tableHeadCell}>Bucket</th>
+              <th style={{ ...tableHeadCell, textAlign: 'right' }}>Claims</th>
+              <th style={{ ...tableHeadCell, textAlign: 'right' }}>Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {summary.ar.buckets.map((b) => (
+              <tr key={b.bucket} style={{ borderTop: '1px solid var(--border-primary)' }}>
+                <td style={{ padding: 'var(--space-2)', fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>{b.bucket} days</td>
+                <td style={{ padding: 'var(--space-2)', textAlign: 'right', fontSize: 'var(--font-size-sm)' }}>{b.count.toLocaleString()}</td>
+                <td style={{ padding: 'var(--space-2)', textAlign: 'right', fontSize: 'var(--font-size-sm)', fontFamily: 'monospace' }}>
+                  {fmtCurrency(b.amount)}
+                </td>
+              </tr>
+            ))}
+            <tr style={{ borderTop: '2px solid var(--border-primary)' }}>
+              <td style={{ padding: 'var(--space-2)', fontSize: 'var(--font-size-sm)', fontWeight: 700 }}>Total</td>
+              <td />
+              <td style={{ padding: 'var(--space-2)', textAlign: 'right', fontSize: 'var(--font-size-sm)', fontFamily: 'monospace', fontWeight: 700 }}>
+                {fmtCurrency(summary.ar.total)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </Card>
+
+      <div style={{ height: 'var(--space-6)' }} />
 
       <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1fr) minmax(0, 1fr)', gap: 'var(--space-6)', marginBottom: 'var(--space-6)' }}>
         <Card title="Enterprise Integrations" subtitle="Clearinghouse + credentialing + security ecosystem status">
@@ -564,7 +643,7 @@ const tableHeadCell: React.CSSProperties = {
 
 function Card({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <div className="card" style={{ padding: 'var(--space-5)' }}>
+    <div className="card" style={{ padding: 'var(--space-5)', background: 'var(--surface-elevated)' }}>
       <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 700, marginBottom: subtitle ? 0 : 'var(--space-3)' }}>{title}</h2>
       {subtitle && <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)', marginBottom: 'var(--space-3)' }}>{subtitle}</p>}
       {children}
@@ -572,7 +651,21 @@ function Card({ title, subtitle, children }: { title: string; subtitle?: string;
   );
 }
 
-function KPI({ label, value, accent, onClick }: { label: string; value: string; accent?: string; onClick?: () => void }) {
+function KPI({
+  label,
+  value,
+  hint,
+  accent,
+  priority,
+  onClick,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  accent?: string;
+  priority?: 'high' | 'medium' | 'low';
+  onClick?: () => void;
+}) {
   return (
     <button
       onClick={onClick}
@@ -583,14 +676,27 @@ function KPI({ label, value, accent, onClick }: { label: string; value: string; 
         background: 'var(--surface-glass)',
         border: '1px solid var(--glass-border)',
         cursor: onClick ? 'pointer' : 'default',
+        boxShadow: 'var(--shadow-sm)',
       }}
     >
-      <div style={{ fontSize: 'var(--font-size-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-secondary)', marginBottom: 4 }}>
-        {label}
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+        <div style={{ fontSize: 'var(--font-size-xs)', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-secondary)' }}>
+          {label}
+        </div>
+        {priority && (
+          <span className={`priority-chip ${priority}`}>
+            {priority === 'high' ? 'Urgent' : priority === 'medium' ? 'Monitor' : 'Healthy'}
+          </span>
+        )}
       </div>
       <div style={{ fontSize: 'var(--font-size-3xl)', fontWeight: 800, color: accent || 'var(--text-primary)' }}>
         {value}
       </div>
+      {hint && (
+        <div style={{ marginTop: 6, fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)' }}>
+          {hint}
+        </div>
+      )}
     </button>
   );
 }

@@ -9,6 +9,7 @@ import { useNavigate } from 'react-router-dom';
 import { apiService } from '@/services/api';
 import { PremiumIcon } from '@/services/iconReplacementService';
 import { formatCurrency, formatDate } from '@/utils/formatters';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import toast from 'react-hot-toast';
 
 interface DenialCase {
@@ -29,6 +30,7 @@ interface DenialCase {
 
 export default function DenialDashboard() {
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [categoryFilter, setCategoryFilter] = useState<string>('');
   const [priorityFilter, setPriorityFilter] = useState<string>('');
 
@@ -45,6 +47,10 @@ export default function DenialDashboard() {
   );
 
   const denials: DenialCase[] = data?.data || [];
+  const criticalOrHigh = denials.filter((d) => d.priority === 'critical' || d.priority === 'high').length;
+  const dueSoon = denials.filter((d) => typeof d.days_until_due === 'number' && d.days_until_due <= 14).length;
+  const openAmount = denials.reduce((sum, d) => sum + d.denied_amount, 0);
+  const cellPadding = isMobile ? '10px 8px' : 'var(--space-3)';
 
   const getPriorityColor = (priority: string) => {
     switch (priority) {
@@ -68,60 +74,41 @@ export default function DenialDashboard() {
   };
 
   return (
-    <div className="min-h-screen" style={{ background: 'var(--bg-primary)', padding: 'var(--space-6)' }}>
-      <div style={{ maxWidth: '1600px', margin: '0 auto' }}>
+    <div className="premium-page">
+      <div className="premium-page-inner">
         {/* Header */}
-        <div style={{
-          background: 'var(--surface-glass)',
-          backdropFilter: 'var(--glass-blur)',
-          border: '1px solid var(--glass-border)',
-          borderRadius: 'var(--radius-xl)',
-          padding: 'var(--space-6)',
-          marginBottom: 'var(--space-6)'
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div className="premium-hero-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-3)' }}>
             <div>
-              <h1 style={{
-                fontSize: 'var(--font-size-3xl)',
-                fontWeight: 700,
-                marginBottom: 'var(--space-2)',
-                background: 'var(--gradient-primary)',
-                backgroundClip: 'text',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-              }}>
-                Denial Management
-              </h1>
+              <h1 className="premium-hero-title">Denial Management</h1>
               <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--font-size-base)' }}>
-                Review denials, generate appeals, and track outcomes
+                Work denials by urgency, protect appeal windows, and recover revenue
               </p>
             </div>
-            <button
-              className="btn btn-ghost btn-lg"
-              onClick={() => {
-                const params: Record<string, string | number> = { limit: 10000 };
-                if (categoryFilter) params.category = categoryFilter;
-                if (priorityFilter) params.priority = priorityFilter;
-                apiService
-                  .downloadFile('/rcm/denials/cases/export.csv', 'denials.csv', params)
-                  .catch((err: any) => toast.error(err?.message || 'Export failed'));
-              }}
-              title="Download denial cases as CSV"
-            >
-              Export CSV
-            </button>
+            <div className="quick-action-group">
+              <button className="btn btn-ghost btn-lg touch-target" onClick={() => setPriorityFilter('critical')}>Focus critical</button>
+              <button className="btn btn-ghost btn-lg touch-target" onClick={() => setPriorityFilter('high')}>Focus high priority</button>
+              <button
+                className="btn btn-ghost btn-lg touch-target"
+                onClick={() => {
+                  const params: Record<string, string | number> = { limit: 10000 };
+                  if (categoryFilter) params.category = categoryFilter;
+                  if (priorityFilter) params.priority = priorityFilter;
+                  apiService
+                    .downloadFile('/rcm/denials/cases/export.csv', 'denials.csv', params)
+                    .catch((err: any) => toast.error(err?.message || 'Export failed'));
+                }}
+                title="Download denial cases as CSV"
+              >
+                Export CSV
+              </button>
+            </div>
           </div>
         </div>
 
         {/* Summary Cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 'var(--space-4)', marginBottom: 'var(--space-6)' }}>
-          <div style={{
-            background: 'var(--surface-glass)',
-            backdropFilter: 'var(--glass-blur)',
-            border: '1px solid var(--glass-border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: 'var(--space-4)'
-          }}>
+        <div className="summary-grid">
+          <div className="summary-card">
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)', marginBottom: 'var(--space-2)' }}>
               Total Denials
             </div>
@@ -130,49 +117,36 @@ export default function DenialDashboard() {
             </div>
           </div>
 
-          <div style={{
-            background: 'var(--surface-glass)',
-            backdropFilter: 'var(--glass-blur)',
-            border: '1px solid var(--glass-border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: 'var(--space-4)'
-          }}>
+          <div className="summary-card">
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)', marginBottom: 'var(--space-2)' }}>
               Critical/High Priority
             </div>
             <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 700, color: '#ef4444' }}>
-              {denials.filter(d => d.priority === 'critical' || d.priority === 'high').length}
+              {criticalOrHigh}
             </div>
           </div>
 
-          <div style={{
-            background: 'var(--surface-glass)',
-            backdropFilter: 'var(--glass-blur)',
-            border: '1px solid var(--glass-border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: 'var(--space-4)'
-          }}>
+          <div className="summary-card">
+            <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)', marginBottom: 'var(--space-2)' }}>
+              Due in 14 days
+            </div>
+            <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 700, color: dueSoon > 0 ? 'var(--brand-warning)' : 'var(--text-primary)' }}>
+              {dueSoon}
+            </div>
+          </div>
+
+          <div className="summary-card">
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)', marginBottom: 'var(--space-2)' }}>
               Total Denied Amount
             </div>
             <div style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 700, color: 'var(--text-primary)' }}>
-              {formatCurrency(denials.reduce((sum, d) => sum + d.denied_amount, 0))}
+              {formatCurrency(openAmount)}
             </div>
           </div>
         </div>
 
         {/* Filters */}
-        <div style={{
-          background: 'var(--surface-glass)',
-          backdropFilter: 'var(--glass-blur)',
-          border: '1px solid var(--glass-border)',
-          borderRadius: 'var(--radius-lg)',
-          padding: 'var(--space-4)',
-          marginBottom: 'var(--space-6)',
-          display: 'flex',
-          gap: 'var(--space-3)',
-          flexWrap: 'wrap'
-        }}>
+        <div className="toolbar-card" style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
           <select
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
@@ -183,7 +157,7 @@ export default function DenialDashboard() {
               background: 'var(--surface-primary)',
               color: 'var(--text-primary)',
               fontSize: 'var(--font-size-sm)',
-              minWidth: '200px'
+              minWidth: isMobile ? '100%' : '200px'
             }}
           >
             <option value="">All Categories</option>
@@ -204,7 +178,7 @@ export default function DenialDashboard() {
               background: 'var(--surface-primary)',
               color: 'var(--text-primary)',
               fontSize: 'var(--font-size-sm)',
-              minWidth: '150px'
+              minWidth: isMobile ? '100%' : '150px'
             }}
           >
             <option value="">All Priorities</option>
@@ -213,19 +187,18 @@ export default function DenialDashboard() {
             <option value="medium">Medium</option>
             <option value="low">Low</option>
           </select>
+          {(categoryFilter || priorityFilter) && (
+            <button className="btn btn-ghost btn-sm touch-target" onClick={() => { setCategoryFilter(''); setPriorityFilter(''); }}>
+              Clear filters
+            </button>
+          )}
         </div>
 
         {/* Denials Table */}
-        <div style={{
-          background: 'var(--surface-glass)',
-          backdropFilter: 'var(--glass-blur)',
-          border: '1px solid var(--glass-border)',
-          borderRadius: 'var(--radius-lg)',
-          overflow: 'hidden'
-        }}>
+        <div className="table-shell">
           {isLoading ? (
             <div style={{ padding: 'var(--space-8)', textAlign: 'center' }}>
-              <PremiumIcon name="spinner" size="xl" />
+              <div className="loading-spinner" />
             </div>
           ) : error ? (
             <div style={{ padding: 'var(--space-8)', textAlign: 'center', color: 'var(--brand-error)' }}>
@@ -244,6 +217,7 @@ export default function DenialDashboard() {
               </p>
             </div>
           ) : (
+            <div className="mobile-table-scroll">
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead style={{
                 position: 'sticky',
@@ -253,25 +227,25 @@ export default function DenialDashboard() {
                 zIndex: 10
               }}>
                 <tr>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'left', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'left', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     Priority
                   </th>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'left', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'left', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     Claim
                   </th>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'left', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'left', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     CARC/RARC
                   </th>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'left', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'left', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     Category
                   </th>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'right', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'right', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     Amount
                   </th>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'center', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'center', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     Due Date
                   </th>
-                  <th style={{ padding: 'var(--space-3)', textAlign: 'right', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                  <th style={{ padding: cellPadding, textAlign: 'right', fontWeight: 600, fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
                     Actions
                   </th>
                 </tr>
@@ -288,7 +262,7 @@ export default function DenialDashboard() {
                     onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-hover)'}
                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                   >
-                    <td style={{ padding: 'var(--space-3)' }}>
+                    <td style={{ padding: cellPadding }}>
                       <span style={{
                         padding: 'var(--space-1) var(--space-2)',
                         background: getPriorityColor(denial.priority),
@@ -300,10 +274,10 @@ export default function DenialDashboard() {
                         {denial.priority.toUpperCase()}
                       </span>
                     </td>
-                    <td style={{ padding: 'var(--space-3)', fontFamily: 'monospace', fontWeight: 600, color: 'var(--brand-primary)' }}>
+                    <td style={{ padding: cellPadding, fontFamily: 'monospace', fontWeight: 600, color: 'var(--brand-primary)' }}>
                       {denial.claim_number}
                     </td>
-                    <td style={{ padding: 'var(--space-3)', color: 'var(--text-primary)', fontSize: 'var(--font-size-sm)' }}>
+                    <td style={{ padding: cellPadding, color: 'var(--text-primary)', fontSize: 'var(--font-size-sm)' }}>
                       <div style={{ fontFamily: 'monospace', fontWeight: 600 }}>{denial.carc_code}</div>
                       {denial.rarc_code && (
                         <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', marginTop: 'var(--space-1)' }}>
@@ -311,7 +285,7 @@ export default function DenialDashboard() {
                         </div>
                       )}
                     </td>
-                    <td style={{ padding: 'var(--space-3)' }}>
+                    <td style={{ padding: cellPadding }}>
                       <span style={{
                         padding: 'var(--space-1) var(--space-2)',
                         background: getCategoryColor(denial.denial_category),
@@ -323,10 +297,10 @@ export default function DenialDashboard() {
                         {denial.denial_category.replace('_', ' ').toUpperCase()}
                       </span>
                     </td>
-                    <td style={{ padding: 'var(--space-3)', textAlign: 'right', color: 'var(--brand-error)', fontWeight: 700 }}>
+                    <td style={{ padding: cellPadding, textAlign: 'right', color: 'var(--brand-error)', fontWeight: 700 }}>
                       {formatCurrency(denial.denied_amount)}
                     </td>
-                    <td style={{ padding: 'var(--space-3)', textAlign: 'center' }}>
+                    <td style={{ padding: cellPadding, textAlign: 'center' }}>
                       {denial.appeal_due_date ? (
                         <div>
                           <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-primary)' }}>
@@ -346,18 +320,19 @@ export default function DenialDashboard() {
                         </div>
                       ) : '—'}
                     </td>
-                    <td style={{ padding: 'var(--space-3)', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
+                    <td style={{ padding: cellPadding, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => navigate(`/denials/${denial.id}`)}
                         style={{
-                          padding: 'var(--space-2) var(--space-3)',
+                          padding: isMobile ? '8px 10px' : 'var(--space-2) var(--space-3)',
                           background: 'var(--gradient-primary)',
                           border: 'none',
                           borderRadius: 'var(--radius-sm)',
                           color: 'white',
                           fontSize: 'var(--font-size-xs)',
                           fontWeight: 600,
-                          cursor: 'pointer'
+                          cursor: 'pointer',
+                          minHeight: isMobile ? 34 : undefined,
                         }}
                       >
                         Work Denial
@@ -367,19 +342,12 @@ export default function DenialDashboard() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 
         {/* Info Box */}
-        <div style={{
-          background: 'rgba(239, 68, 68, 0.1)',
-          border: '1px solid #ef4444',
-          borderRadius: 'var(--radius-lg)',
-          padding: 'var(--space-4)',
-          display: 'flex',
-          gap: 'var(--space-3)',
-          alignItems: 'flex-start'
-        }}>
+        <div className="workflow-callout" style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid #ef4444' }}>
           <PremiumIcon name="warning" style={{ color: '#ef4444', marginTop: 'var(--space-1)' }} />
           <div>
             <h3 style={{ fontSize: 'var(--font-size-base)', fontWeight: 600, marginBottom: 'var(--space-2)', color: 'var(--text-primary)' }}>
