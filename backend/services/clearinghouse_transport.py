@@ -244,9 +244,25 @@ class SFTPTransport:
             
             for filename in files:
                 if file_pattern.replace("*", "") in filename:
+                    raw_name = str(filename)
+                    if raw_name in {".", ".."} or "/" in raw_name or "\\" in raw_name:
+                        logger.warning("Skipping suspicious remote filename from SFTP listing: %r", raw_name)
+                        continue
+
+                    remote_name = safe_filename(raw_name, fallback="downloaded.edi")
+                    if remote_name != raw_name:
+                        # Fail closed for unexpected names rather than trying to
+                        # translate a remote name and potentially reading the wrong file.
+                        logger.warning(
+                            "Skipping non-canonical remote filename from SFTP listing: raw=%r safe=%r",
+                            raw_name,
+                            remote_name,
+                        )
+                        continue
+
                     # Download file
-                    remote_path = f"{inbound_path}/{filename}"
-                    local_name = safe_filename(filename, fallback="downloaded.edi")
+                    remote_path = f"{inbound_path}/{remote_name}"
+                    local_name = safe_filename(remote_name, fallback="downloaded.edi")
                     local_path = (download_root / local_name).resolve()
                     try:
                         local_path.relative_to(download_root)

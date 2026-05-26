@@ -36,21 +36,15 @@ async def test_download_files_sanitizes_remote_filename_and_enforces_tenant_root
     transport = SFTPTransport(db)
     files = await transport.download_files(connection, file_pattern="*.835")
 
-    assert len(files) == 2
+    assert len(files) == 1
 
     expected_root = (tmp_path / "00000000-0000-0000-0000-0000000000a1").resolve()
     for row in files:
         local_path = Path(row["local_path"]).resolve()
         local_path.relative_to(expected_root)
 
-    first_local = Path(files[0]["local_path"]).name
-    second_local = Path(files[1]["local_path"]).name
-    assert first_local == "evil.835"
-    assert second_local == "safe.835"
+    assert Path(files[0]["local_path"]).name == "safe.835"
 
-    first_remote, first_local_path = sftp.get.call_args_list[0].args
-    second_remote, second_local_path = sftp.get.call_args_list[1].args
-    assert first_remote == "/inbound/../evil.835"
-    assert second_remote == "/inbound/safe.835"
-    Path(first_local_path).resolve().relative_to(expected_root)
-    Path(second_local_path).resolve().relative_to(expected_root)
+    remote_path, local_path = sftp.get.call_args_list[0].args
+    assert remote_path == "/inbound/safe.835"
+    Path(local_path).resolve().relative_to(expected_root)

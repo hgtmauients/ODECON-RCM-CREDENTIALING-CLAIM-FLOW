@@ -130,6 +130,20 @@ def test_api_validator_rejects_unknown_sftp_host_keys_override_in_production():
         validate_api_startup_security(env)
 
 
+def test_api_validator_rejects_login_token_body_opt_in_in_production():
+    env = {
+        "ENV": "production",
+        "JWT_ALGORITHM": "HS256",
+        "JWT_SECRET": "x" * 32,
+        "CLAIMFLOW_ENCRYPTION_KEY": base64.b64encode(AESGCM.generate_key(bit_length=256)).decode("ascii"),
+        "CORS_ORIGINS": "https://app.claimflow.example",
+        "REDIS_URL": "redis://:strongpassword@redis.internal:6379/0",
+        "AUTH_LOGIN_INCLUDE_TOKEN": "true",
+    }
+    with pytest.raises(RuntimeError, match="AUTH_LOGIN_INCLUDE_TOKEN=true is not allowed"):
+        validate_api_startup_security(env)
+
+
 def test_api_validator_rejects_redis_url_without_password_in_production():
     env = {
         "ENV": "production",

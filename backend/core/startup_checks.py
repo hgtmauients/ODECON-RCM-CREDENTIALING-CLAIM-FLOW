@@ -103,6 +103,8 @@ def validate_api_startup_security(env: Mapping[str, str] | None = None) -> None:
         errors.append("ALLOW_PRIVATE_OUTBOUND_DESTINATIONS=true is not allowed in production")
     if _as_bool(config.get("SFTP_ALLOW_UNKNOWN_HOST_KEYS"), default=False):
         errors.append("SFTP_ALLOW_UNKNOWN_HOST_KEYS=true is not allowed in production")
+    if _as_bool(config.get("AUTH_LOGIN_INCLUDE_TOKEN"), default=False):
+        errors.append("AUTH_LOGIN_INCLUDE_TOKEN=true is not allowed in production")
 
     if errors:
         raise RuntimeError("Startup security validation failed: " + "; ".join(errors))

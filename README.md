@@ -124,7 +124,7 @@ python -m app.main
 
 ## Architecture
 
-- **Auth**: JWT/OIDC with tenant_id claim
+- **Auth**: JWT/OIDC with tenant_id claim; cookie-based sessions by default (`AUTH_LOGIN_INCLUDE_TOKEN=false`)
 - **Multi-tenancy**: Application-level tenant_id filtering on all queries
 - **Credentialing runtime**: Scheduler-driven queue worker is canonical in production (`CLAIMFLOW_SCHEDULER_ENABLED=true`); API only spawns direct background execution when scheduler is disabled (local/dev fallback)
 - **EDI**: Manual CSV/EDI upload by default; optional clearinghouse transport
