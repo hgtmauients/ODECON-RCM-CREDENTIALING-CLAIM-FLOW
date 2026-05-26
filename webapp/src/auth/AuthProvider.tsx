@@ -64,6 +64,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           } catch {
             sessionStorage.removeItem(USER_KEY);
             apiService.setAuthToken(null);
+            apiService.setCsrfToken(null);
             apiService.setTenantId(null);
           }
         }
@@ -78,9 +79,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const response = await apiService.post('/auth/login', { email, password });
-    const { user: userData } = response;
+    const { user: userData, csrf_token: csrfToken } = response;
     sessionStorage.setItem(USER_KEY, JSON.stringify(userData));
     apiService.setAuthToken(null);
+    apiService.setCsrfToken(csrfToken ?? null);
     apiService.setTenantId(userData.tenant_id);
     setUser(userData);
   }, []);
@@ -94,6 +96,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     sessionStorage.removeItem(USER_KEY);
     clearLegacyLocalSession();
     apiService.setAuthToken(null);
+    apiService.setCsrfToken(null);
     apiService.setTenantId(null);
     setUser(null);
   }, []);

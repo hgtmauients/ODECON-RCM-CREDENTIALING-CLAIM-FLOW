@@ -6,11 +6,13 @@
 const BASE_URL = import.meta.env?.VITE_API_BASE_URL || '/api';
 const TOKEN_KEY = 'claimflow_token';
 const USER_KEY = 'claimflow_user';
+const CSRF_TOKEN_KEY = 'claimflow_csrf_header_token';
 const CSRF_COOKIE_NAME = 'claimflow_csrf_token';
 const CSRF_HEADER_NAME = 'X-CSRF-Token';
 
 let authToken: string | null = null;
 let tenantId: string | null = null;
+let csrfHeaderToken: string | null = null;
 
 function setAuthToken(token: string | null): void {
   authToken = token;
@@ -18,6 +20,16 @@ function setAuthToken(token: string | null): void {
 
 function setTenantId(id: string | null): void {
   tenantId = id;
+}
+
+function setCsrfToken(token: string | null): void {
+  csrfHeaderToken = token;
+  if (typeof window === 'undefined') return;
+  if (token) {
+    sessionStorage.setItem(CSRF_TOKEN_KEY, token);
+  } else {
+    sessionStorage.removeItem(CSRF_TOKEN_KEY);
+  }
 }
 
 function getCookieValue(name: string): string | null {
@@ -31,7 +43,7 @@ function getCookieValue(name: string): string | null {
 }
 
 function getCsrfHeader(): Record<string, string> {
-  const csrfToken = getCookieValue(CSRF_COOKIE_NAME);
+  const csrfToken = csrfHeaderToken || (typeof window !== 'undefined' ? sessionStorage.getItem(CSRF_TOKEN_KEY) : null) || getCookieValue(CSRF_COOKIE_NAME);
   if (!csrfToken) return {};
   return { [CSRF_HEADER_NAME]: csrfToken };
 }
@@ -63,9 +75,11 @@ function authHeaders(): Record<string, string> {
 function clearStoredSession(): void {
   authToken = null;
   tenantId = null;
+  csrfHeaderToken = null;
   if (typeof window === 'undefined') return;
   sessionStorage.removeItem(TOKEN_KEY);
   sessionStorage.removeItem(USER_KEY);
+  sessionStorage.removeItem(CSRF_TOKEN_KEY);
   // Keep cleanup of old keys for users upgrading from localStorage-based sessions.
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
@@ -244,6 +258,7 @@ export const apiService = {
   downloadFile,
   setAuthToken,
   setTenantId,
+  setCsrfToken,
 };
 
 export default apiService;

@@ -233,6 +233,10 @@ async def login(
             "roles": list(user.roles or []),
             "full_name": user.full_name,
         },
+        # CSRF token is returned in the body so SPA clients hosted on a
+        # different subdomain can send X-CSRF-Token without reading api-domain
+        # cookies via document.cookie.
+        "csrf_token": csrf_token,
     }
     if _include_token_in_login_response():
         body["access_token"] = token

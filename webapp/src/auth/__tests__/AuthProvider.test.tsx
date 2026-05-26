@@ -14,6 +14,7 @@ vi.mock('@/services/api', () => ({
     delete: vi.fn(),
     upload: vi.fn(),
     setAuthToken: vi.fn(),
+    setCsrfToken: vi.fn(),
     setTenantId: vi.fn(),
   },
 }));
