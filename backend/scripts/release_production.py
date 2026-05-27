@@ -492,13 +492,63 @@ if psql is None or psql.returncode != 0:
     if db_role_ssh.returncode != 0:
         raise RuntimeError("database app-role hardening failed")
 
-    deploy_cmd = (
-        f"set -euo pipefail; "
-        f"cd {remote_dir}; "
-        f"docker compose -f docker-compose.prod.yml up -d --build backend; "
-        f"docker exec noodledoc-backend-1 alembic upgrade head"
-    )
-    ssh = _run(["ssh", server, f"bash -lc \"{deploy_cmd}\""])
+    deploy_script = f"""
+import pathlib
+import subprocess
+import sys
+
+remote_dir = {json.dumps(remote_dir)}
+env_file = pathlib.Path(remote_dir) / ".env"
+if not env_file.exists():
+    print("missing .env in remote deploy dir", file=sys.stderr)
+    raise SystemExit(1)
+
+values = {{}}
+for raw in env_file.read_text(encoding="utf-8").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    values[key.strip()] = value.strip()
+
+postgres_password = values.get("POSTGRES_PASSWORD", "").strip()
+postgres_db = values.get("POSTGRES_DB", "").strip() or "noodledoc"
+if not postgres_password:
+    print("POSTGRES_PASSWORD is required in remote .env", file=sys.stderr)
+    raise SystemExit(1)
+
+compose = subprocess.run(
+    ["docker", "compose", "-f", "docker-compose.prod.yml", "up", "-d", "--build", "backend"],
+    cwd=remote_dir,
+    text=True,
+    capture_output=True,
+    check=False,
+)
+if compose.returncode != 0:
+    print(compose.stdout or "", file=sys.stderr)
+    print(compose.stderr or "", file=sys.stderr)
+    raise SystemExit(compose.returncode)
+
+admin_db_url = f"postgresql+asyncpg://noodledoc:{{postgres_password}}@postgres:5432/{{postgres_db}}"
+migration = subprocess.run(
+    [
+        "docker", "exec",
+        "-e", f"DATABASE_URL={{admin_db_url}}",
+        "noodledoc-backend-1",
+        "alembic", "upgrade", "head",
+    ],
+    cwd=remote_dir,
+    text=True,
+    capture_output=True,
+    check=False,
+)
+if migration.returncode != 0:
+    print(migration.stdout or "", file=sys.stderr)
+    print(migration.stderr or "", file=sys.stderr)
+    raise SystemExit(migration.returncode)
+"""
+    deploy_cmd = f"python3 -c {shlex.quote(deploy_script)}"
+    ssh = _run(["ssh", server, deploy_cmd])
     if ssh.returncode != 0:
         raise RuntimeError("backend rebuild/migration failed")
 
