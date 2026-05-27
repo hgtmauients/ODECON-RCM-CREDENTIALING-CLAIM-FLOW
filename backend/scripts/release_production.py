@@ -101,7 +101,7 @@ def _run_frontend_quality_gate(repo_root: Path) -> None:
         ([npm_bin, "run", "test:coverage:all"], 1),
         ([npm_bin, "run", "e2e:smoke"], 1),
         ([npm_bin, "run", "e2e:visual"], 1),
-        ([npm_bin, "run", "build"], 1),
+        ([npm_bin, "run", "build"], 3),
         ([npm_bin, "run", "check:bundle-budget"], 1),
     ]
     for cmd, attempts in commands:
