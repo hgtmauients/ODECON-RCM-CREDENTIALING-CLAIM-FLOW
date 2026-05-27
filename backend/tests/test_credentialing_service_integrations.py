@@ -4,6 +4,22 @@ import services.credentialing_service as credentialing_module
 from services.credentialing_service import CredentialingService
 
 
+def test_calculate_score_handles_none_sections():
+    svc = CredentialingService()
+
+    score = svc.calculate_credentialing_score(
+        {
+            "npi_verification": {"verified": True},
+            "state_license_verification": None,
+            "background_check": None,
+            "oig_check": None,
+            "sam_check": None,
+        }
+    )
+
+    assert score == 20
+
+
 @pytest.mark.asyncio
 async def test_state_license_verification_fails_closed_without_provider(monkeypatch):
     monkeypatch.delenv("STATE_LICENSE_PROVIDER_URL", raising=False)
@@ -217,3 +233,34 @@ async def test_background_check_retries_on_timeout_then_succeeds(monkeypatch):
     assert result["verified"] is True
     assert result["clear"] is True
     assert fake.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_oig_check_follows_redirect(monkeypatch):
+    monkeypatch.setenv("OIG_API_URL", "https://oig.hhs.gov/exclusions/api/search")
+
+    class _Resp:
+        def __init__(self, status_code, payload=None, location=""):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.headers = {"location": location} if location else {}
+
+        def json(self):
+            return self._payload
+
+    calls = []
+
+    async def _fake_request_with_retry(**kwargs):
+        calls.append(kwargs["url"])
+        if len(calls) == 1:
+            return _Resp(301, location="/exclusions/api/search/")
+        return _Resp(200, payload={"excluded": False})
+
+    monkeypatch.setattr(credentialing_module, "request_with_retry", _fake_request_with_retry)
+    svc = CredentialingService()
+    result = await svc.check_oig_exclusion("Test Provider", "1980-01-01", "1336414671")
+
+    assert len(calls) == 2
+    assert calls[1].startswith("https://oig.hhs.gov/exclusions/api/search/")
+    assert result["verified"] is True
+    assert result["excluded"] is False

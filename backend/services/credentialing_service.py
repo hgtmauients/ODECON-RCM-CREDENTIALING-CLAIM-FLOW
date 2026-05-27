@@ -9,7 +9,7 @@ import os
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 from core.http_client import request_with_retry
 
@@ -24,8 +24,9 @@ class CredentialingService:
     
     def __init__(self):
         self.npi_api_url = "https://npiregistry.cms.hhs.gov/api/"
-        self.oig_api_url = "https://oig.hhs.gov/exclusions/api/search"
-        self.sam_api_url = "https://api.sam.gov/api/entity-information/"
+        self.oig_api_url = os.getenv("OIG_API_URL", "").strip()
+        self.sam_api_url = os.getenv("SAM_API_URL", "https://api.sam.gov/entity-information/v4/exclusions").strip()
+        self.sam_api_key = os.getenv("SAM_API_KEY", "").strip()
         self.state_license_provider_url = os.getenv("STATE_LICENSE_PROVIDER_URL", "").strip()
         self.background_check_provider_url = os.getenv("BACKGROUND_CHECK_PROVIDER_URL", "").strip()
         self.adapter_api_key = os.getenv("ADAPTER_API_KEY", "").strip()
@@ -226,6 +227,13 @@ class CredentialingService:
         """
         Check OIG exclusion list
         """
+        if not self.oig_api_url:
+            return {
+                "verified": False,
+                "excluded": None,
+                "error": "oig_source_not_configured_use_leie_download",
+                "checked_at": _utc_iso(),
+            }
         try:
             response = await request_with_retry(
                 method="GET",
@@ -240,6 +248,23 @@ class CredentialingService:
                 retry_on_statuses=(429, 500, 502, 503, 504),
                 client_factory=httpx.AsyncClient,
             )
+            if response.status_code in {301, 302, 307, 308}:
+                redirect_url = response.headers.get("location", "").strip()
+                if redirect_url:
+                    redirect_url = urljoin(self.oig_api_url, redirect_url)
+                    response = await request_with_retry(
+                        method="GET",
+                        url=redirect_url,
+                        params={
+                            "name": provider_name,
+                            "npi": npi,
+                        },
+                        timeout_seconds=self.integration_timeout_seconds,
+                        max_retries=self.integration_max_retries,
+                        retry_backoff_seconds=self.integration_retry_backoff_seconds,
+                        retry_on_statuses=(429, 500, 502, 503, 504),
+                        client_factory=httpx.AsyncClient,
+                    )
                 
             if response.status_code == 200:
                 data = response.json()
@@ -270,17 +295,30 @@ class CredentialingService:
     async def check_sam_exclusion(
         self,
         provider_name: str,
-        dob: str
+        dob: str,
+        npi: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Check SAM exclusion list
+        Check SAM exclusions using official SAM.gov v4 endpoint.
         """
+        if not self.sam_api_key:
+            return {
+                "verified": False,
+                "excluded": None,
+                "error": "sam_api_key_not_configured",
+                "checked_at": _utc_iso(),
+            }
         try:
             response = await request_with_retry(
                 method="GET",
                 url=self.sam_api_url,
                 params={
-                    "name": provider_name,
+                    "api_key": self.sam_api_key,
+                    "classification": "Individual",
+                    "recordStatus": "active",
+                    "size": 10,
+                    "exclusionName": provider_name,
+                    **({"npi": npi} if npi else {}),
                 },
                 timeout_seconds=self.integration_timeout_seconds,
                 max_retries=self.integration_max_retries,
@@ -291,11 +329,17 @@ class CredentialingService:
                 
             if response.status_code == 200:
                 data = response.json()
+                total = data.get("totalRecords", 0)
+                try:
+                    total = int(total or 0)
+                except Exception:
+                    total = 0
                 
                 return {
-                    "verified": True,
-                    "excluded": data.get("excluded", False),
-                    "exclusion_date": data.get("exclusion_date"),
+                    "verified": True,  # endpoint reachable + parsed
+                    "excluded": total > 0,
+                    "total_records": total,
+                    "source": "sam_v4",
                     "checked_at": _utc_iso()
                 }
             
@@ -394,33 +438,42 @@ class CredentialingService:
         """
         Calculate overall credentialing score (0-100)
         """
+        def _as_dict(value: Any) -> Dict[str, Any]:
+            return value if isinstance(value, dict) else {}
+
         score = 0
-        
+
+        npi = _as_dict(results.get("npi_verification"))
+        state_license = _as_dict(results.get("state_license_verification"))
+        background = _as_dict(results.get("background_check"))
+        oig = _as_dict(results.get("oig_check"))
+        sam = _as_dict(results.get("sam_check"))
+        specialty_board = _as_dict(results.get("specialty_board_verification"))
+
         # NPI verification (20 points)
-        if results.get("npi_verification", {}).get("verified"):
+        if npi.get("verified"):
             score += 20
-        
+
         # State license verification (30 points)
-        state_license = results.get("state_license_verification", {})
         if state_license.get("verified") and str(state_license.get("status", "")).upper() in {"ACTIVE", "CURRENT", "VALID"}:
             score += 30
-        
+
         # Background check (20 points)
-        if results.get("background_check", {}).get("verified") and results.get("background_check", {}).get("clear"):
+        if background.get("verified") and background.get("clear"):
             score += 20
-        
+
         # OIG check (15 points)
-        if results.get("oig_check", {}).get("verified") and not results.get("oig_check", {}).get("excluded"):
+        if oig.get("verified") and not oig.get("excluded"):
             score += 15
-        
+
         # SAM check (10 points)
-        if results.get("sam_check", {}).get("verified") and not results.get("sam_check", {}).get("excluded"):
+        if sam.get("verified") and not sam.get("excluded"):
             score += 10
-        
+
         # Specialty board (5 points) - optional
-        if results.get("specialty_board_verification", {}).get("verified"):
+        if specialty_board.get("verified"):
             score += 5
-        
+
         return score
     
     def determine_status(self, score: int) -> str:

@@ -573,6 +573,35 @@ Common causes:
 - Volume permission denied → entrypoint should chown `/data/edi`; restart the container to re-run
 - Out of memory → check `docker stats noodledoc-backend-1`
 
+### Browser CORS preflight blocked (missing `X-CSRF-Token`)
+
+Symptom in browser console:
+- `Request header field x-csrf-token is not allowed by Access-Control-Allow-Headers`
+- Followed by `TypeError: Failed to fetch`
+
+Quick verification:
+
+```bash
+curl -i -X OPTIONS "https://api.noodledoc.com/api/credentialing/manual" \
+  -H "Origin: https://www.noodledoc.com" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: content-type,x-csrf-token,authorization"
+```
+
+Expected preflight response includes `X-CSRF-Token` in `Access-Control-Allow-Headers`.
+
+If missing, patch nginx CORS allow-headers list on the server and reload:
+
+```bash
+ssh root@5.161.209.46
+sudoedit /etc/nginx/sites-available/api.noodledoc.com
+# Ensure Access-Control-Allow-Headers includes:
+# Authorization, Content-Type, X-Tenant-ID, X-CSRF-Token, Idempotency-Key, X-Request-ID, X-Webhook-Signature, X-Webhook-Timestamp
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Prevention: `backend/scripts/release_production.py` now runs a public CORS preflight guard and blocks release when required headers (including `x-csrf-token`) are missing.
+
 ### Database is full
 
 ```bash

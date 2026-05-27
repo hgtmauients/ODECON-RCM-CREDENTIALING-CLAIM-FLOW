@@ -56,6 +56,56 @@ def test_run_route_smoke_parses_json_payload(monkeypatch):
     assert out["checks"][0]["actual"] == 200
 
 
+def test_run_public_cors_preflight_guard_detects_missing_header(monkeypatch):
+    class _Resp:
+        status = 204
+        headers = {
+            "Access-Control-Allow-Origin": "https://www.noodledoc.com",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Tenant-ID",
+        }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(rp.urllib.request, "urlopen", lambda *_args, **_kwargs: _Resp())
+    out = rp._run_public_cors_preflight_guard(
+        api_base_url="https://api.noodledoc.com",
+        web_origin="https://www.noodledoc.com",
+        path="/api/credentialing/manual",
+        required_headers=["content-type", "authorization", "x-csrf-token"],
+    )
+    assert out["ok"] is False
+    assert "x-csrf-token" in out["missing_headers"]
+
+
+def test_run_public_cors_preflight_guard_passes_with_required_headers(monkeypatch):
+    class _Resp:
+        status = 204
+        headers = {
+            "Access-Control-Allow-Origin": "https://www.noodledoc.com",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type, X-CSRF-Token, X-Tenant-ID",
+        }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(rp.urllib.request, "urlopen", lambda *_args, **_kwargs: _Resp())
+    out = rp._run_public_cors_preflight_guard(
+        api_base_url="https://api.noodledoc.com",
+        web_origin="https://www.noodledoc.com",
+        path="/api/credentialing/manual",
+        required_headers=["content-type", "authorization", "x-csrf-token"],
+    )
+    assert out["ok"] is True
+    assert out["missing_headers"] == []
+
+
 def test_run_security_gate_raises_on_failure(monkeypatch):
     def fake_run(cmd, *, cwd=None, capture_output=False):
         return _cp(1, stderr="failed")
@@ -189,9 +239,25 @@ def test_main_runs_slo_gate_before_deploy(monkeypatch, tmp_path):
         "_run_route_smoke",
         lambda _server: {"ok": True, "checks": [{"url": "http://127.0.0.1:8000/health", "expected": 200, "actual": 200}]},
     )
+    monkeypatch.setattr(
+        rp,
+        "_run_public_cors_preflight_guard",
+        lambda **_kwargs: {"ok": True, "missing_headers": []},
+    )
     monkeypatch.setattr(rp, "_run_error_rate_guard", lambda *_args, **_kwargs: {"ok": True, "error_lines": 0})
     monkeypatch.setattr(rp, "_run_canary", lambda **_kwargs: {"go": True})
-    monkeypatch.setattr(sys, "argv", ["release_production.py", "--skip-git-push", "--skip-vercel"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_production.py",
+            "--skip-git-push",
+            "--skip-vercel",
+            "--skip-frontend-gate",
+            "--break-glass-ticket",
+            "TEST-123",
+        ],
+    )
 
     rc = rp.main()
     assert rc == 0
@@ -211,11 +277,15 @@ def test_main_skip_canary_marks_partial_and_returns_no_go(monkeypatch, tmp_path,
             "--skip-vercel",
             "--skip-hetzner",
             "--skip-security-gate",
+            "--skip-frontend-gate",
             "--skip-post-smoke",
             "--skip-route-smoke",
+            "--skip-cors-preflight-guard",
             "--skip-error-rate-guard",
             "--skip-slo-review-gate",
             "--skip-canary",
+            "--break-glass-ticket",
+            "TEST-123",
         ],
     )
 
@@ -246,17 +316,20 @@ def test_remote_env_contract_gate_parses_missing_values(monkeypatch):
 def test_validate_release_contract_rejects_missing_route_checks():
     class _Args:
         skip_security_gate = False
+        skip_frontend_gate = False
         skip_slo_review_gate = False
         skip_git_push = False
         skip_vercel = False
         skip_hetzner = False
         skip_post_smoke = False
         skip_route_smoke = False
+        skip_cors_preflight_guard = False
         skip_error_rate_guard = False
         skip_canary = False
 
     payload = {
         "security_gate": "ok",
+        "frontend_gate": "ok",
         "slo_review_gate": {"ok": True},
         "git_push": "ok",
         "vercel_url": "https://example.vercel.app",
@@ -264,6 +337,7 @@ def test_validate_release_contract_rejects_missing_route_checks():
         "env_contract_gate": {"ok": True},
         "post_deploy_smoke": {"ok": True},
         "route_smoke": {"ok": True, "checks": []},
+        "cors_preflight_guard": {"ok": True},
         "error_rate_guard": {"ok": True, "error_lines": 0},
         "canary": {"go": True},
         "partial": False,

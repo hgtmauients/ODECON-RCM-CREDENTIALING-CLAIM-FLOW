@@ -24,6 +24,8 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -36,6 +38,7 @@ CRITICAL_SKIP_FLAGS = (
     "skip_security_gate",
     "skip_post_smoke",
     "skip_route_smoke",
+    "skip_cors_preflight_guard",
     "skip_error_rate_guard",
     "skip_canary",
     "skip_slo_review_gate",
@@ -238,6 +241,73 @@ def _run_route_smoke(server: str) -> Dict[str, Any]:
         }
     except json.JSONDecodeError:
         return payload
+
+
+def _run_public_cors_preflight_guard(
+    *,
+    api_base_url: str,
+    web_origin: str,
+    path: str,
+    required_headers: List[str],
+) -> Dict[str, Any]:
+    target = f"{api_base_url.rstrip('/')}{path}"
+    normalized_required = sorted(
+        {
+            str(header).strip().lower()
+            for header in required_headers
+            if str(header).strip()
+        }
+    )
+    request_headers = ",".join(normalized_required)
+    req = urllib.request.Request(
+        target,
+        method="OPTIONS",
+        headers={
+            "Origin": web_origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": request_headers,
+        },
+    )
+
+    response_headers: Dict[str, str] = {}
+    status_code = -1
+    error = ""
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status_code = int(resp.status)
+            response_headers = {k.lower(): v for k, v in resp.headers.items()}
+    except urllib.error.HTTPError as exc:
+        status_code = int(exc.code)
+        response_headers = {k.lower(): v for k, v in exc.headers.items()}
+        error = f"http_error_{exc.code}"
+    except Exception as exc:
+        error = str(exc)
+
+    allow_headers_raw = response_headers.get("access-control-allow-headers", "")
+    allowed_headers = {
+        token.strip().lower()
+        for token in allow_headers_raw.split(",")
+        if token.strip()
+    }
+    missing_headers = [h for h in normalized_required if h not in allowed_headers]
+    allow_origin = response_headers.get("access-control-allow-origin", "")
+    ok = (
+        status_code in (200, 204)
+        and allow_origin == web_origin
+        and not missing_headers
+    )
+
+    return {
+        "ok": ok,
+        "url": target,
+        "origin": web_origin,
+        "status_code": status_code,
+        "allow_origin": allow_origin,
+        "allow_headers": allow_headers_raw,
+        "requested_headers": normalized_required,
+        "missing_headers": missing_headers,
+        "error": error,
+    }
 
 
 def _run_error_rate_guard(server: str, *, window_minutes: int, max_error_lines: int) -> Dict[str, Any]:
@@ -584,6 +654,7 @@ def _validate_release_contract(report: Dict[str, Any], args: argparse.Namespace)
         "env_contract_gate",
         "post_deploy_smoke",
         "route_smoke",
+        "cors_preflight_guard",
         "error_rate_guard",
         "canary",
     ]
@@ -654,6 +725,14 @@ def _validate_release_contract(report: Dict[str, Any], args: argparse.Namespace)
         if not isinstance(checks, list) or len(checks) == 0:
             raise RuntimeError("release contract violation: route_smoke checks required")
 
+    if args.skip_cors_preflight_guard:
+        if report["cors_preflight_guard"] != "skipped":
+            raise RuntimeError("release contract violation: cors preflight guard skip mismatch")
+    else:
+        cors_guard = report["cors_preflight_guard"]
+        if not isinstance(cors_guard, dict) or not cors_guard.get("ok"):
+            raise RuntimeError("release contract violation: cors_preflight_guard must be ok dict")
+
     if args.skip_error_rate_guard:
         if report["error_rate_guard"] != "skipped":
             raise RuntimeError("release contract violation: error rate guard skip mismatch")
@@ -697,8 +776,17 @@ def main() -> int:
     parser.add_argument("--skip-frontend-gate", action="store_true", help="Skip local frontend quality gate")
     parser.add_argument("--skip-post-smoke", action="store_true", help="Skip post-deploy backend smoke check")
     parser.add_argument("--skip-route-smoke", action="store_true", help="Skip critical route smoke checks")
+    parser.add_argument("--skip-cors-preflight-guard", action="store_true", help="Skip public CORS preflight guard")
     parser.add_argument("--skip-error-rate-guard", action="store_true", help="Skip post-deploy error-rate guard")
     parser.add_argument("--skip-slo-review-gate", action="store_true", help="Skip SLO review attestation gate")
+    parser.add_argument("--public-api-base-url", default="https://api.noodledoc.com", help="Public API base URL for CORS preflight guard")
+    parser.add_argument("--public-web-origin", default="https://www.noodledoc.com", help="Browser origin used by CORS preflight guard")
+    parser.add_argument("--cors-preflight-path", default="/api/credentialing/manual", help="API path probed by public CORS preflight guard")
+    parser.add_argument(
+        "--cors-required-headers",
+        default="content-type,authorization,x-csrf-token",
+        help="Comma-separated headers that MUST be allowed by CORS preflight",
+    )
     parser.add_argument("--slo-attestation-path", default="docs/slo-review-attestation.json", help="Path to SLO review attestation JSON")
     parser.add_argument("--slo-max-age-days", type=int, default=14, help="Maximum allowed age for SLO review attestation")
     parser.add_argument("--error-window-minutes", type=int, default=10, help="Lookback window for error-rate guard")
@@ -721,6 +809,7 @@ def main() -> int:
         "env_contract_gate": None,
         "post_deploy_smoke": None,
         "route_smoke": None,
+        "cors_preflight_guard": None,
         "error_rate_guard": None,
         "slo_review_gate": None,
         "canary": None,
@@ -813,6 +902,22 @@ def main() -> int:
                 raise RuntimeError("critical route smoke checks failed")
         else:
             report["route_smoke"] = "skipped"
+
+        if not args.skip_cors_preflight_guard:
+            required_headers = [
+                h.strip() for h in str(args.cors_required_headers or "").split(",") if h.strip()
+            ]
+            cors_guard = _run_public_cors_preflight_guard(
+                api_base_url=args.public_api_base_url,
+                web_origin=args.public_web_origin,
+                path=args.cors_preflight_path,
+                required_headers=required_headers,
+            )
+            report["cors_preflight_guard"] = cors_guard
+            if not cors_guard.get("ok"):
+                raise RuntimeError("public CORS preflight guard failed")
+        else:
+            report["cors_preflight_guard"] = "skipped"
 
         if not args.skip_error_rate_guard:
             guard = _run_error_rate_guard(
