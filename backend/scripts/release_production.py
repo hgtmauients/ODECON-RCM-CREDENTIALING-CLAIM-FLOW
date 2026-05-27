@@ -49,6 +49,8 @@ def _run(cmd: List[str], *, cwd: Path | None = None, capture_output: bool = Fals
         cmd,
         cwd=str(cwd) if cwd else None,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=capture_output,
         check=False,
     )
