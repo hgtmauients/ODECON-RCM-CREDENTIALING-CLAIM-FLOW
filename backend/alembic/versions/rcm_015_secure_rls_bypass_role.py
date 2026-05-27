@@ -6,6 +6,7 @@ Create Date: 2026-05-26
 """
 
 from alembic import op
+from sqlalchemy import text
 
 
 revision = "rcm_015"
@@ -46,7 +47,26 @@ TENANT_TABLES = (
 BYPASS_ROLE = "claimflow_rls_bypass"
 
 
+def _table_has_tenant_id(table_name: str) -> bool:
+    bind = op.get_bind()
+    result = bind.execute(
+        text(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = :table_name
+              AND column_name = 'tenant_id'
+            """
+        ),
+        {"table_name": table_name},
+    ).scalar()
+    return bool(result)
+
+
 def _create_policy(table_name: str, bypass_expr: str) -> None:
+    if not _table_has_tenant_id(table_name):
+        return
     op.execute(f'DROP POLICY IF EXISTS tenant_isolation_policy ON "{table_name}"')
     op.execute(
         f"""
