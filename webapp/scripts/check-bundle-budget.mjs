@@ -2,7 +2,9 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
-const distAssetsDir = join(process.cwd(), 'dist', 'assets');
+const distAssetsDir = process.env.BUNDLE_BUDGET_ASSETS_DIR
+  ? join(process.cwd(), process.env.BUNDLE_BUDGET_ASSETS_DIR)
+  : join(process.cwd(), 'dist', 'assets');
 
 const budgets = {
   maxJsChunkGzipKb: Number(process.env.BUNDLE_BUDGET_MAX_JS_CHUNK_GZIP_KB || 420),

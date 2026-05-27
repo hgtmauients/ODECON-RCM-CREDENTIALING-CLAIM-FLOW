@@ -43,7 +43,13 @@ CRITICAL_SKIP_FLAGS = (
 )
 
 
-def _run(cmd: List[str], *, cwd: Path | None = None, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: List[str],
+    *,
+    cwd: Path | None = None,
+    capture_output: bool = False,
+    env: Dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     print(f"$ {' '.join(cmd)}")
     return subprocess.run(
         cmd,
@@ -51,6 +57,7 @@ def _run(cmd: List[str], *, cwd: Path | None = None, capture_output: bool = Fals
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
         capture_output=capture_output,
         check=False,
     )
@@ -94,18 +101,25 @@ def _run_security_gate(repo_root: Path) -> None:
 def _run_frontend_quality_gate(repo_root: Path) -> None:
     webapp_dir = repo_root / "webapp"
     npm_bin = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
-    commands: list[tuple[list[str], int]] = [
-        ([npm_bin, "ci"], 3),
-        ([npm_bin, "run", "typecheck"], 1),
-        ([npm_bin, "run", "test:coverage"], 1),
-        ([npm_bin, "run", "test:coverage:all"], 1),
-        ([npm_bin, "run", "e2e:smoke"], 1),
-        ([npm_bin, "run", "e2e:visual"], 1),
-        ([npm_bin, "run", "build"], 3),
-        ([npm_bin, "run", "check:bundle-budget"], 1),
+    commands: list[tuple[list[str], int, Dict[str, str] | None]] = [
+        ([npm_bin, "ci"], 3, None),
+        ([npm_bin, "run", "typecheck"], 1, None),
+        ([npm_bin, "run", "test:coverage"], 1, None),
+        ([npm_bin, "run", "test:coverage:all"], 1, None),
+        ([npm_bin, "run", "e2e:smoke"], 1, None),
+        ([npm_bin, "run", "e2e:visual"], 1, None),
+        ([npm_bin, "run", "build", "--", "--outDir", "dist-release"], 3, None),
+        (
+            ["node", "./scripts/check-bundle-budget.mjs"],
+            1,
+            {
+                **os.environ,
+                "BUNDLE_BUDGET_ASSETS_DIR": "dist-release/assets",
+            },
+        ),
     ]
-    for cmd, attempts in commands:
-        result = _run(cmd, cwd=webapp_dir, capture_output=True)
+    for cmd, attempts, cmd_env in commands:
+        result = _run(cmd, cwd=webapp_dir, capture_output=True, env=cmd_env)
         attempt = 1
         while (
             result.returncode != 0
@@ -114,7 +128,7 @@ def _run_frontend_quality_gate(repo_root: Path) -> None:
         ):
             time.sleep(3)
             attempt += 1
-            result = _run(cmd, cwd=webapp_dir, capture_output=True)
+            result = _run(cmd, cwd=webapp_dir, capture_output=True, env=cmd_env)
         if result.returncode != 0:
             raise RuntimeError(f"frontend quality gate failed at: {' '.join(cmd)}")
 
