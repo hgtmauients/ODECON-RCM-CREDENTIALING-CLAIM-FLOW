@@ -370,6 +370,7 @@ def _deploy_backend(*, server: str, remote_dir: str) -> None:
 import pathlib
 import subprocess
 import sys
+import time
 
 remote_dir = {json.dumps(remote_dir)}
 env_file = pathlib.Path(remote_dir) / ".env"
@@ -428,23 +429,34 @@ sql = (
     "END $$;"
 ).replace("{{user_sql}}", user_sql).replace("{{password_sql}}", password_sql).replace("{{db_sql}}", db_sql)
 
-psql = subprocess.run(
-    [
-        "docker", "exec", "-i", "noodledoc-postgres-1",
-        "psql", "-v", "ON_ERROR_STOP=1",
-        "-U", postgres_admin_user,
-        "-d", app_db_name,
-        "-c", sql,
-    ],
-    cwd=remote_dir,
-    text=True,
-    capture_output=True,
-    check=False,
-)
-if psql.returncode != 0:
-    print(psql.stdout or "", file=sys.stderr)
-    print(psql.stderr or "", file=sys.stderr)
-    raise SystemExit(psql.returncode)
+psql_cmd = [
+    "docker", "exec", "-i", "noodledoc-postgres-1",
+    "psql", "-v", "ON_ERROR_STOP=1",
+    "-U", postgres_admin_user,
+    "-d", app_db_name,
+    "-c", sql,
+]
+psql = None
+for _ in range(20):
+    psql = subprocess.run(
+        psql_cmd,
+        cwd=remote_dir,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if psql.returncode == 0:
+        break
+    stderr = (psql.stderr or "").lower()
+    if "database system is starting up" in stderr or "connection refused" in stderr:
+        time.sleep(2)
+        continue
+    break
+
+if psql is None or psql.returncode != 0:
+    print((psql.stdout if psql else "") or "", file=sys.stderr)
+    print((psql.stderr if psql else "") or "", file=sys.stderr)
+    raise SystemExit(1 if psql is None else psql.returncode)
 """
     db_role_cmd = f"python3 -c {shlex.quote(remote_script)}"
     db_role_ssh = _run(["ssh", server, db_role_cmd])
