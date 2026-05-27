@@ -7,11 +7,14 @@ services:
       # if POSTGRES_PASSWORD is not set in .env.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: noodledoc
+      APP_DB_USER: ${APP_DB_USER:-claimflow_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}}
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - pgbackups:/backups
+      - ./backend/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U noodledoc"]
       interval: 5s
@@ -50,7 +53,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://noodledoc:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/noodledoc
+      DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-claimflow_app}:${APP_DB_PASSWORD:-${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}}@postgres:5432/noodledoc
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
       CLAIMFLOW_SCHEDULER_ENABLED: ${CLAIMFLOW_SCHEDULER_ENABLED:-true}
       STATE_LICENSE_PROVIDER_URL: ${STATE_LICENSE_PROVIDER_URL:-}

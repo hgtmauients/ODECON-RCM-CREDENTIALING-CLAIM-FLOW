@@ -6,6 +6,7 @@ requires:
   1) relrowsecurity = true
   2) relforcerowsecurity = true
   3) at least one policy in pg_policies
+  4) policy expressions do not rely on mutable app.bypass_rls GUC
 """
 
 from __future__ import annotations
@@ -60,18 +61,19 @@ async def _main() -> int:
             policy_rows = await conn.execute(
                 text(
                     """
-                    SELECT tablename
+                    SELECT tablename, coalesce(qual, ''), coalesce(with_check, '')
                     FROM pg_policies
                     WHERE schemaname = current_schema()
-                    GROUP BY tablename
                     """
                 )
             )
-            policy_tables = {row[0] for row in policy_rows.all()}
+            policy_entries = policy_rows.all()
+            policy_tables = {row[0] for row in policy_entries}
 
         missing_row_security: list[str] = []
         missing_force_rls: list[str] = []
         missing_policy: list[str] = []
+        mutable_bypass_policy: list[str] = []
         for table_name in tenant_tables:
             state = class_state.get(table_name, {"rowsecurity": False, "forcerowsecurity": False})
             if not state["rowsecurity"]:
@@ -81,7 +83,12 @@ async def _main() -> int:
             if table_name not in policy_tables:
                 missing_policy.append(table_name)
 
-        if missing_row_security or missing_force_rls or missing_policy:
+        for table_name, qual, with_check in policy_entries:
+            expr = f"{qual} {with_check}".lower()
+            if "app.bypass_rls" in expr:
+                mutable_bypass_policy.append(table_name)
+
+        if missing_row_security or missing_force_rls or missing_policy or mutable_bypass_policy:
             print("RLS assurance gate failed.", file=sys.stderr)
             if missing_row_security:
                 print(f" - Missing row security: {', '.join(missing_row_security)}", file=sys.stderr)
@@ -89,6 +96,11 @@ async def _main() -> int:
                 print(f" - Missing force RLS: {', '.join(missing_force_rls)}", file=sys.stderr)
             if missing_policy:
                 print(f" - Missing policies: {', '.join(missing_policy)}", file=sys.stderr)
+            if mutable_bypass_policy:
+                print(
+                    f" - Mutable bypass policy expressions present: {', '.join(sorted(set(mutable_bypass_policy)))}",
+                    file=sys.stderr,
+                )
             return 1
 
         print(f"RLS assurance gate passed for {len(tenant_tables)} tenant table(s).")

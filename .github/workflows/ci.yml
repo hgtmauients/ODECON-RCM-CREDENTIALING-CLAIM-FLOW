@@ -86,7 +86,7 @@ jobs:
         uses: codecov/codecov-action@v4
         with:
           file: backend/coverage.xml
-          fail_ci_if_error: false
+          fail_ci_if_error: true
 
   backend-security-suite:
     runs-on: ubuntu-latest

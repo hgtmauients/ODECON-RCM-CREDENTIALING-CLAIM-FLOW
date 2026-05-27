@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import shutil
@@ -27,9 +28,18 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
-DEFAULT_SERVER = "root@5.161.209.46"
-DEFAULT_REMOTE_DIR = "/opt/noodledoc"
+DEFAULT_SERVER = (os.getenv("CLAIMFLOW_DEPLOY_SERVER", "") or "root@5.161.209.46").strip()
+DEFAULT_REMOTE_DIR = (os.getenv("CLAIMFLOW_DEPLOY_REMOTE_DIR", "") or "/opt/noodledoc").strip()
 DEFAULT_TENANT = "00000000-0000-0000-0000-000000000001"
+CRITICAL_SKIP_FLAGS = (
+    "skip_security_gate",
+    "skip_post_smoke",
+    "skip_route_smoke",
+    "skip_error_rate_guard",
+    "skip_canary",
+    "skip_slo_review_gate",
+    "skip_frontend_gate",
+)
 
 
 def _run(cmd: List[str], *, cwd: Path | None = None, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
@@ -76,6 +86,24 @@ def _run_security_gate(repo_root: Path) -> None:
     )
     if gate.returncode != 0:
         raise RuntimeError("predeploy security gate failed")
+
+
+def _run_frontend_quality_gate(repo_root: Path) -> None:
+    webapp_dir = repo_root / "webapp"
+    commands = [
+        ["npm", "ci"],
+        ["npm", "run", "typecheck"],
+        ["npm", "run", "test:coverage"],
+        ["npm", "run", "test:coverage:all"],
+        ["npm", "run", "e2e:smoke"],
+        ["npm", "run", "e2e:visual"],
+        ["npm", "run", "build"],
+        ["npm", "run", "check:bundle-budget"],
+    ]
+    for cmd in commands:
+        result = _run(cmd, cwd=webapp_dir)
+        if result.returncode != 0:
+            raise RuntimeError(f"frontend quality gate failed at: {' '.join(cmd)}")
 
 
 def _run_remote_env_contract_gate(server: str, *, remote_dir: str, required_keys: List[str]) -> Dict[str, Any]:
@@ -337,6 +365,36 @@ def _upload_and_extract_archive(archive: Path, *, server: str, remote_dir: str) 
 
 
 def _deploy_backend(*, server: str, remote_dir: str) -> None:
+    db_role_cmd = (
+        f"set -euo pipefail; "
+        f"cd {remote_dir}; "
+        f"set -a; source .env; set +a; "
+        f"APP_DB_USER=${{APP_DB_USER:-claimflow_app}}; "
+        f"APP_DB_PASSWORD=${{APP_DB_PASSWORD:-$POSTGRES_PASSWORD}}; "
+        f"APP_DB_NAME=${{POSTGRES_DB:-noodledoc}}; "
+        f"docker compose -f docker-compose.prod.yml up -d postgres redis; "
+        f"docker exec -i noodledoc-postgres-1 psql -U \"$POSTGRES_USER\" -d \"$APP_DB_NAME\" -v ON_ERROR_STOP=1 <<'SQL' "
+        f"DO $$ "
+        f"BEGIN "
+        f"  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$APP_DB_USER') THEN "
+        f"    EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE INHERIT', '$APP_DB_USER', '$APP_DB_PASSWORD'); "
+        f"  ELSE "
+        f"    EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE INHERIT', '$APP_DB_USER', '$APP_DB_PASSWORD'); "
+        f"  END IF; "
+        f"END "
+        f"$$; "
+        f"GRANT CONNECT ON DATABASE \"$APP_DB_NAME\" TO \"$APP_DB_USER\"; "
+        f"GRANT USAGE ON SCHEMA public TO \"$APP_DB_USER\"; "
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO \"$APP_DB_USER\"; "
+        f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO \"$APP_DB_USER\"; "
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO \"$APP_DB_USER\"; "
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO \"$APP_DB_USER\"; "
+        f"SQL"
+    )
+    db_role_ssh = _run(["ssh", server, f"bash -lc \"{db_role_cmd}\""])
+    if db_role_ssh.returncode != 0:
+        raise RuntimeError("database app-role hardening failed")
+
     deploy_cmd = (
         f"set -euo pipefail; "
         f"cd {remote_dir}; "
@@ -370,6 +428,7 @@ def _run_canary(*, server: str, tenant: str) -> Dict[str, Any]:
 def _validate_release_contract(report: Dict[str, Any], args: argparse.Namespace) -> None:
     required = [
         "security_gate",
+        "frontend_gate",
         "slo_review_gate",
         "git_push",
         "vercel_url",
@@ -389,6 +448,12 @@ def _validate_release_contract(report: Dict[str, Any], args: argparse.Namespace)
             raise RuntimeError("release contract violation: security_gate skip mismatch")
     elif report["security_gate"] != "ok":
         raise RuntimeError("release contract violation: security_gate must be ok")
+
+    if args.skip_frontend_gate:
+        if report["frontend_gate"] != "skipped":
+            raise RuntimeError("release contract violation: frontend_gate skip mismatch")
+    elif report["frontend_gate"] != "ok":
+        raise RuntimeError("release contract violation: frontend_gate must be ok")
 
     if args.skip_slo_review_gate:
         if report["slo_review_gate"] != "skipped":
@@ -481,6 +546,7 @@ def main() -> int:
     parser.add_argument("--skip-hetzner", action="store_true", help="Skip Hetzner backend deploy")
     parser.add_argument("--skip-canary", action="store_true", help="Skip production canary run")
     parser.add_argument("--skip-security-gate", action="store_true", help="Skip local predeploy security gate tests")
+    parser.add_argument("--skip-frontend-gate", action="store_true", help="Skip local frontend quality gate")
     parser.add_argument("--skip-post-smoke", action="store_true", help="Skip post-deploy backend smoke check")
     parser.add_argument("--skip-route-smoke", action="store_true", help="Skip critical route smoke checks")
     parser.add_argument("--skip-error-rate-guard", action="store_true", help="Skip post-deploy error-rate guard")
@@ -490,6 +556,7 @@ def main() -> int:
     parser.add_argument("--error-window-minutes", type=int, default=10, help="Lookback window for error-rate guard")
     parser.add_argument("--max-error-lines", type=int, default=20, help="Maximum ERROR/Exception lines allowed in guard window")
     parser.add_argument("--allow-dirty", action="store_true", help="Allow running with local uncommitted changes")
+    parser.add_argument("--break-glass-ticket", default="", help="Required ticket/reference when using critical skip flags")
     args = parser.parse_args()
 
     repo_root = _repo_root_from_script()
@@ -502,6 +569,7 @@ def main() -> int:
         "vercel_url": None,
         "hetzner_deploy": None,
         "security_gate": None,
+        "frontend_gate": None,
         "env_contract_gate": None,
         "post_deploy_smoke": None,
         "route_smoke": None,
@@ -513,6 +581,13 @@ def main() -> int:
     }
 
     try:
+        critical_skips_used = [flag for flag in CRITICAL_SKIP_FLAGS if getattr(args, flag, False)]
+        if critical_skips_used and not str(args.break_glass_ticket or "").strip():
+            raise RuntimeError(
+                "Critical skip flags require --break-glass-ticket. "
+                f"Used: {', '.join(critical_skips_used)}"
+            )
+
         if args.allow_dirty and not args.skip_hetzner:
             raise RuntimeError(
                 "--allow-dirty cannot be used when deploying backend. "
@@ -528,6 +603,12 @@ def main() -> int:
             report["security_gate"] = "ok"
         else:
             report["security_gate"] = "skipped"
+
+        if not args.skip_frontend_gate:
+            _run_frontend_quality_gate(repo_root)
+            report["frontend_gate"] = "ok"
+        else:
+            report["frontend_gate"] = "skipped"
 
         if not args.skip_slo_review_gate:
             slo_gate = _run_slo_review_gate(

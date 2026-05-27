@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
 from core.database import get_async_session
+from core.db_rls import set_tenant_context
 from models.tenant import Tenant
 from models.rcm import PayerProfile
 from services.clearinghouse_transport import ClearinghouseService
@@ -23,7 +24,7 @@ async def poll_and_process_835_files():
     Main polling function - downloads and processes 835 files.
     Iterates over active tenants to ensure tenant-scoped processing.
     """
-    async for db in get_async_session(allow_rls_bypass=True):
+    async for db in get_async_session():
         try:
             logger.info("Starting 835 file polling job...")
 
@@ -34,11 +35,14 @@ async def poll_and_process_835_files():
             tenants = tenants_result.scalars().all()
 
             for tenant in tenants:
+                await set_tenant_context(db, tenant_id=str(tenant.id))
                 await _poll_835_for_tenant(db, tenant)
 
         except Exception as e:
             logger.error(f"Fatal error in 835 polling job: {e}")
             raise
+        finally:
+            await set_tenant_context(db, tenant_id=None)
 
 
 async def _poll_835_for_tenant(db: AsyncSession, tenant):
@@ -124,12 +128,13 @@ async def _poll_835_for_tenant(db: AsyncSession, tenant):
 
 async def poll_277_files():
     """Poll for 277 claim acknowledgment files - tenant-scoped."""
-    async for db in get_async_session(allow_rls_bypass=True):
+    async for db in get_async_session():
         try:
             tenants_result = await db.execute(select(Tenant).where(Tenant.is_active == True))
             tenants = tenants_result.scalars().all()
 
             for tenant in tenants:
+                await set_tenant_context(db, tenant_id=str(tenant.id))
                 payers_result = await db.execute(
                     select(PayerProfile).where(and_(
                         PayerProfile.is_active == True,
@@ -155,6 +160,8 @@ async def poll_277_files():
 
         except Exception as e:
             logger.error(f"Fatal error in 277 polling: {e}")
+        finally:
+            await set_tenant_context(db, tenant_id=None)
 
 
 if __name__ == "__main__":

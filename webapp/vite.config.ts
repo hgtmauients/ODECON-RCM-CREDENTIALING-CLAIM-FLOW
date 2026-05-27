@@ -14,10 +14,10 @@ const testedFilesThresholds = {
 // Staged baseline for all source files. Ratchet these upward as targeted
 // coverage expands, then make this the primary gate.
 const allFilesThresholds = {
-  statements: 12,
-  branches: 12,
-  functions: 9,
-  lines: 13,
+  statements: 12.3,
+  branches: 12.5,
+  functions: 9.05,
+  lines: 13.3,
 };
 
 export default defineConfig({
