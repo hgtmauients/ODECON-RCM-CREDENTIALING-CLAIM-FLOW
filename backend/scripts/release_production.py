@@ -366,33 +366,88 @@ def _upload_and_extract_archive(archive: Path, *, server: str, remote_dir: str) 
 
 
 def _deploy_backend(*, server: str, remote_dir: str) -> None:
-    db_role_cmd = (
-        f"set -euo pipefail; "
-        f"cd {remote_dir}; "
-        f"set -a; source .env; set +a; "
-        f"APP_DB_USER=${{APP_DB_USER:-claimflow_app}}; "
-        f"APP_DB_PASSWORD=${{APP_DB_PASSWORD:-$POSTGRES_PASSWORD}}; "
-        f"APP_DB_NAME=${{POSTGRES_DB:-noodledoc}}; "
-        f"docker compose -f docker-compose.prod.yml up -d postgres redis; "
-        f"docker exec -i noodledoc-postgres-1 psql -U \"$POSTGRES_USER\" -d \"$APP_DB_NAME\" -v ON_ERROR_STOP=1 <<'SQL' "
-        f"DO $$ "
-        f"BEGIN "
-        f"  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$APP_DB_USER') THEN "
-        f"    EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE INHERIT', '$APP_DB_USER', '$APP_DB_PASSWORD'); "
-        f"  ELSE "
-        f"    EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE INHERIT', '$APP_DB_USER', '$APP_DB_PASSWORD'); "
-        f"  END IF; "
-        f"END "
-        f"$$; "
-        f"GRANT CONNECT ON DATABASE \"$APP_DB_NAME\" TO \"$APP_DB_USER\"; "
-        f"GRANT USAGE ON SCHEMA public TO \"$APP_DB_USER\"; "
-        f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO \"$APP_DB_USER\"; "
-        f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO \"$APP_DB_USER\"; "
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO \"$APP_DB_USER\"; "
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO \"$APP_DB_USER\"; "
-        f"SQL"
-    )
-    db_role_ssh = _run(["ssh", server, f"bash -lc \"{db_role_cmd}\""])
+    remote_script = f"""
+import pathlib
+import subprocess
+import sys
+
+remote_dir = {json.dumps(remote_dir)}
+env_file = pathlib.Path(remote_dir) / ".env"
+if not env_file.exists():
+    print("missing .env in remote deploy dir", file=sys.stderr)
+    raise SystemExit(1)
+
+values = {{}}
+for raw in env_file.read_text(encoding="utf-8").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    values[key.strip()] = value.strip()
+
+def _escape(value: str) -> str:
+    return value.replace("'", "''")
+
+app_db_user = values.get("APP_DB_USER", "").strip() or "claimflow_app"
+app_db_password = values.get("APP_DB_PASSWORD", "").strip() or values.get("POSTGRES_PASSWORD", "").strip()
+app_db_name = values.get("POSTGRES_DB", "").strip() or "noodledoc"
+postgres_admin_user = values.get("POSTGRES_USER", "").strip() or "noodledoc"
+
+if not app_db_password:
+    print("APP_DB_PASSWORD or POSTGRES_PASSWORD must be set in remote .env", file=sys.stderr)
+    raise SystemExit(1)
+
+compose = subprocess.run(
+    ["docker", "compose", "-f", "docker-compose.prod.yml", "up", "-d", "postgres", "redis"],
+    cwd=remote_dir,
+    text=True,
+    capture_output=True,
+    check=False,
+)
+if compose.returncode != 0:
+    print(compose.stdout or "", file=sys.stderr)
+    print(compose.stderr or "", file=sys.stderr)
+    raise SystemExit(compose.returncode)
+
+user_sql = _escape(app_db_user)
+password_sql = _escape(app_db_password)
+db_sql = _escape(app_db_name)
+sql = (
+    "DO $$ BEGIN "
+    f"IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{user_sql}}') THEN "
+    f"EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE INHERIT', '{{user_sql}}', '{{password_sql}}'); "
+    "ELSE "
+    f"EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE INHERIT', '{{user_sql}}', '{{password_sql}}'); "
+    "END IF; "
+    f"EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', '{{db_sql}}', '{{user_sql}}'); "
+    f"EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', '{{user_sql}}'); "
+    f"EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', '{{user_sql}}'); "
+    f"EXECUTE format('GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO %I', '{{user_sql}}'); "
+    f"EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', '{{user_sql}}'); "
+    f"EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO %I', '{{user_sql}}'); "
+    "END $$;"
+).replace("{{user_sql}}", user_sql).replace("{{password_sql}}", password_sql).replace("{{db_sql}}", db_sql)
+
+psql = subprocess.run(
+    [
+        "docker", "exec", "-i", "noodledoc-postgres-1",
+        "psql", "-v", "ON_ERROR_STOP=1",
+        "-U", postgres_admin_user,
+        "-d", app_db_name,
+        "-c", sql,
+    ],
+    cwd=remote_dir,
+    text=True,
+    capture_output=True,
+    check=False,
+)
+if psql.returncode != 0:
+    print(psql.stdout or "", file=sys.stderr)
+    print(psql.stderr or "", file=sys.stderr)
+    raise SystemExit(psql.returncode)
+"""
+    db_role_cmd = f"python3 -c {shlex.quote(remote_script)}"
+    db_role_ssh = _run(["ssh", server, db_role_cmd])
     if db_role_ssh.returncode != 0:
         raise RuntimeError("database app-role hardening failed")
 
