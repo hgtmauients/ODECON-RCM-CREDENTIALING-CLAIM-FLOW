@@ -90,15 +90,16 @@ def _run_security_gate(repo_root: Path) -> None:
 
 def _run_frontend_quality_gate(repo_root: Path) -> None:
     webapp_dir = repo_root / "webapp"
+    npm_bin = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
     commands = [
-        ["npm", "ci"],
-        ["npm", "run", "typecheck"],
-        ["npm", "run", "test:coverage"],
-        ["npm", "run", "test:coverage:all"],
-        ["npm", "run", "e2e:smoke"],
-        ["npm", "run", "e2e:visual"],
-        ["npm", "run", "build"],
-        ["npm", "run", "check:bundle-budget"],
+        [npm_bin, "ci"],
+        [npm_bin, "run", "typecheck"],
+        [npm_bin, "run", "test:coverage"],
+        [npm_bin, "run", "test:coverage:all"],
+        [npm_bin, "run", "e2e:smoke"],
+        [npm_bin, "run", "e2e:visual"],
+        [npm_bin, "run", "build"],
+        [npm_bin, "run", "check:bundle-budget"],
     ]
     for cmd in commands:
         result = _run(cmd, cwd=webapp_dir)
