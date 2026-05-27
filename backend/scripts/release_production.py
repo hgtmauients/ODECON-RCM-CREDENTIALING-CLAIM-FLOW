@@ -452,6 +452,9 @@ sql = (
     f"EXECUTE format('GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO %I', '{{user_sql}}'); "
     f"EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', '{{user_sql}}'); "
     f"EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO %I', '{{user_sql}}'); "
+    "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'claimflow_rls_bypass') THEN "
+    "CREATE ROLE claimflow_rls_bypass NOLOGIN; "
+    "END IF; "
     "END $$;"
 ).replace("{{user_sql}}", user_sql).replace("{{password_sql}}", password_sql).replace("{{db_sql}}", db_sql)
 
@@ -492,10 +495,8 @@ if psql is None or psql.returncode != 0:
     deploy_cmd = (
         f"set -euo pipefail; "
         f"cd {remote_dir}; "
-        f"set -a; source .env; set +a; "
-        f"ADMIN_DB_URL=postgresql+asyncpg://noodledoc:$POSTGRES_PASSWORD@postgres:5432/noodledoc; "
         f"docker compose -f docker-compose.prod.yml up -d --build backend; "
-        f"docker exec -e \"DATABASE_URL=$ADMIN_DB_URL\" noodledoc-backend-1 alembic upgrade head"
+        f"docker exec noodledoc-backend-1 alembic upgrade head"
     )
     ssh = _run(["ssh", server, f"bash -lc \"{deploy_cmd}\""])
     if ssh.returncode != 0:
