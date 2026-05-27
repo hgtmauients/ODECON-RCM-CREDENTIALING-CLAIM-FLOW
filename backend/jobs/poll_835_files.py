@@ -19,6 +19,11 @@ from services.denial_manager import DenialManager, AutoPostingEngine
 logger = logging.getLogger(__name__)
 
 
+async def _set_tenant_context_if_session(db: AsyncSession, tenant_id: str) -> None:
+    if isinstance(db, AsyncSession):
+        await set_tenant_context(db, tenant_id=tenant_id)
+
+
 async def poll_and_process_835_files():
     """
     Main polling function - downloads and processes 835 files.
@@ -35,14 +40,12 @@ async def poll_and_process_835_files():
             tenants = tenants_result.scalars().all()
 
             for tenant in tenants:
-                await set_tenant_context(db, tenant_id=str(tenant.id))
+                await _set_tenant_context_if_session(db, tenant_id=str(tenant.id))
                 await _poll_835_for_tenant(db, tenant)
 
         except Exception as e:
             logger.error(f"Fatal error in 835 polling job: {e}")
             raise
-        finally:
-            await set_tenant_context(db, tenant_id=None)
 
 
 async def _poll_835_for_tenant(db: AsyncSession, tenant):
@@ -134,7 +137,7 @@ async def poll_277_files():
             tenants = tenants_result.scalars().all()
 
             for tenant in tenants:
-                await set_tenant_context(db, tenant_id=str(tenant.id))
+                await _set_tenant_context_if_session(db, tenant_id=str(tenant.id))
                 payers_result = await db.execute(
                     select(PayerProfile).where(and_(
                         PayerProfile.is_active == True,
@@ -160,8 +163,6 @@ async def poll_277_files():
 
         except Exception as e:
             logger.error(f"Fatal error in 277 polling: {e}")
-        finally:
-            await set_tenant_context(db, tenant_id=None)
 
 
 if __name__ == "__main__":
