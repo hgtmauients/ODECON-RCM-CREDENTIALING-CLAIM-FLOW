@@ -492,8 +492,10 @@ if psql is None or psql.returncode != 0:
     deploy_cmd = (
         f"set -euo pipefail; "
         f"cd {remote_dir}; "
+        f"set -a; source .env; set +a; "
+        f"ADMIN_DB_URL=postgresql+asyncpg://noodledoc:$POSTGRES_PASSWORD@postgres:5432/noodledoc; "
         f"docker compose -f docker-compose.prod.yml up -d --build backend; "
-        f"docker exec noodledoc-backend-1 alembic upgrade head"
+        f"docker exec -e DATABASE_URL=$ADMIN_DB_URL noodledoc-backend-1 alembic upgrade head"
     )
     ssh = _run(["ssh", server, f"bash -lc \"{deploy_cmd}\""])
     if ssh.returncode != 0:
