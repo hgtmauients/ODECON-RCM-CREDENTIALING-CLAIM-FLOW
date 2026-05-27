@@ -455,6 +455,7 @@ sql = (
     "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'claimflow_rls_bypass') THEN "
     "CREATE ROLE claimflow_rls_bypass NOLOGIN; "
     "END IF; "
+    f"EXECUTE format('GRANT claimflow_rls_bypass TO %I', '{{user_sql}}'); "
     "END $$;"
 ).replace("{{user_sql}}", user_sql).replace("{{password_sql}}", password_sql).replace("{{db_sql}}", db_sql)
 
