@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -91,18 +92,27 @@ def _run_security_gate(repo_root: Path) -> None:
 def _run_frontend_quality_gate(repo_root: Path) -> None:
     webapp_dir = repo_root / "webapp"
     npm_bin = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
-    commands = [
-        [npm_bin, "ci"],
-        [npm_bin, "run", "typecheck"],
-        [npm_bin, "run", "test:coverage"],
-        [npm_bin, "run", "test:coverage:all"],
-        [npm_bin, "run", "e2e:smoke"],
-        [npm_bin, "run", "e2e:visual"],
-        [npm_bin, "run", "build"],
-        [npm_bin, "run", "check:bundle-budget"],
+    commands: list[tuple[list[str], int]] = [
+        ([npm_bin, "ci"], 3),
+        ([npm_bin, "run", "typecheck"], 1),
+        ([npm_bin, "run", "test:coverage"], 1),
+        ([npm_bin, "run", "test:coverage:all"], 1),
+        ([npm_bin, "run", "e2e:smoke"], 1),
+        ([npm_bin, "run", "e2e:visual"], 1),
+        ([npm_bin, "run", "build"], 1),
+        ([npm_bin, "run", "check:bundle-budget"], 1),
     ]
-    for cmd in commands:
-        result = _run(cmd, cwd=webapp_dir)
+    for cmd, attempts in commands:
+        result = _run(cmd, cwd=webapp_dir, capture_output=True)
+        attempt = 1
+        while (
+            result.returncode != 0
+            and attempt < attempts
+            and "EBUSY" in f"{result.stdout}\n{result.stderr}"
+        ):
+            time.sleep(3)
+            attempt += 1
+            result = _run(cmd, cwd=webapp_dir, capture_output=True)
         if result.returncode != 0:
             raise RuntimeError(f"frontend quality gate failed at: {' '.join(cmd)}")
 
